@@ -30,6 +30,21 @@ impl OxideApp {
             .on_hover_text("Size of the bumps or the weave");
         ui.add(egui::Slider::new(&mut settings.light_angle, 0.0..=360.0).suffix("°").max_decimals(0).text("Light"))
             .on_hover_text("Direction the light comes from (225° = top-left)");
+        // Canvas visibility.
+        let mut paper_texture = settings.paper_visibility * 10.0;
+        if ui.add(egui::Slider::new(&mut paper_texture, 0.0..=10.0).max_decimals(1).text("Paper texture"))
+            .on_hover_text("How visible the texture is on bare paper")
+            .changed()
+        {
+            settings.paper_visibility = paper_texture / 10.0;
+        }
+        let mut paint_texture = settings.paint_visibility * 10.0;
+        if ui.add(egui::Slider::new(&mut paint_texture, 0.0..=10.0).max_decimals(1).text("Paint texture"))
+            .on_hover_text("How much of the texture shows through the paint (thick paint hides the weave)")
+            .changed()
+        {
+            settings.paint_visibility = paint_texture / 10.0;
+        }
         if settings != before {
             self.document.set_surface(settings);
         }
@@ -45,6 +60,10 @@ impl OxideApp {
     }
 
     pub(super) fn layers_section(&mut self, ui: &mut egui::Ui) {
+        if self.transform.is_some() {
+            ui.label("Transforming: Apply or Cancel first.");
+            ui.disable();
+        }
         // Collect what the user did, then apply it after drawing the list,
         // so we're not changing the layer list while looping over it.
         let mut select = None;
@@ -60,10 +79,20 @@ impl OxideApp {
                 if ui.add(egui::Button::new(eye).min_size(Vec2::new(24.0, 0.0))).on_hover_text("Show/hide").clicked() {
                     toggle_visible = Some(i);
                 }
+                // Badges: T = tracing, 🔒 = locked, α = lock transparency.
+                let mut label = layer.name.clone();
+                if layer.tracing {
+                    label = format!("T  {label}");
+                } else if layer.locked {
+                    label = format!("🔒 {label}");
+                }
+                if layer.lock_transparency() {
+                    label.push_str("  α");
+                }
                 let name = if layer.visible {
-                    egui::RichText::new(&layer.name)
+                    egui::RichText::new(label)
                 } else {
-                    egui::RichText::new(&layer.name).weak()
+                    egui::RichText::new(label).weak()
                 };
                 let row = egui::Button::new(name).selected(active).min_size(Vec2::new(ui.available_width(), 0.0));
                 if ui.add(row).clicked() {
@@ -102,9 +131,37 @@ impl OxideApp {
                 self.document.move_active_layer(-1);
             }
         });
+        let active = self.document.active_index();
+        ui.horizontal(|ui| {
+            if ui.button("Duplicate").on_hover_text("Copy this layer (⌘J)").clicked() {
+                self.document.duplicate_active_layer();
+            }
+            if ui.add_enabled(active > 0, egui::Button::new("Merge ⏷")).on_hover_text("Merge into the layer below (⌘E). The merged paint is dried.").clicked() {
+                self.document.merge_down();
+            }
+            if ui.button("Clear").on_hover_text("Erase everything on this layer (⌘⌫)").clicked() {
+                self.document.clear_active_layer();
+            }
+        });
+        let layer = &self.document.layers()[active];
+        let (mut locked, mut alpha, mut tracing) = (layer.locked, layer.lock_transparency(), layer.tracing);
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut locked, "Lock").on_hover_text("No painting on this layer (⌘/)").changed() {
+                self.document.set_locked(active, locked);
+            }
+            if ui.checkbox(&mut alpha, "Lock transparency").on_hover_text("Paint only where there's already paint (/)").changed() {
+                self.document.set_lock_transparency(active, alpha);
+            }
+        });
+        if ui
+            .checkbox(&mut tracing, "Tracing layer")
+            .on_hover_text("Use this layer as a reference photo: new strokes on other layers take their color from it where they start (⌥⇧T)")
+            .changed()
+        {
+            self.document.set_tracing(active, tracing);
+        }
 
         // Settings for the active layer.
-        let active = self.document.active_index();
         let mut opacity = self.document.layers()[active].opacity * 100.0;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -126,8 +183,18 @@ impl OxideApp {
         if ui.add(egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%").max_decimals(0).text("Opacity")).changed() {
             self.document.set_opacity(active, opacity / 100.0);
         }
-        if !self.document.layers()[active].visible {
-            ui.colored_label(Color32::from_rgb(230, 170, 60), "This layer is hidden. Show it to paint.");
+        let layer = &self.document.layers()[active];
+        let warning = if layer.tracing {
+            Some("This is the tracing layer. Paint on another layer.")
+        } else if layer.locked {
+            Some("This layer is locked.")
+        } else if !layer.visible {
+            Some("This layer is hidden. Show it to paint.")
+        } else {
+            None
+        };
+        if let Some(text) = warning {
+            ui.colored_label(Color32::from_rgb(230, 170, 60), text);
         }
     }
 }

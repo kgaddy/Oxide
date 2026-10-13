@@ -75,11 +75,34 @@ pub struct PaperSettings {
     /// Direction the light comes from, in degrees (0 = right, 90 = down,
     /// 135 = down-left... 225 = top-left).
     pub light_angle: f32,
+    /// How visible the texture's light and shadow are on **bare paper**
+    /// (0..=1; shown as 0–10 "Paper Texture").
+    #[serde(default = "default_paper_visibility")]
+    pub paper_visibility: f32,
+    /// How visible the texture is **through paint** (0..=1; another app's
+    /// "Paint Texture"). Opaque paint mostly hides the weave; thin paint shows it.
+    #[serde(default = "default_paint_visibility")]
+    pub paint_visibility: f32,
+}
+
+fn default_paper_visibility() -> f32 {
+    0.8
+}
+
+fn default_paint_visibility() -> f32 {
+    0.3
 }
 
 impl Default for PaperSettings {
     fn default() -> Self {
-        PaperSettings { kind: PaperKind::ColdPress, scale: 1.0, depth: 0.5, light_angle: 225.0 }
+        PaperSettings {
+            kind: PaperKind::ColdPress,
+            scale: 1.0,
+            depth: 0.5,
+            light_angle: 225.0,
+            paper_visibility: default_paper_visibility(),
+            paint_visibility: default_paint_visibility(),
+        }
     }
 }
 
@@ -115,9 +138,20 @@ impl Paper {
         self.height[(y % TILE) * TILE + (x % TILE)]
     }
 
-    /// How much lighting brightens or darkens pixel (x, y) (around 1.0).
+    /// How much lighting brightens or darkens pixel (x, y) (around 1.0), at
+    /// full visibility.
     pub fn shade_at(&self, x: usize, y: usize) -> f32 {
         self.shade[(y % TILE) * TILE + (x % TILE)]
+    }
+
+    /// The shading actually shown at (x, y), given how much paint covers it
+    /// (`paint_alpha` 0..=1): bare paper uses the paper visibility, painted
+    /// areas the paint visibility, and partly covered pixels blend the two.
+    pub fn visible_shade_at(&self, x: usize, y: usize, paint_alpha: f32) -> f32 {
+        let s = &self.settings;
+        let a = paint_alpha.clamp(0.0, 1.0);
+        let visibility = s.paper_visibility.clamp(0.0, 1.0) * (1.0 - a) + s.paint_visibility.clamp(0.0, 1.0) * a;
+        1.0 + (self.shade_at(x, y) - 1.0) * visibility
     }
 }
 
@@ -343,6 +377,32 @@ mod tests {
             // Neighbors across the seam are about as close as neighbors elsewhere.
             assert!((edge - wrapped).abs() < 0.3 && (wrapped - next).abs() < 0.3);
         }
+    }
+
+    #[test]
+    fn paint_hides_the_texture_more_than_bare_paper() {
+        let paper = Paper::new(PaperSettings { kind: PaperKind::Canvas, depth: 0.6, paper_visibility: 1.0, paint_visibility: 0.2, ..PaperSettings::default() });
+        // Find a strongly lit or shadowed spot.
+        let (x, y) = (0..TILE * TILE).map(|i| (i % TILE, i / TILE)).max_by(|a, b| {
+            (paper.shade_at(a.0, a.1) - 1.0).abs().total_cmp(&(paper.shade_at(b.0, b.1) - 1.0).abs())
+        }).unwrap();
+        let bare = (paper.visible_shade_at(x, y, 0.0) - 1.0).abs();
+        let painted = (paper.visible_shade_at(x, y, 1.0) - 1.0).abs();
+        assert!(bare > 0.05, "texture shows on bare paper: {bare}");
+        assert!((painted - bare * 0.2).abs() < 1e-5, "paint shows 20% of it: {painted} vs {bare}");
+        // Zero visibility = no shading at all.
+        let flat = Paper::new(PaperSettings { paper_visibility: 0.0, paint_visibility: 0.0, ..paper.settings() });
+        assert_eq!(flat.visible_shade_at(x, y, 0.0), 1.0);
+    }
+
+    #[test]
+    fn old_files_get_default_visibility() {
+        let old = r#"kind = "Canvas"
+scale = 1.0
+depth = 0.4
+light_angle = 225.0"#;
+        let s: PaperSettings = toml::from_str(old).unwrap();
+        assert_eq!((s.paper_visibility, s.paint_visibility), (0.8, 0.3));
     }
 
     #[test]

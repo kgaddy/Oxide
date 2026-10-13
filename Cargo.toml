@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/oxide-engine", "crates/oxide-app"]
+members = ["crates/oxide-engine", "crates/oxide-app", "crates/oxide-commands", "crates/oxide-agent"]
 
 # Painting loops over every pixel, so unoptimized debug builds feel laggy.
 # Light optimization for our code, full for dependencies; still fast to compile.

@@ -2,19 +2,23 @@
 
 mod brush_creator;
 mod canvas_view;
+pub use canvas_view::ViewXform;
 mod export_dialog;
 mod files;
 mod layers;
+mod menus;
 mod mixing_palette;
 mod new_artwork;
 mod select_canvas;
+mod transform;
 mod panels;
+mod reference_image;
 
 use std::path::PathBuf;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use eframe::egui::ecolor::{hsv_from_rgb, rgb_from_hsv};
-use oxide_engine::{Brush, Color, Document, Mixing, PaperKind, PaperSettings, Stroke};
+use oxide_engine::{Brush, Color, Document, Mixing, PaintMode, PaperKind, PaperSettings, Stroke};
 
 use crate::presets::PresetLibrary;
 use crate::pen::{PenInput, apply_curve};
@@ -44,6 +48,10 @@ pub struct View {
     pub pan: egui::Vec2,
     /// The scale actually used last frame (useful while `fit` is on).
     pub last_scale: f32,
+    /// View rotation in degrees (the painting itself is never rotated).
+    pub rotation: f32,
+    /// Mirror the view left-right (Shift+F), to check the drawing with fresh eyes.
+    pub flip: bool,
 }
 
 impl View {
@@ -121,9 +129,31 @@ pub struct OxideApp {
     select_canvas: select_canvas::SelectCanvas,
     export_dialog: export_dialog::ExportDialog,
     mixing_palette: mixing_palette::MixingPalette,
+    /// Pressure used when painting with a mouse (pressure-based paint modes need it).
+    mouse_pressure: f32,
+    /// A V/A mode key that's down: the mode before it, and when it was pressed
+    /// (released quickly = switch; held = only while held).
+    mode_key: Option<(Key, ToolState, std::time::Instant)>,
+    /// The paint mode to return to when V toggles Blend off again.
+    last_paint_mode: PaintMode,
+    /// ⌘-drag on the canvas: size and loading when the drag started.
+    adjust_drag: Option<(egui::Pos2, f32, f32)>,
     /// The drawing tablet: pressure, tilt, rotation.
     pen: PenInput,
     show_pen_settings: bool,
+    /// Window → Reference Image (a photo to look at while painting).
+    reference: reference_image::ReferenceImage,
+    /// Help → Keyboard Shortcuts window.
+    show_shortcuts: bool,
+    /// The macOS menu bar (None until installed on the first frame, or if it failed).
+    #[cfg(target_os = "macos")]
+    native_menu: Option<menus::native::NativeMenu>,
+    /// Tried to install the native menu bar already.
+    menu_installed: bool,
+    /// Stroke and pressure smoothing for the stroke being painted.
+    stabilizer: crate::smoothing::Stabilizer,
+    /// The Transform tool (⌘T), while it's active.
+    transform: Option<transform::TransformTool>,
     /// How long our code took to build the last frames (ms, smoothed), shown
     /// in the status bar so slowdowns are easy to spot.
     frame_ms: f32,
@@ -138,6 +168,7 @@ enum Command {
     SaveAs,
     SaveIteration,
     ImportImage,
+    OpenReference,
     Export,
     Quit,
     Undo,
@@ -149,11 +180,54 @@ enum Command {
     DryLayer,
     DryAll,
     MixingPalette,
+    RotateLeft,
+    RotateRight,
+    ResetRotation,
+    FlipView,
+    Greyscale,
+    DuplicateLayer,
+    MergeDown,
+    MergeVisible,
+    MergeVisibleToNew,
+    ClearLayer,
+    LockLayer,
+    LockTransparency,
+    TracingLayer,
+    Transform,
+    NewLayer,
+    DeleteLayer,
+    MoveLayerUp,
+    MoveLayerDown,
+    RewetLayer,
+    NaturalColors,
+    ToggleLeft,
+    ToggleRight,
+    ToggleReference,
+    ToggleBrushCreator,
+    TogglePenSettings,
+    ShowShortcuts,
+}
+
+impl Command {
+    /// Commands that can be used without ending a transform (view changes).
+    fn keeps_transform(self) -> bool {
+        use Command::*;
+        matches!(
+            self,
+            Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
+                | NaturalColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
+        )
+    }
 }
 
 /// Keyboard shortcuts. Order matters: egui ignores *extra* Shift/Alt when
 /// matching, so ⇧⌘S must be checked before ⌘S or it would trigger Save.
-const SHORTCUTS: [(Command, KeyboardShortcut); 18] = [
+const SHORTCUTS: [(Command, KeyboardShortcut); 29] = [
+    // View: checked before ⌘0 (Fit), since extra modifiers would otherwise match it.
+    (Command::ResetRotation, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::Num0)),
+    (Command::RotateLeft, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::ArrowLeft)),
+    (Command::RotateRight, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::ArrowRight)),
+    (Command::FlipView, KeyboardShortcut::new(Modifiers::SHIFT, Key::F)),
     (Command::MixingPalette, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::M)),
     (Command::DryAll, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::D)),
     (Command::DryLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::D)),
@@ -163,6 +237,14 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 18] = [
     (Command::Redo, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z)),
     (Command::Undo, KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)),
     (Command::Export, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::E)),
+    // Layers: ⌥⌘E before ⌘E.
+    (Command::MergeVisible, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::E)),
+    (Command::MergeDown, KeyboardShortcut::new(Modifiers::COMMAND, Key::E)),
+    (Command::DuplicateLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::J)),
+    (Command::Transform, KeyboardShortcut::new(Modifiers::COMMAND, Key::T)),
+    (Command::ClearLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::Backspace)),
+    (Command::LockLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::Slash)),
+    (Command::TracingLayer, KeyboardShortcut::new(Modifiers::ALT.plus(Modifiers::SHIFT), Key::T)),
     (Command::New, KeyboardShortcut::new(Modifiers::COMMAND, Key::N)),
     (Command::Open, KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
     (Command::ImportImage, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::I)),
@@ -200,7 +282,7 @@ impl OxideApp {
             stroke: None,
             dirty_brush: true,
             carried_color: None,
-            view: View { fit: true, zoom: 1.0, pan: egui::Vec2::ZERO, last_scale: 1.0 },
+            view: View { fit: true, zoom: 1.0, pan: egui::Vec2::ZERO, last_scale: 1.0, rotation: 0.0, flip: false },
             texture,
             presets: PresetLibrary::load(ctx),
             brush_creator: brush_creator::BrushCreator::default(),
@@ -222,7 +304,18 @@ impl OxideApp {
             mixing_palette: mixing_palette::MixingPalette::default(),
             frame_ms: 0.0,
             pen: PenInput::new(ctx),
+            mouse_pressure: 1.0,
+            mode_key: None,
+            last_paint_mode: PaintMode::PaintMix,
+            adjust_drag: None,
             show_pen_settings: false,
+            transform: None,
+            stabilizer: Default::default(),
+            show_shortcuts: false,
+            #[cfg(target_os = "macos")]
+            native_menu: None,
+            menu_installed: false,
+            reference: reference_image::ReferenceImage::default(),
         }
     }
 
@@ -279,6 +372,16 @@ impl OxideApp {
         if self.stroke.is_some() {
             return;
         }
+        // While transforming: ⌘T again or most commands apply it first; undo cancels it.
+        if self.transform.is_some() && !command.keeps_transform() {
+            match command {
+                Command::Undo | Command::Redo => self.cancel_transform(),
+                _ => self.apply_transform(),
+            }
+            if matches!(command, Command::Undo | Command::Redo | Command::Transform) {
+                return;
+            }
+        }
         match command {
             Command::New => self.new_artwork.open = true,
             Command::Open => self.request(PendingAction::Open, ctx),
@@ -293,6 +396,7 @@ impl OxideApp {
                 self.save_iteration();
             }
             Command::ImportImage => self.import_image(),
+            Command::OpenReference => self.open_reference_image(ctx),
             Command::Export => self.export_dialog.open = true,
             Command::Undo => self.document.undo(),
             Command::Redo => self.document.redo(),
@@ -303,110 +407,107 @@ impl OxideApp {
             Command::DryLayer => self.document.dry_layer(),
             Command::DryAll => self.document.dry_all(),
             Command::MixingPalette => self.mixing_palette.open = !self.mixing_palette.open,
+            Command::RotateLeft => self.change_view(-15.0, false, false),
+            Command::RotateRight => self.change_view(15.0, false, false),
+            Command::ResetRotation => self.change_view(0.0, false, true),
+            Command::FlipView => self.change_view(0.0, true, false),
+            Command::Greyscale => {
+                let on = !self.texture.greyscale();
+                self.texture.set_greyscale(&self.document, on);
+            }
+            Command::Transform => self.start_transform(),
+            Command::NewLayer => self.document.add_layer(),
+            Command::DeleteLayer => {
+                if self.document.layers().len() > 1 {
+                    self.document.delete_active_layer();
+                }
+            }
+            Command::MoveLayerUp => self.document.move_active_layer(1),
+            Command::MoveLayerDown => self.document.move_active_layer(-1),
+            Command::RewetLayer => self.document.rewet_layer(),
+            Command::NaturalColors => {
+                self.app_settings.natural_colors = !self.app_settings.natural_colors;
+                self.save_app_settings();
+                let mode = if self.app_settings.natural_colors { "paint (pigment)" } else { "light (RGB)" };
+                self.info(format!("Colors now mix like {mode}"));
+            }
+            Command::ToggleLeft => self.show_left = !self.show_left,
+            Command::ToggleRight => self.show_right = !self.show_right,
+            Command::ToggleReference => {
+                self.reference.open = !self.reference.open;
+                self.app_settings.reference_open = self.reference.open;
+                self.save_app_settings();
+            }
+            Command::ToggleBrushCreator => self.brush_creator.open = !self.brush_creator.open,
+            Command::TogglePenSettings => self.show_pen_settings = !self.show_pen_settings,
+            Command::ShowShortcuts => self.show_shortcuts = true,
+            Command::DuplicateLayer => self.document.duplicate_active_layer(),
+            Command::MergeDown => {
+                if !self.document.merge_down() {
+                    self.info("Nothing below to merge into");
+                }
+            }
+            Command::MergeVisible => {
+                if !self.document.merge_visible() {
+                    self.info("Need at least two visible layers to merge");
+                }
+            }
+            Command::MergeVisibleToNew => self.document.merge_visible_to_new(),
+            Command::ClearLayer => {
+                self.document.clear_active_layer();
+            }
+            Command::LockLayer => {
+                let i = self.document.active_index();
+                let on = !self.document.layers()[i].locked;
+                self.document.set_locked(i, on);
+            }
+            Command::LockTransparency => {
+                let i = self.document.active_index();
+                let on = !self.document.layers()[i].lock_transparency();
+                self.document.set_lock_transparency(i, on);
+            }
+            Command::TracingLayer => {
+                let i = self.document.active_index();
+                let on = !self.document.layers()[i].tracing;
+                self.document.set_tracing(i, on);
+            }
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        let mut clicked = None;
-        let mut natural_changed = false;
-        // A menu item that shows its keyboard shortcut and records the click.
-        let mut item = |ui: &mut egui::Ui, label: &str, command: Command, enabled: bool| {
-            let mut button = egui::Button::new(label);
-            if let Some((_, shortcut)) = SHORTCUTS.iter().find(|(c, _)| *c == command) {
-                button = button.shortcut_text(ui.ctx().format_shortcut(shortcut));
-            }
-            if ui.add_enabled(enabled, button).clicked() {
-                clicked = Some(command);
-            }
-        };
-
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                item(ui, "New", Command::New, true);
-                item(ui, "Open…", Command::Open, true);
-                ui.separator();
-                item(ui, "Save", Command::Save, true);
-                item(ui, "Save As…", Command::SaveAs, true);
-                item(ui, "Save Iteration", Command::SaveIteration, true);
-                ui.separator();
-                item(ui, "Import Image as Layer…", Command::ImportImage, true);
-                item(ui, "Export…", Command::Export, true);
-                ui.separator();
-                item(ui, "Quit", Command::Quit, true);
-            });
-            ui.menu_button("Edit", |ui| {
-                let undo = self.document.undo_description();
-                let redo = self.document.redo_description();
-                item(ui, &undo.map_or("Undo".into(), |d| format!("Undo {d}")), Command::Undo, undo.is_some());
-                item(ui, &redo.map_or("Redo".into(), |d| format!("Redo {d}")), Command::Redo, redo.is_some());
-                ui.separator();
-                if ui
-                    .checkbox(&mut self.app_settings.natural_colors, "Natural Colors")
-                    .on_hover_text("On: colors mix like real paint (blue + yellow = green).\nOff: they mix like light on a screen (blue + yellow = gray).")
-                    .changed()
-                {
-                    natural_changed = true;
-                }
-            });
-            ui.menu_button("View", |ui| {
-                item(ui, "Fit to window", Command::Fit, true);
-                item(ui, "Actual size", Command::ActualSize, true);
-                item(ui, "Zoom in", Command::ZoomIn, true);
-                item(ui, "Zoom out", Command::ZoomOut, true);
-            });
-            ui.menu_button("Layer", |ui| {
-                if ui.button("New layer").clicked() {
-                    self.document.add_layer();
-                }
-                if ui.add_enabled(self.document.layers().len() > 1, egui::Button::new("Delete layer")).clicked() {
-                    self.document.delete_active_layer();
-                }
-                ui.separator();
-                if ui.button("Move layer up").clicked() {
-                    self.document.move_active_layer(1);
-                }
-                if ui.button("Move layer down").clicked() {
-                    self.document.move_active_layer(-1);
-                }
-                ui.separator();
-                item(ui, "Dry Layer", Command::DryLayer, true);
-                item(ui, "Dry All Layers", Command::DryAll, true);
-                if ui.button("Rewet Layer").clicked() {
-                    self.document.rewet_layer();
-                }
-            });
-            ui.menu_button("Window", |ui| {
-                ui.checkbox(&mut self.brush_creator.open, "Brush creator");
-                ui.checkbox(&mut self.show_pen_settings, "Pen settings");
-                let mut palette_open = self.mixing_palette.open;
-                let shortcut = SHORTCUTS.iter().find(|(c, _)| *c == Command::MixingPalette).map(|(_, s)| ui.ctx().format_shortcut(s));
-                if ui.checkbox(&mut palette_open, format!("Mixing palette   {}", shortcut.unwrap_or_default())).changed() {
-                    self.mixing_palette.open = palette_open;
-                }
-                ui.checkbox(&mut self.show_left, "Tools & brushes (left)");
-                ui.checkbox(&mut self.show_right, "Navigator, color & layers (right)");
-            });
-            ui.menu_button("Help", |ui| {
-                ui.label("Oxide 0.1: natural-media painting");
-                ui.separator();
-                ui.label("B oils & acrylics · N ink · P pencil · M marker · A airbrush");
-                ui.label("E eraser · S smudge · I picker");
-                ui.label("[ / ] brush size");
-                ui.label("⌘Z undo · ⇧⌘Z redo");
-                ui.label("⌘D dry layer · ⇧⌘D dry all");
-                ui.label("Space+drag or middle-drag to pan");
-                ui.label("Pinch or ⌘+scroll to zoom");
-            });
-        });
-
-        if let Some(command) = clicked {
-            self.run(command, &ui.ctx().clone());
+    /// Install (first frame) and run the macOS menu bar. Returns false if
+    /// there isn't one, so the in-window menu bar is shown instead.
+    #[cfg(target_os = "macos")]
+    fn native_menu_frame(&mut self, ctx: &egui::Context) -> bool {
+        if !self.menu_installed {
+            self.menu_installed = true;
+            self.native_menu = menus::native::NativeMenu::install(&self.menu_spec(), ctx);
         }
-        if natural_changed {
-            self.save_app_settings();
-            let mode = if self.app_settings.natural_colors { "paint (pigment)" } else { "light (RGB)" };
-            self.info(format!("Colors now mix like {mode}"));
+        let Some(menu) = &self.native_menu else { return false };
+        let chosen = menu.chosen();
+        // Ignore menu picks while a dialog is up (except Quit), like the in-window menus.
+        let dialog_open = self.pending.is_some() || self.new_artwork.open || self.select_canvas.open || self.export_dialog.open;
+        for command in chosen {
+            if !dialog_open || command == Command::Quit {
+                self.run(command, ctx);
+            }
         }
+        let spec = self.menu_spec();
+        if let Some(menu) = &mut self.native_menu {
+            menu.sync(&spec);
+        }
+        true
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn native_menu_frame(&mut self, _ctx: &egui::Context) -> bool {
+        false
+    }
+
+    fn menu_handles_shortcut(&self, command: Command) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.native_menu.as_ref().is_some_and(|m| m.handles_shortcut(command));
+        #[cfg(not(target_os = "macos"))]
+        return { let _ = command; false };
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -415,6 +516,10 @@ impl OxideApp {
         let mut commands = Vec::new();
         ctx.input_mut(|i| {
             for (command, shortcut) in &SHORTCUTS {
+                // Keys the macOS menu bar handles go to it, not here.
+                if self.menu_handles_shortcut(*command) {
+                    continue;
+                }
                 if i.consume_shortcut(shortcut) {
                     commands.push(*command);
                 }
@@ -428,6 +533,7 @@ impl OxideApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        let mut view_keys = Vec::new();
         ctx.input(|i| {
             for tool in Tool::ALL {
                 let key = Key::from_name(tool.shortcut()).expect("tool shortcuts are letter keys");
@@ -439,11 +545,87 @@ impl OxideApp {
                 let shape = &mut self.state_mut().shape;
                 shape.radius = (shape.radius / 1.15).max(0.5);
             }
+            // another app's view keys: G greyscale, 0 = 100%, . = fit to screen.
+            if i.modifiers.is_none() {
+                if i.key_pressed(Key::G) {
+                    view_keys.push(Command::Greyscale);
+                }
+                if i.key_pressed(Key::Num0) {
+                    view_keys.push(Command::ActualSize);
+                }
+                if i.key_pressed(Key::Period) {
+                    view_keys.push(Command::Fit);
+                }
+                if i.key_pressed(Key::Slash) {
+                    view_keys.push(Command::LockTransparency);
+                }
+            }
+            if self.tool.is_wet_medium() && i.modifiers.is_none() {
+                // Paint modes 1–5.
+                let modes = [(Key::Num1, Some(PaintMode::Paint)), (Key::Num2, Some(PaintMode::PaintMix)),
+                    (Key::Num3, Some(PaintMode::PaintBlend)), (Key::Num4, Some(PaintMode::Blend)), (Key::Num5, None)];
+                for (key, mode) in modes {
+                    if i.key_pressed(key) {
+                        self.set_paint_mode(mode);
+                    }
+                }
+                // V (Blend) and A (Erase): tap to switch, hold to use only while held.
+                for key in [Key::V, Key::A] {
+                    if i.key_pressed(key) && self.mode_key.is_none() {
+                        let before = *self.state();
+                        self.toggle_mode_key(key);
+                        self.mode_key = Some((key, before, std::time::Instant::now()));
+                    }
+                }
+            }
+            if let Some((key, before, pressed)) = self.mode_key
+                && i.key_released(key)
+            {
+                if pressed.elapsed().as_secs_f32() > 0.35 {
+                    // Held: go back to how it was.
+                    *self.state_mut() = ToolState { shape: self.state().shape, ..before };
+                }
+                self.mode_key = None;
+            }
             if i.key_pressed(Key::CloseBracket) {
                 let shape = &mut self.state_mut().shape;
                 shape.radius = (shape.radius * 1.15).min(200.0);
             }
         });
+        for command in view_keys {
+            self.run(command, ctx);
+        }
+    }
+
+    /// Pick a paint mode for the wet medium (`None` = Erase).
+    fn set_paint_mode(&mut self, mode: Option<PaintMode>) {
+        let state = self.state_mut();
+        match mode {
+            Some(mode) => {
+                state.paint_mode = mode;
+                state.erase = false;
+                if mode != PaintMode::Blend {
+                    self.last_paint_mode = mode;
+                }
+            }
+            None => state.erase = true,
+        }
+    }
+
+    /// V: paint mode ⇄ Blend. A: paint mode ⇄ Erase.
+    fn toggle_mode_key(&mut self, key: Key) {
+        let state = *self.state();
+        if key == Key::V {
+            if state.paint_mode == PaintMode::Blend && !state.erase {
+                self.set_paint_mode(Some(self.last_paint_mode));
+            } else {
+                self.set_paint_mode(Some(PaintMode::Blend));
+            }
+        } else if state.erase {
+            self.state_mut().erase = false;
+        } else {
+            self.set_paint_mode(None);
+        }
     }
 
     /// Pressure curve and a live meter, to tune how light touches feel.
@@ -481,7 +663,44 @@ impl OxideApp {
             });
             ui.weak("Softer = light touches give bigger, darker marks.");
             ui.add_space(6.0);
-            ui.label(format!("Tilt: {:+.2}, {:+.2}   Rotation: {:.0}°", pen.tilt.0, pen.tilt.1, pen.rotation));
+            ui.separator();
+            ui.strong("Smoothing");
+            let s = &mut self.app_settings;
+            let mut stroke = s.stroke_smoothing * 100.0;
+            if ui.add(egui::Slider::new(&mut stroke, 0.0..=100.0).max_decimals(0).text("Stroke"))
+                .on_hover_text("Steadier lines: the brush trails the pen on a string and ignores small wobbles. Higher = steadier, with more lag.")
+                .changed()
+            {
+                s.stroke_smoothing = stroke / 100.0;
+                changed = true;
+            }
+            let mut pressure = s.pressure_smoothing * 100.0;
+            if ui.add(egui::Slider::new(&mut pressure, 0.0..=100.0).max_decimals(0).text("Pressure"))
+                .on_hover_text("Steadier pressure: smooths sudden jumps in size and opacity")
+                .changed()
+            {
+                s.pressure_smoothing = pressure / 100.0;
+                changed = true;
+            }
+            ui.add_space(6.0);
+            ui.separator();
+            ui.strong("Tilt & rotation");
+            changed |= ui.checkbox(&mut s.invert_tilt, "Invert tilt").on_hover_text("If flat brushes lean the wrong way").changed();
+            changed |= ui.add(egui::Slider::new(&mut s.tilt_offset, -180.0..=180.0).suffix("°").max_decimals(0).text("Tilt offset"))
+                .on_hover_text("Turn the tilt direction (e.g. if the tablet is rotated)")
+                .changed();
+            changed |= ui.checkbox(&mut s.invert_rotation, "Invert pen rotation").changed();
+            let tilt = crate::pen::adjust_tilt(pen.tilt, s.invert_tilt, s.tilt_offset);
+            let rotation = crate::pen::adjust_rotation(pen.rotation, s.invert_rotation);
+            ui.horizontal(|ui| {
+                // A little compass: the line points the way the pen leans.
+                let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                let c = rect.center();
+                painter.circle_stroke(c, 20.0, egui::Stroke::new(1.0, ui.visuals().weak_text_color()));
+                painter.line_segment([c, c + egui::Vec2::new(tilt.0, tilt.1) * 20.0], egui::Stroke::new(2.5, ui.visuals().selection.bg_fill));
+                ui.label(format!("Tilt {:+.2}, {:+.2}\nRotation {:.0}°\nLean the pen: the line should point the same way.", tilt.0, tilt.1, rotation));
+            });
             ui.add_space(6.0);
             ui.separator();
             ui.weak("Diagnostics");
@@ -516,6 +735,21 @@ impl OxideApp {
                 let pressure = apply_curve(pen.pressure, self.app_settings.pressure_curve);
                 ui.weak(format!("Pen {:.0}%", pressure * 100.0)).on_hover_text("Pen pressure after the pressure curve (Window → Pen settings)");
             }
+            if self.view.rotation != 0.0 || self.view.flip || self.texture.greyscale() {
+                ui.separator();
+                let mut parts = Vec::new();
+                if self.view.rotation != 0.0 {
+                    parts.push(format!("rotated {:.0}°", self.view.rotation));
+                }
+                if self.view.flip {
+                    parts.push("flipped".to_string());
+                }
+                if self.texture.greyscale() {
+                    parts.push("greyscale".to_string());
+                }
+                ui.colored_label(egui::Color32::from_rgb(120, 170, 235), format!("View: {}", parts.join(", ")))
+                    .on_hover_text("These change only how you see the painting, not the painting itself");
+            }
             ui.separator();
             let frame = format!("{:.0} ms/frame", self.frame_ms);
             if self.frame_ms > 30.0 {
@@ -545,7 +779,9 @@ impl eframe::App for OxideApp {
             self.handle_shortcuts(&ctx);
         }
 
-        egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
+        if !self.native_menu_frame(&ctx) {
+            egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
+        }
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
 
         if self.show_left {
@@ -568,6 +804,9 @@ impl eframe::App for OxideApp {
         self.brush_creator_window(&ctx);
         self.pen_settings_window(&ctx);
         self.mixing_palette_window(&ctx);
+        self.transform_window(&ctx);
+        self.reference_window(&ctx);
+        self.shortcuts_window(&ctx);
         self.new_artwork_dialog(&ctx);
         // Drawn after New Artwork so it sits on top when opened from there.
         self.select_canvas_dialog(&ctx);

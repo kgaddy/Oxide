@@ -5,6 +5,7 @@ use oxide_engine::Color;
 
 use super::{OxideApp, to_color32};
 use crate::export::{ExportFormat, export};
+use crate::settings::DialogFolder;
 
 #[derive(Default)]
 pub struct ExportDialog {
@@ -126,7 +127,8 @@ impl OxideApp {
     fn export_to_file(&mut self) {
         let options = self.app_settings.export;
         let ext = options.format.extension();
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = self
+            .dialog(DialogFolder::Exports)
             .add_filter(options.format.label(), &[ext])
             .set_file_name(format!("{}.{ext}", self.file_stem()))
             .save_file()
@@ -134,6 +136,7 @@ impl OxideApp {
             return;
         };
         let path = path.with_extension(ext);
+        self.remember_folder(DialogFolder::Exports, &path);
         match export(&self.document, &path, &options) {
             Ok(()) => self.info(format!("Exported {}", path.display())),
             Err(e) => self.error(format!("Couldn't export {}: {e}", path.display())),

@@ -104,6 +104,18 @@ pub fn apply_curve(pressure: f32, curve: f32) -> f32 {
     pressure.clamp(0.0, 1.0).powf(curve.clamp(0.2, 3.0))
 }
 
+/// Apply the Pen settings' tilt options: invert, then turn by `offset` degrees.
+pub fn adjust_tilt(tilt: (f32, f32), invert: bool, offset: f32) -> (f32, f32) {
+    let (x, y) = if invert { (-tilt.0, -tilt.1) } else { tilt };
+    let (sin, cos) = offset.to_radians().sin_cos();
+    (x * cos - y * sin, x * sin + y * cos)
+}
+
+/// Apply the Pen settings' "invert rotation" option.
+pub fn adjust_rotation(degrees: f32, invert: bool) -> f32 {
+    if invert { (360.0 - degrees).rem_euclid(360.0) } else { degrees }
+}
+
 /// Turn a value from the driver into a safe number (non-numbers become `fallback`).
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }

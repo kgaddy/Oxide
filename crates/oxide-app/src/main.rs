@@ -1,14 +1,15 @@
 //! The Oxide desktop app: a workspace around the paint engine.
 
 mod app;
+// Shared with the AI-agent server and CLI (see crates/oxide-commands).
+use oxide_commands::{export, tools};
 mod color_wheel;
-mod export;
 mod palette_library;
 mod pen;
 mod presets;
 mod settings;
+mod smoothing;
 mod tiles;
-mod tools;
 
 use eframe::egui;
 

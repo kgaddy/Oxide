@@ -75,6 +75,7 @@ pub struct DabStyle<'a> {
 /// - **wet** paint on top: wet brushes pick it up, blend and smear it
 ///
 /// What you see is wet over dry. "Dry layer" merges wet into dry.
+#[derive(Clone)]
 pub struct Canvas {
     width: usize,
     height: usize,
@@ -90,6 +91,9 @@ pub struct Canvas {
     changed: Option<Region>,
     /// The paper this layer is painted on (shared by all layers of a document).
     surface: Option<Arc<Paper>>,
+    /// Lock transparency: paint only where there's already paint (recolor
+    /// existing strokes); transparent areas stay transparent.
+    preserve_alpha: bool,
 }
 
 impl Canvas {
@@ -103,6 +107,7 @@ impl Canvas {
             dirty: None,
             changed: None,
             surface: None,
+            preserve_alpha: false,
         };
         canvas.clear(background);
         canvas
@@ -110,6 +115,14 @@ impl Canvas {
 
     pub fn width(&self) -> usize {
         self.width
+    }
+
+    pub fn preserve_alpha(&self) -> bool {
+        self.preserve_alpha
+    }
+
+    pub fn set_preserve_alpha(&mut self, on: bool) {
+        self.preserve_alpha = on;
     }
 
     /// Paint on this paper from now on (its texture shapes where paint lands).
@@ -269,6 +282,17 @@ impl Canvas {
                     continue;
                 }
                 let mut strength = (coverage * style.opacity).clamp(0.0, 1.0);
+                if self.preserve_alpha {
+                    // Lock transparency: no erasing, and paint only as much as
+                    // there's already paint here.
+                    if style.mode == DabMode::Erase {
+                        continue;
+                    }
+                    strength *= self.combined(y * self.width + x)[3];
+                    if strength <= 0.0 {
+                        continue;
+                    }
+                }
                 if let Some(paper) = &paper {
                     strength *= surface_acceptance(paper.height_at(x, y), brush.grain, style.reach);
                 }
@@ -560,6 +584,19 @@ mod tests {
         canvas.write_region(canvas.bounds(), &saved.0, &saved.1);
         assert_eq!(canvas.wet_count, exact(&canvas));
         assert!(canvas.has_wet_paint());
+    }
+
+    #[test]
+    fn lock_transparency_paints_only_on_existing_paint() {
+        let mut canvas = Canvas::new(40, 20, Color::TRANSPARENT);
+        canvas.dab(10.0, 10.0, &Brush { radius: 6.0, ..Brush::default() }, DabMode::Paint); // black blob on the left
+        canvas.set_preserve_alpha(true);
+        let red = Brush { color: Color::rgb(1.0, 0.0, 0.0), radius: 30.0, ..Brush::default() };
+        canvas.dab(20.0, 10.0, &red, DabMode::Paint);
+        assert_eq!(canvas.pixel(10, 10), Some(Color::rgb(1.0, 0.0, 0.0)), "existing paint recolored");
+        assert_eq!(canvas.pixel(35, 10).unwrap().a, 0.0, "transparent area stays transparent");
+        canvas.dab(10.0, 10.0, &red, DabMode::Erase);
+        assert_eq!(canvas.pixel(10, 10).unwrap().a, 1.0, "erasing is blocked");
     }
 
     #[test]

@@ -4,16 +4,52 @@ use rayon::prelude::*;
 
 use crate::canvas::{over, premultiply, scale};
 use crate::paper::{Paper, PaperSettings};
-use crate::history::{Edit, History};
+use crate::history::{Edit, History, LayerFlagSet};
+use crate::transform::{self, Transform};
 use crate::{Canvas, Color, Region};
 
+/// The layer being transformed, as it was before (see `begin_transform`).
+struct TransformSource {
+    layer: usize,
+    dry: Vec<[f32; 4]>,
+    wet: Vec<[f32; 4]>,
+    has_wet: bool,
+    /// The box around the paint: what the handles frame.
+    bounds: Region,
+    /// The transform shown now.
+    current: Transform,
+}
+
 /// One layer of a painting.
+#[derive(Clone)]
 pub struct Layer {
     pub name: String,
     pub canvas: Canvas,
     pub visible: bool,
     /// 0..=1, applied when the layer is composited.
     pub opacity: f32,
+    /// Locked: nothing can paint on it.
+    pub locked: bool,
+    /// A tracing layer (marked "T"): a reference image whose colors new
+    /// strokes pick up where they start. Always locked.
+    pub tracing: bool,
+}
+
+impl Layer {
+    /// Lock transparency: paint only where there's already paint.
+    pub fn lock_transparency(&self) -> bool {
+        self.canvas.preserve_alpha()
+    }
+
+    fn flags(&self) -> LayerFlagSet {
+        LayerFlagSet { locked: self.locked, lock_transparency: self.lock_transparency(), tracing: self.tracing }
+    }
+
+    fn set_flags(&mut self, f: LayerFlagSet) {
+        self.locked = f.locked;
+        self.canvas.set_preserve_alpha(f.lock_transparency);
+        self.tracing = f.tracing;
+    }
 }
 
 /// A whole painting: a paper color plus a stack of layers, with undo history.
@@ -33,6 +69,9 @@ pub struct Document {
     /// A copy of the active layer taken when a stroke starts, so we know
     /// what the pixels and wetness looked like before it (for undo).
     stroke_snapshot: Option<StrokeSnapshot>,
+    /// An untouched copy of the layer being transformed (⌘T), while the
+    /// transform is still being adjusted.
+    transforming: Option<TransformSource>,
     /// Tint wet paint blue on screen, so you can see what's still wet.
     show_wet: bool,
     /// The surface texture (paper, canvas, panel), shared with every layer.
@@ -73,6 +112,7 @@ impl Document {
             next_layer_number: 1,
             history: History::new(),
             stroke_snapshot: None,
+            transforming: None,
             show_wet: false,
             surface: Arc::new(Paper::new(surface)),
             dpi: DEFAULT_DPI,
@@ -113,6 +153,7 @@ impl Document {
             next_layer_number,
             history: History::new(),
             stroke_snapshot: None,
+            transforming: None,
             show_wet: false,
             surface,
             dpi: DEFAULT_DPI,
@@ -133,7 +174,14 @@ impl Document {
     fn blank_layer(&mut self) -> Layer {
         let mut canvas = Canvas::new(self.width, self.height, Color::TRANSPARENT);
         canvas.set_surface(self.surface.clone());
-        let layer = Layer { name: format!("Layer {}", self.next_layer_number), canvas, visible: true, opacity: 1.0 };
+        let layer = Layer {
+            name: format!("Layer {}", self.next_layer_number),
+            canvas,
+            visible: true,
+            opacity: 1.0,
+            locked: false,
+            tracing: false,
+        };
         self.next_layer_number += 1;
         layer
     }
@@ -301,6 +349,272 @@ impl Document {
         self.history.record(Edit::Paper { before, after: paper });
     }
 
+    // ----- Layer basics: duplicate, merge, clear, lock, tracing -----
+
+    /// Can the current layer be painted on? (Not hidden, locked, or a tracing layer.)
+    pub fn can_paint_active(&self) -> bool {
+        let l = &self.layers[self.active];
+        l.visible && !l.locked && !l.tracing
+    }
+
+    /// Copy the current layer (above it, named "… copy").
+    pub fn duplicate_active_layer(&mut self) {
+        let mut copy = self.layers[self.active].clone();
+        copy.name = format!("{} copy", copy.name);
+        copy.tracing = false;
+        copy.locked = false;
+        self.insert_layer(copy);
+        self.history.relabel_last("Duplicate layer");
+    }
+
+    /// Merge the current layer into the one below it (as one undo step). The
+    /// merged paint is dried: one layer can't keep two layers' wet/dry
+    /// stacking order.
+    pub fn merge_down(&mut self) -> bool {
+        let upper = self.active;
+        if upper == 0 {
+            return false;
+        }
+        let below = upper - 1;
+        let n = self.width * self.height;
+        let (u, b) = (&self.layers[upper], &self.layers[below]);
+        let (uo, bo) = (if u.visible { u.opacity } else { 0.0 }, if b.visible { b.opacity } else { 0.0 });
+        let mut dry: Vec<[f32; 4]> = (0..n).map(|i| over(scale(u.canvas.combined(i), uo), scale(b.canvas.combined(i), bo))).collect();
+        let mut wet = vec![[0.0; 4]; n];
+        // Put the merged pixels into the lower layer (keeping its old ones for undo).
+        self.layers[below].canvas.swap_buffers(&mut dry, &mut wet);
+        let mut edits = vec![Edit::Wetness { layers: vec![(below, (dry, wet))], label: "Merge" }];
+        let before = self.layers[below].opacity;
+        self.layers[below].opacity = 1.0;
+        let was_visible = self.layers[below].visible;
+        self.layers[below].visible = true;
+        edits.push(Edit::Opacity { layer: below, before, after: 1.0 });
+        if !was_visible {
+            edits.push(Edit::Visibility { layer: below });
+        }
+        let removed = self.layers.remove(upper);
+        edits.push(Edit::RemoveLayer { index: upper, layer: removed });
+        self.active = below;
+        self.all_dirty = true;
+        self.record_batch(edits, "Merge down");
+        true
+    }
+
+    /// Merge all visible layers into one (replacing them), as one undo step.
+    pub fn merge_visible(&mut self) -> bool {
+        let visible: Vec<usize> = (0..self.layers.len()).filter(|&i| self.layers[i].visible).collect();
+        if visible.len() < 2 {
+            return false;
+        }
+        let merged = self.merged_visible_layer("Merged");
+        let mut edits = Vec::new();
+        for &i in visible.iter().rev() {
+            let layer = self.layers.remove(i);
+            edits.push(Edit::RemoveLayer { index: i, layer });
+        }
+        let index = visible[0];
+        self.layers.insert(index, merged);
+        edits.push(Edit::AddLayer { index });
+        self.active = index;
+        self.all_dirty = true;
+        self.record_batch(edits, "Merge visible");
+        true
+    }
+
+    /// Put a merged copy of all visible layers in a new layer (on top), keeping the originals.
+    pub fn merge_visible_to_new(&mut self) {
+        let merged = self.merged_visible_layer("Merged");
+        let index = self.layers.len();
+        self.layers.push(merged);
+        self.active = index;
+        self.all_dirty = true;
+        self.history.seal();
+        self.history.record(Edit::AddLayer { index });
+        self.history.relabel_last("Merge visible to new layer");
+        self.history.seal();
+    }
+
+    fn merged_visible_layer(&mut self, name: &str) -> Layer {
+        let n = self.width * self.height;
+        let pixels: Vec<[f32; 4]> = (0..n)
+            .map(|i| {
+                let mut p = [0.0f32; 4];
+                for layer in self.layers.iter().filter(|l| l.visible && l.opacity > 0.0) {
+                    p = over(scale(layer.canvas.combined(i), layer.opacity), p);
+                }
+                p
+            })
+            .collect();
+        let mut layer = self.new_layer(name);
+        layer.canvas.set_pixels(pixels, None);
+        layer.canvas.take_changed();
+        layer
+    }
+
+    /// Erase everything on the current layer (one undo step).
+    pub fn clear_active_layer(&mut self) -> bool {
+        let i = self.active;
+        let canvas = &mut self.layers[i].canvas;
+        if !canvas.dry_pixels().iter().any(|p| p[3] > 0.0) && !canvas.has_wet_paint() {
+            return false;
+        }
+        let n = self.width * self.height;
+        let (mut dry, mut wet) = (vec![[0.0; 4]; n], vec![[0.0; 4]; n]);
+        canvas.swap_buffers(&mut dry, &mut wet);
+        self.all_dirty = true;
+        self.history.seal();
+        self.history.record(Edit::Wetness { layers: vec![(i, (dry, wet))], label: "Clear layer" });
+        self.history.seal();
+        true
+    }
+
+    pub fn set_locked(&mut self, index: usize, locked: bool) {
+        let f = LayerFlagSet { locked, ..self.layers[index].flags() };
+        self.change_flags(vec![(index, f)], "Lock layer");
+    }
+
+    pub fn set_lock_transparency(&mut self, index: usize, on: bool) {
+        let f = LayerFlagSet { lock_transparency: on, ..self.layers[index].flags() };
+        self.change_flags(vec![(index, f)], "Lock transparency");
+    }
+
+    /// Make a layer the tracing layer (only one at a time; it's locked while
+    /// tracing), or turn tracing off.
+    pub fn set_tracing(&mut self, index: usize, on: bool) {
+        let mut changes = Vec::new();
+        for (i, layer) in self.layers.iter().enumerate() {
+            if i != index && layer.tracing {
+                changes.push((i, LayerFlagSet { tracing: false, ..layer.flags() }));
+            }
+        }
+        let f = self.layers[index].flags();
+        changes.push((index, LayerFlagSet { tracing: on, locked: on || f.locked, ..f }));
+        self.change_flags(changes, "Tracing layer");
+    }
+
+    /// The tracing layer, if there is one.
+    pub fn tracing_layer(&self) -> Option<usize> {
+        self.layers.iter().position(|l| l.tracing)
+    }
+
+    /// The tracing image's color at (x, y), if there's a tracing layer with paint there.
+    pub fn tracing_color(&self, x: f32, y: f32) -> Option<Color> {
+        let layer = &self.layers[self.tracing_layer()?];
+        if x < 0.0 || y < 0.0 {
+            return None;
+        }
+        let c = layer.canvas.pixel(x as usize, y as usize)?;
+        (c.a > 0.1).then_some(Color { a: 1.0, ..c })
+    }
+
+    fn change_flags(&mut self, changes: Vec<(usize, LayerFlagSet)>, label: &'static str) {
+        let mut edits = Vec::new();
+        for (i, f) in changes {
+            let before = self.layers[i].flags();
+            if before != f {
+                self.layers[i].set_flags(f);
+                edits.push(Edit::LayerFlags { layer: i, flags: before });
+            }
+        }
+        if !edits.is_empty() {
+            self.all_dirty = true;
+            self.record_batch(edits, label);
+        }
+    }
+
+    fn record_batch(&mut self, edits: Vec<Edit>, label: &'static str) {
+        self.history.seal();
+        self.history.record(Edit::Batch { edits, label });
+        self.history.seal();
+    }
+
+    // ----- Transform (move / scale / rotate / flip a layer) -----
+
+    /// Start transforming the current layer. Returns the box around its
+    /// paint (the transform's starting frame), or None if the layer is
+    /// empty or locked.
+    pub fn begin_transform(&mut self) -> Option<Region> {
+        if let Some(t) = &self.transforming {
+            return Some(t.bounds);
+        }
+        let layer = &self.layers[self.active];
+        if layer.locked {
+            return None;
+        }
+        let (dry, wet) = (layer.canvas.dry_pixels().to_vec(), layer.canvas.wet_pixels().to_vec());
+        let bounds = match (transform::content_bounds(&dry, self.width), transform::content_bounds(&wet, self.width)) {
+            (Some(a), Some(b)) => a.union(b),
+            (a, b) => a.or(b)?,
+        };
+        let has_wet = layer.canvas.has_wet_paint();
+        self.history.seal();
+        self.transforming = Some(TransformSource { layer: self.active, dry, wet, has_wet, bounds, current: Transform::default() });
+        Some(bounds)
+    }
+
+    pub fn is_transforming(&self) -> bool {
+        self.transforming.is_some()
+    }
+
+    /// Show the layer with this transform (call as often as you like; it
+    /// always resamples from the original paint).
+    pub fn preview_transform(&mut self, t: &Transform) {
+        let Some(src) = &mut self.transforming else { return };
+        if src.current == *t {
+            return;
+        }
+        src.current = *t;
+        let (w, h) = (self.width, self.height);
+        let mut dry = if t.is_identity() { src.dry.clone() } else { transform::resample(&src.dry, w, h, src.bounds, t) };
+        let mut wet = if !src.has_wet {
+            vec![[0.0; 4]; w * h]
+        } else if t.is_identity() {
+            src.wet.clone()
+        } else {
+            transform::resample(&src.wet, w, h, src.bounds, t)
+        };
+        self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+    }
+
+    /// Keep the transform as one undo step.
+    pub fn apply_transform(&mut self) -> bool {
+        let Some(src) = self.transforming.take() else { return false };
+        if src.current.is_identity() {
+            // Nothing changed: put the exact original back (no resampling blur).
+            let (mut dry, mut wet) = (src.dry, src.wet);
+            self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+            return false;
+        }
+        self.history.seal();
+        self.history.record(Edit::Wetness { layers: vec![(src.layer, (src.dry, src.wet))], label: "Transform" });
+        self.history.seal();
+        true
+    }
+
+    /// Throw the transform away and put the layer back as it was.
+    pub fn cancel_transform(&mut self) -> bool {
+        let Some(src) = self.transforming.take() else { return false };
+        let (mut dry, mut wet) = (src.dry, src.wet);
+        self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+        true
+    }
+
+    /// Transform the current layer in one go (for scripts and agents).
+    /// `fit` = Some(false) fits the paint inside the canvas, Some(true) fills it.
+    pub fn transform_layer(&mut self, t: Transform, fit: Option<bool>) -> Result<Transform, &'static str> {
+        if self.layers[self.active].locked {
+            return Err("The layer is locked.");
+        }
+        let bounds = self.begin_transform().ok_or("The layer is empty.")?;
+        let t = match fit {
+            Some(fill) => t.fitted(bounds, self.width, self.height, fill),
+            None => t,
+        };
+        self.preview_transform(&t);
+        self.apply_transform();
+        Ok(t)
+    }
+
     // ----- Surface (paper texture) -----
 
     pub fn surface(&self) -> &Paper {
@@ -396,6 +710,10 @@ impl Document {
     }
 
     pub fn undo(&mut self) {
+        // Undo while transforming = cancel the transform.
+        if self.cancel_transform() {
+            return;
+        }
         if let Some((id, edit)) = self.history.pop_undo() {
             let inverse = self.flip(edit);
             self.history.push_redo(id, inverse);
@@ -403,6 +721,9 @@ impl Document {
     }
 
     pub fn redo(&mut self) {
+        if self.cancel_transform() {
+            return;
+        }
         if let Some((id, edit)) = self.history.pop_redo() {
             let inverse = self.flip(edit);
             self.history.push_undo(id, inverse);
@@ -443,7 +764,8 @@ impl Document {
             }
             Edit::AddLayer { index } => {
                 let layer = self.layers.remove(index);
-                self.active = index.saturating_sub(1).min(self.layers.len() - 1);
+                // Can briefly be empty mid-batch (undoing Merge Visible).
+                self.active = index.saturating_sub(1).min(self.layers.len().saturating_sub(1));
                 Edit::RemoveLayer { index, layer }
             }
             Edit::RemoveLayer { index, mut layer } => {
@@ -469,6 +791,16 @@ impl Document {
             Edit::Rename { layer, before, after } => {
                 self.layers[layer].name = before.clone();
                 Edit::Rename { layer, before: after, after: before }
+            }
+            Edit::LayerFlags { layer, flags } => {
+                let current = self.layers[layer].flags();
+                self.layers[layer].set_flags(flags);
+                Edit::LayerFlags { layer, flags: current }
+            }
+            Edit::Batch { edits, label } => {
+                // Undo the parts in reverse order; the result redoes them in order.
+                let inverse = edits.into_iter().rev().map(|e| self.flip(e)).collect();
+                Edit::Batch { edits: inverse, label }
             }
             Edit::Surface { before, after } => {
                 self.apply_surface(before);
@@ -509,6 +841,21 @@ impl Document {
         Some(Color { r: p[0], g: p[1], b: p[2], a: 1.0 })
     }
 
+    /// The finished color at pixel `i` (premultiplied, opaque) plus how much
+    /// paint covers it, in one pass over the layers.
+    fn composite_and_coverage(&self, i: usize) -> ([f32; 4], f32) {
+        let mut out = premultiply(Color { a: 1.0, ..self.paper });
+        let mut coverage = 0.0;
+        for layer in &self.layers {
+            if layer.visible && layer.opacity > 0.0 {
+                let p = scale(layer.canvas.combined(i), layer.opacity);
+                out = over(p, out);
+                coverage = p[3] + coverage * (1.0 - p[3]);
+            }
+        }
+        (out, coverage)
+    }
+
     fn composite_at(&self, i: usize) -> [f32; 4] {
         let mut out = premultiply(Color { a: 1.0, ..self.paper });
         for layer in &self.layers {
@@ -547,8 +894,8 @@ impl Document {
                 let x = region.x0 + col;
                 let i = y * self.width + x;
                 let p = if include_paper {
-                    let p = self.composite_at(i);
-                    let s = self.surface.shade_at(x, y);
+                    let (p, coverage) = self.composite_and_coverage(i);
+                    let s = self.surface.visible_shade_at(x, y, coverage);
                     [p[0] * s, p[1] * s, p[2] * s, 1.0]
                 } else {
                     // Layers only, over nothing.
@@ -579,7 +926,7 @@ impl Document {
         (0..self.width * self.height)
             .into_par_iter()
             .map(|i| {
-                let s = self.surface.shade_at(i % self.width, i / self.width);
+                let s = self.surface.visible_shade_at(i % self.width, i / self.width, 0.0);
                 [paper.r * s, paper.g * s, paper.b * s, 1.0]
             })
             .collect()
@@ -598,9 +945,10 @@ impl Document {
             for (col, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = region.x0 + col;
                 let i = y * self.width + x;
-                let mut p = self.composite_at(i);
-                // Light the surface relief: paper and thin paint follow its texture.
-                let shade = self.surface.shade_at(x, y);
+                let (mut p, coverage) = self.composite_and_coverage(i);
+                // Light the surface relief: strong on bare paper, softer through
+                // paint (paper vs. paint texture visibility).
+                let shade = self.surface.visible_shade_at(x, y, coverage);
                 if shade != 1.0 {
                     p = [p[0] * shade, p[1] * shade, p[2] * shade, p[3]];
                 }
@@ -869,6 +1217,90 @@ mod tests {
         assert_eq!(with_paper[0], [1.0, 1.0, 1.0, 1.0], "corner shows the paper");
         assert_eq!(without[0][3], 0.0, "corner is transparent without paper");
         assert_eq!(without[10 * 20 + 10], [1.0, 0.0, 0.0, 1.0], "paint stays");
+    }
+
+    #[test]
+    fn duplicate_merge_and_clear_are_undoable() {
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        paint_dot(&mut doc, 6.0, 10.0, Color::BLACK);
+        doc.duplicate_active_layer();
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(doc.layers()[1].name, "Layer 1 copy");
+        assert_eq!(doc.undo_description(), Some("Duplicate layer"));
+
+        doc.add_layer();
+        paint_dot(&mut doc, 14.0, 10.0, RED);
+        let looks = (doc.composite_pixel(6, 10), doc.composite_pixel(14, 10));
+        assert!(doc.merge_down());
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!((doc.composite_pixel(6, 10), doc.composite_pixel(14, 10)), looks, "merging doesn't change the picture");
+        doc.undo();
+        assert_eq!(doc.layers().len(), 3, "undo brings the merged layer back");
+        doc.redo();
+        assert_eq!(doc.layers().len(), 2);
+
+        assert!(doc.merge_visible());
+        assert_eq!(doc.layers().len(), 1);
+        assert_eq!((doc.composite_pixel(6, 10), doc.composite_pixel(14, 10)), looks);
+        doc.undo();
+        assert_eq!(doc.layers().len(), 2);
+
+        assert!(doc.clear_active_layer());
+        doc.undo();
+        assert_eq!(doc.composite_pixel(14, 10), Some(RED), "clear is undoable");
+    }
+
+    #[test]
+    fn transform_previews_applies_and_undoes() {
+        let mut doc = Document::new(40, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, RED);
+        assert_eq!(doc.begin_transform().map(|b| b.x0 < 10 && b.x1 > 10), Some(true));
+        doc.preview_transform(&Transform { dx: 20.0, ..Transform::default() });
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED), "moved");
+        assert!(doc.cancel_transform());
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED), "cancel puts it back");
+
+        doc.begin_transform();
+        doc.preview_transform(&Transform { dx: 20.0, ..Transform::default() });
+        assert!(doc.apply_transform());
+        assert_eq!(doc.undo_description(), Some("Transform"));
+        doc.undo();
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        assert_ne!(doc.composite_pixel(30, 10), Some(RED));
+
+        // Undo during a transform cancels it rather than undoing the step before.
+        doc.redo();
+        doc.begin_transform();
+        doc.preview_transform(&Transform { dy: 5.0, ..Transform::default() });
+        doc.undo();
+        assert!(!doc.is_transforming());
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED));
+
+        doc.add_layer();
+        assert!(doc.transform_layer(Transform::default(), None).is_err(), "empty layer");
+    }
+
+    #[test]
+    fn locks_and_tracing() {
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, RED);
+        doc.set_locked(0, true);
+        assert!(!doc.can_paint_active());
+        doc.undo();
+        assert!(doc.can_paint_active());
+
+        doc.set_tracing(0, true);
+        assert_eq!(doc.tracing_layer(), Some(0));
+        assert!(doc.layers()[0].locked && !doc.can_paint_active(), "tracing layers are locked");
+        assert_eq!(doc.tracing_color(10.0, 10.0), Some(RED));
+        assert_eq!(doc.tracing_color(1.0, 1.0), None, "no paint there");
+        // Only one tracing layer at a time.
+        doc.add_layer();
+        doc.set_tracing(1, true);
+        assert_eq!(doc.tracing_layer(), Some(1));
+        assert!(!doc.layers()[0].tracing);
+        doc.undo();
+        assert_eq!(doc.tracing_layer(), Some(0));
     }
 
     #[test]

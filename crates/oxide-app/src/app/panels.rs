@@ -1,10 +1,10 @@
 //! The side panels: Tools, Properties, Brush presets (left) and
 //! Navigator, Color, Layers (right).
 
-use eframe::egui::{self, Color32, CollapsingHeader, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
-use oxide_engine::Color;
+use eframe::egui::{self, Color32, CollapsingHeader, Sense, Stroke as LineStroke, StrokeKind, Vec2};
+use oxide_engine::{Color, PaintMode};
 
-use super::canvas_view::canvas_rect;
+use super::canvas_view::view_xform;
 use super::{OxideApp, to_color32};
 use crate::color_wheel::color_wheel;
 use crate::presets::{THUMB_H, THUMB_W};
@@ -49,6 +49,7 @@ impl OxideApp {
 
     fn properties_section(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
+        let mut clicked_mode = None;
         ui.horizontal(|ui| {
             if tool.paints() {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(40.0, 22.0), Sense::hover());
@@ -76,10 +77,32 @@ impl OxideApp {
         }
 
         if tool.is_wet_medium() {
+            // Paint modes (keys 1–5; V toggles Blend, A toggles Erase).
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let modes = [
+                    (Some(PaintMode::Paint), "1 Paint", "Lay the color down without mixing it with what's on the canvas"),
+                    (Some(PaintMode::PaintMix), "2 Mix", "Paint & Mix: firm pressure paints, light pressure mixes with the wet paint"),
+                    (Some(PaintMode::PaintBlend), "3 Blend+", "Paint & Blend: firm pressure paints, light pressure only blends"),
+                    (Some(PaintMode::Blend), "4 Blend", "No paint of its own: light pressure blends, firm pressure smudges (V toggles)"),
+                    (None, "5 Erase", "Remove paint (A toggles)"),
+                ];
+                for (mode, label, hint) in modes {
+                    let active = match mode {
+                        Some(m) => !state.erase && state.paint_mode == m,
+                        None => state.erase,
+                    };
+                    if ui.selectable_label(active, label).on_hover_text(hint).clicked() {
+                        clicked_mode = Some(mode);
+                    }
+                }
+            });
             // another app's combined Oils & Acrylics: oiliness is what makes it
             // behave more like oil (blends, drags) or acrylic (covers).
             ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
-                .on_hover_text("How much paint the brush holds. 1 = never runs out; lower = the stroke runs dry");
+                .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
+            ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
+                .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
             ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
                 .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
             ui.horizontal(|ui| {
@@ -107,6 +130,13 @@ impl OxideApp {
             let mut off = false;
             ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
                 .on_disabled_hover_text("Load several colors on the brush: coming later");
+        }
+        if let Some(mode) = clicked_mode {
+            self.set_paint_mode(mode);
+        }
+        if tool.paints() || tool == Tool::Smudge {
+            ui.add(egui::Slider::new(&mut self.mouse_pressure, 0.05..=1.0).text("Pressure"))
+                .on_hover_text("Pressure used when painting with a mouse (the pen uses its real pressure)");
         }
     }
 
@@ -174,22 +204,26 @@ impl OxideApp {
         let (thumb, response) = ui.allocate_exact_size(canvas_size * thumb_scale, Sense::click_and_drag());
         self.texture.paint(&ui.painter_at(thumb), thumb);
 
-        // Outline the part of the canvas that's visible in the workspace.
+        // Outline the part of the canvas that's visible in the workspace
+        // (a rotated box when the view is rotated).
         let workspace = self.last_workspace;
         if workspace.is_positive() {
-            let (canvas_on_screen, scale) = canvas_rect(&mut self.view, workspace, canvas_size, 24.0);
-            let visible = workspace.intersect(canvas_on_screen);
-            if visible.is_positive() {
-                let to_thumb = |p: egui::Pos2| thumb.min + (p - canvas_on_screen.min) / scale * thumb_scale;
-                let frame = Rect::from_min_max(to_thumb(visible.min), to_thumb(visible.max));
-                ui.painter().rect_stroke(frame, 0.0, LineStroke::new(1.5, Color32::from_rgb(52, 132, 228)), StrokeKind::Inside);
-            }
+            let xf = view_xform(&mut self.view, workspace, canvas_size, 24.0);
+            let to_thumb = |canvas: Vec2| thumb.min + canvas * thumb_scale;
+            let mut outline: Vec<egui::Pos2> = [workspace.left_top(), workspace.right_top(), workspace.right_bottom(), workspace.left_bottom()]
+                .iter()
+                .map(|c| to_thumb(xf.to_canvas(*c)))
+                .collect();
+            outline.push(outline[0]);
+            ui.painter_at(thumb).add(egui::Shape::line(outline, LineStroke::new(1.5, Color32::from_rgb(52, 132, 228))));
 
             // Click or drag in the navigator to move the view there.
             if let (true, Some(pos)) = (response.is_pointer_button_down_on(), response.interact_pointer_pos()) {
-                self.view.unfit();
                 let target = (pos - thumb.min) / thumb_scale; // canvas pixels
-                self.view.pan = (canvas_size / 2.0 - target) * self.view.zoom;
+                if self.view.fit {
+                    self.view.unfit();
+                }
+                self.view.keep_point_at(workspace, canvas_size, target, workspace.center());
             }
         }
 
@@ -202,10 +236,10 @@ impl OxideApp {
             }
         });
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.view.fit, "Fit").clicked() {
+            if ui.selectable_label(self.view.fit, "Fit").on_hover_text("Fit to screen (. or ⌘0)").clicked() {
                 self.view.fit = true;
             }
-            if ui.button("100%").clicked() {
+            if ui.button("100%").on_hover_text("Actual size (0 or ⌘1)").clicked() {
                 self.view.actual_size();
             }
             if ui.button("−").clicked() {
@@ -215,6 +249,38 @@ impl OxideApp {
                 self.view.zoom_by(1.25);
             }
         });
+
+        // Rotate / flip / greyscale: the view only, never the painting.
+        let mut rotation = self.view.rotation;
+        let mut rotate_by = 0.0;
+        let mut reset = false;
+        let mut flip = false;
+        ui.horizontal(|ui| {
+            if ui.button("⟲").on_hover_text("Rotate view left 15° (⌘⌥←)").clicked() {
+                rotate_by = -15.0;
+            }
+            if ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).suffix("°").max_decimals(0)).on_hover_text("Rotate the view (or hold R and drag on the canvas)").changed() {
+                rotate_by = rotation - self.view.rotation;
+            }
+            if ui.button("⟳").on_hover_text("Rotate view right 15° (⌘⌥→)").clicked() {
+                rotate_by = 15.0;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.add_enabled(self.view.rotation != 0.0, egui::Button::new("Reset")).on_hover_text("Reset rotation (⌘⌥0)").clicked() {
+                reset = true;
+            }
+            if ui.selectable_label(self.view.flip, "Flip").on_hover_text("Mirror the view left-right (Shift+F): check your drawing with fresh eyes").clicked() {
+                flip = true;
+            }
+            let mut grey = self.texture.greyscale();
+            if ui.checkbox(&mut grey, "Greyscale").on_hover_text("See values without color (G)").changed() {
+                self.texture.set_greyscale(&self.document, grey);
+            }
+        });
+        if rotate_by != 0.0 || reset || flip {
+            self.change_view(rotate_by, flip, reset);
+        }
     }
 
     fn color_section(&mut self, ui: &mut egui::Ui) {

@@ -1,0 +1,25 @@
+# A tiny landscape study, driven by JSON commands
+{"command": "new_painting", "width": 600, "height": 400, "paper": "canvas", "paper_depth": 0.5}
+{"command": "set_tool", "tool": "oils"}
+{"command": "set_brush", "size": 40, "oiliness": 0.5, "roundness": 0.4, "rotation": "follow_stroke", "streaks": 0.6, "roughness": 0.4}
+{"command": "set_color", "pigment": "Cerulean Blue"}
+{"command": "stroke", "points": [[20, 40], [580, 50]]}
+{"command": "stroke", "points": [[20, 100], [580, 90]]}
+{"command": "set_color", "pigment": "Titanium White"}
+{"command": "stroke", "points": [[150, 70], [300, 80, 0.5], [420, 60]], "smooth": true}
+{"command": "set_color", "pigment": "Sap Green"}
+{"command": "stroke", "points": [[20, 260], [200, 230], [400, 250], [580, 240]], "smooth": true}
+{"command": "set_color", "pigment": "Yellow Ochre"}
+{"command": "stroke", "points": [[20, 320], [580, 300]]}
+{"command": "set_color", "pigment": "Ultramarine Blue"}
+{"command": "stroke", "points": [[20, 370], [580, 360]]}
+{"command": "set_color", "pigment": "Cadmium Yellow"}
+{"command": "stroke", "points": [[200, 370], [300, 330, 0.7], [400, 370]], "smooth": true}
+{"command": "add_layer", "name": "Ink"}
+{"command": "set_tool", "tool": "ink"}
+{"command": "set_color", "hex": "#1A1A1A"}
+{"command": "set_brush", "size": 3}
+{"command": "stroke", "points": [[450, 250, 0.2], [455, 180, 0.8], [460, 120, 0.3]], "smooth": true}
+{"command": "info"}
+{"command": "export", "path": "agent-study.png"}
+{"command": "save", "path": "agent-study.oxide"}

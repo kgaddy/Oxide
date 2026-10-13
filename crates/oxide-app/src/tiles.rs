@@ -18,6 +18,8 @@ pub struct TiledTexture {
     columns: usize,
     /// Row by row: tile (col, row) is at `row * columns + col`.
     tiles: Vec<egui::TextureHandle>,
+    /// Show the painting in greyscale (a view setting, for judging values).
+    greyscale: bool,
 }
 
 impl TiledTexture {
@@ -30,10 +32,22 @@ impl TiledTexture {
         for row in 0..rows {
             for col in 0..columns {
                 let region = tile_region(col, row, width, height);
-                tiles.push(ctx.load_texture(format!("canvas-{col}-{row}"), image(document, region), egui::TextureOptions::LINEAR));
+                tiles.push(ctx.load_texture(format!("canvas-{col}-{row}"), image(document, region, false), egui::TextureOptions::LINEAR));
             }
         }
-        TiledTexture { ctx: ctx.clone(), width, height, columns, tiles }
+        TiledTexture { ctx: ctx.clone(), width, height, columns, tiles, greyscale: false }
+    }
+
+    pub fn greyscale(&self) -> bool {
+        self.greyscale
+    }
+
+    /// Switch the greyscale view on or off (re-uploads everything).
+    pub fn set_greyscale(&mut self, document: &Document, on: bool) {
+        if on != self.greyscale {
+            self.greyscale = on;
+            self.update(document, document.bounds());
+        }
     }
 
     /// Does this still match the document's size? (If not, make a new one.)
@@ -44,7 +58,11 @@ impl TiledTexture {
     /// Re-upload the part of each tile that overlaps `changed`.
     pub fn update(&mut self, document: &Document, changed: Region) {
         if !self.fits(document) {
+            let greyscale = self.greyscale;
             *self = TiledTexture::new(&self.ctx, document);
+            if greyscale {
+                self.set_greyscale(document, true);
+            }
             return;
         }
         let (c0, c1) = (changed.x0 / TILE, (changed.x1.saturating_sub(1)) / TILE);
@@ -57,7 +75,7 @@ impl TiledTexture {
                     continue;
                 }
                 let offset = [part.x0 - tile.x0, part.y0 - tile.y0];
-                self.tiles[row * self.columns + col].set_partial(offset, image(document, part), egui::TextureOptions::LINEAR);
+                self.tiles[row * self.columns + col].set_partial(offset, image(document, part, self.greyscale), egui::TextureOptions::LINEAR);
             }
         }
     }
@@ -82,6 +100,35 @@ impl TiledTexture {
     }
 }
 
+impl TiledTexture {
+    /// Draw the painting placed by a view transform (rotated / flipped), one
+    /// textured quad per tile.
+    pub fn paint_xform(&self, painter: &egui::Painter, xf: &crate::app::ViewXform) {
+        for (i, texture) in self.tiles.iter().enumerate() {
+            let (col, row) = (i % self.columns, i / self.columns);
+            let t = tile_region(col, row, self.width, self.height);
+            let corners = [
+                (egui::vec2(t.x0 as f32, t.y0 as f32), Pos2::new(0.0, 0.0)),
+                (egui::vec2(t.x1 as f32, t.y0 as f32), Pos2::new(1.0, 0.0)),
+                (egui::vec2(t.x1 as f32, t.y1 as f32), Pos2::new(1.0, 1.0)),
+                (egui::vec2(t.x0 as f32, t.y1 as f32), Pos2::new(0.0, 1.0)),
+            ];
+            let points: Vec<Pos2> = corners.iter().map(|(c, _)| xf.to_screen(*c)).collect();
+            let bounds = Rect::from_points(&points);
+            if !painter.clip_rect().intersects(bounds) {
+                continue;
+            }
+            let mut mesh = egui::Mesh::with_texture(texture.id());
+            for ((_, uv), pos) in corners.iter().zip(&points) {
+                mesh.vertices.push(egui::epaint::Vertex { pos: *pos, uv: *uv, color: Color32::WHITE });
+            }
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
+}
+
 fn tile_region(col: usize, row: usize, width: usize, height: usize) -> Region {
     Region::new(col * TILE, row * TILE, ((col + 1) * TILE).min(width), ((row + 1) * TILE).min(height))
 }
@@ -91,8 +138,34 @@ fn intersect(a: Region, b: Region) -> Region {
     if r.x0 >= r.x1 || r.y0 >= r.y1 { Region::new(0, 0, 0, 0) } else { r }
 }
 
-fn image(document: &Document, region: Region) -> egui::ColorImage {
-    egui::ColorImage::from_rgba_unmultiplied([region.width(), region.height()], &document.composite_rgba8(region))
+fn image(document: &Document, region: Region, greyscale: bool) -> egui::ColorImage {
+    let mut bytes = document.composite_rgba8(region);
+    if greyscale {
+        to_greyscale(&mut bytes);
+    }
+    egui::ColorImage::from_rgba_unmultiplied([region.width(), region.height()], &bytes)
+}
+
+/// Replace each pixel with its luminance (computed in linear light, so the
+/// values match what you'd see in a black-and-white photo of the painting).
+fn to_greyscale(rgba: &mut [u8]) {
+    let lut = linear_lut();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let y = 0.2126 * lut[px[0] as usize] + 0.7152 * lut[px[1] as usize] + 0.0722 * lut[px[2] as usize];
+        let v = if y <= 0.0031308 { y * 12.92 } else { 1.055 * y.powf(1.0 / 2.4) - 0.055 };
+        let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        px[0] = g;
+        px[1] = g;
+        px[2] = g;
+    }
+}
+
+/// sRGB byte → linear light, precomputed.
+fn linear_lut() -> [f32; 256] {
+    std::array::from_fn(|i| {
+        let c = i as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    })
 }
 
 #[cfg(test)]
@@ -111,6 +184,16 @@ mod tests {
             })
             .sum();
         assert_eq!(area, w * h);
+    }
+
+    #[test]
+    fn greyscale_keeps_values() {
+        let mut px = [255, 255, 255, 255, 0, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255];
+        to_greyscale(&mut px);
+        assert_eq!(&px[0..3], &[255, 255, 255]);
+        assert_eq!(&px[4..7], &[0, 0, 0]);
+        // Pure red reads as a darkish mid grey, pure blue as nearly black: like a B&W photo.
+        assert!(px[8] > px[12] && px[8] == px[9] && px[9] == px[10], "{px:?}");
     }
 
     #[test]

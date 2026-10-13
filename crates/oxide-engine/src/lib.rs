@@ -15,8 +15,9 @@ mod region;
 mod spectral;
 mod stroke;
 mod tip;
+mod transform;
 
-pub use brush::{Brush, Rotation};
+pub use brush::{Brush, PaintMode, Rotation};
 pub use canvas::{Canvas, Color, DabMode, DabStyle, Wetness};
 pub use document::{DEFAULT_DPI, Document, Layer};
 pub use file::FileError;
@@ -30,3 +31,4 @@ pub use paper::{Paper, PaperKind, PaperSettings, surface_acceptance};
 pub use region::Region;
 pub use stroke::{Stroke, StrokePoint};
 pub use tip::DabTexture;
+pub use transform::Transform;

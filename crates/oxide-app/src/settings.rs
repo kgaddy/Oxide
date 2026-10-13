@@ -114,8 +114,23 @@ pub struct AppSettings {
     pub pressure_curve: f32,
     /// Last-used export format and options.
     pub export: crate::export::ExportOptions,
+    /// The last folder used by each kind of file dialog, kept separate so
+    /// e.g. importing a palette doesn't change where exports are saved.
+    pub last_folders: std::collections::BTreeMap<String, PathBuf>,
     /// Mix colors like real paint (blue + yellow = green) instead of like light.
     pub natural_colors: bool,
+    /// The photo in the Reference Image window, and whether the window is open.
+    pub reference_image: Option<PathBuf>,
+    pub reference_open: bool,
+    /// Stroke smoothing 0..=1 (the stabilizer's string length).
+    pub stroke_smoothing: f32,
+    /// Pressure smoothing 0..=1.
+    pub pressure_smoothing: f32,
+    /// Flip the pen's tilt direction, and turn it by an offset (degrees).
+    pub invert_tilt: bool,
+    pub tilt_offset: f32,
+    /// Flip the direction of barrel rotation.
+    pub invert_rotation: bool,
 }
 
 impl Default for AppSettings {
@@ -128,8 +143,16 @@ impl Default for AppSettings {
             last_new_artwork: None,
             custom_paper_colors: Vec::new(),
             pressure_curve: 0.6,
+            last_folders: std::collections::BTreeMap::new(),
             export: crate::export::ExportOptions::default(),
             natural_colors: true,
+            reference_image: None,
+            reference_open: false,
+            stroke_smoothing: 0.0,
+            pressure_smoothing: 0.0,
+            invert_tilt: false,
+            tilt_offset: 0.0,
+            invert_rotation: false,
         }
     }
 }
@@ -168,6 +191,51 @@ impl AppSettings {
             self.favorite_sizes.retain(|n| n != name);
         } else {
             self.favorite_sizes.push(name.to_string());
+        }
+    }
+}
+
+/// Kinds of file dialogs, each with its own remembered folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogFolder {
+    /// Open / Save / Save As for .oxide paintings.
+    Paintings,
+    /// Export (PNG, JPEG, TIFF, PSD, …).
+    Exports,
+    /// Import Image as Layer, Open Reference Image.
+    Images,
+}
+
+impl DialogFolder {
+    fn key(self) -> &'static str {
+        match self {
+            DialogFolder::Paintings => "paintings",
+            DialogFolder::Exports => "exports",
+            DialogFolder::Images => "images",
+        }
+    }
+
+    /// Where a dialog of this kind starts the very first time.
+    fn default_folder(self) -> Option<PathBuf> {
+        match self {
+            DialogFolder::Paintings => dirs::document_dir(),
+            DialogFolder::Exports | DialogFolder::Images => dirs::picture_dir(),
+        }
+        .or_else(dirs::home_dir)
+    }
+}
+
+impl AppSettings {
+    /// The folder a dialog of this kind should open in: the last one used
+    /// (if it still exists), otherwise a sensible default.
+    pub fn folder(&self, kind: DialogFolder) -> Option<PathBuf> {
+        self.last_folders.get(kind.key()).filter(|p| p.is_dir()).cloned().or_else(|| kind.default_folder())
+    }
+
+    /// Remember the folder of a file just chosen in a dialog of this kind.
+    pub fn remember_folder(&mut self, kind: DialogFolder, file: &std::path::Path) {
+        if let Some(dir) = file.parent() {
+            self.last_folders.insert(kind.key().to_string(), dir.to_path_buf());
         }
     }
 }
@@ -237,6 +305,19 @@ mod tests {
         assert_eq!(s.recent_files.len(), MAX_RECENT);
         assert_eq!(s.recent_files[0], PathBuf::from("/tmp/12.oxide"));
         assert_eq!(s.recent_files.iter().filter(|p| p.ends_with("12.oxide")).count(), 1);
+    }
+
+    #[test]
+    fn dialog_folders_are_remembered_separately() {
+        let mut s = AppSettings::default();
+        let tmp = std::env::temp_dir();
+        s.remember_folder(DialogFolder::Exports, &tmp.join("painting.png"));
+        assert_eq!(s.folder(DialogFolder::Exports), Some(tmp.clone()));
+        // Other kinds are untouched (they fall back to their defaults).
+        assert_ne!(s.folder(DialogFolder::Paintings), Some(tmp.clone()));
+        // A remembered folder that no longer exists falls back to the default.
+        s.remember_folder(DialogFolder::Images, std::path::Path::new("/definitely/not/here/x.png"));
+        assert_ne!(s.folder(DialogFolder::Images), Some(PathBuf::from("/definitely/not/here")));
     }
 
     #[test]

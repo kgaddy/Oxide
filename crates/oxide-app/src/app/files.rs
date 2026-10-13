@@ -9,6 +9,7 @@ use eframe::egui;
 use oxide_engine::{Color, Document, PaperSettings};
 
 use super::OxideApp;
+use crate::settings::DialogFolder;
 
 const OXIDE_FILTER: (&str, &[&str]) = ("Oxide painting", &["oxide"]);
 
@@ -127,7 +128,9 @@ impl OxideApp {
     }
 
     fn open_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1).pick_file() {
+        let dialog = self.dialog(DialogFolder::Paintings).add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1);
+        if let Some(path) = dialog.pick_file() {
+            self.remember_folder(DialogFolder::Paintings, &path);
             self.open_path(path);
         }
     }
@@ -157,13 +160,15 @@ impl OxideApp {
     }
 
     pub(super) fn save_as(&mut self) -> bool {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = self
+            .dialog(DialogFolder::Paintings)
             .add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1)
             .set_file_name(format!("{}.oxide", self.file_stem()))
             .save_file()
         else {
             return false;
         };
+        self.remember_folder(DialogFolder::Paintings, &path);
         self.save_to(&path.with_extension("oxide"))
     }
 
@@ -199,6 +204,21 @@ impl OxideApp {
         }
     }
 
+    /// A file dialog that starts in the remembered folder for its kind.
+    pub(super) fn dialog(&self, kind: DialogFolder) -> rfd::FileDialog {
+        let dialog = rfd::FileDialog::new();
+        match self.app_settings.folder(kind) {
+            Some(dir) => dialog.set_directory(dir),
+            None => dialog,
+        }
+    }
+
+    /// Remember where a dialog of this kind was last used.
+    pub(super) fn remember_folder(&mut self, kind: DialogFolder, file: &Path) {
+        self.app_settings.remember_folder(kind, file);
+        self.save_app_settings();
+    }
+
     pub(super) fn file_stem(&self) -> String {
         self.file_path
             .as_ref()
@@ -207,34 +227,24 @@ impl OxideApp {
     }
 
 
-    /// Put a PNG/JPEG on a new layer, centered (cropped if it's bigger than the canvas).
+    /// Put a PNG/JPEG on a new layer at its own size, centered, then go
+    /// straight into Transform to size and place it.
     pub(super) fn import_image(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg"]).pick_file() else {
+        let Some(path) = self.dialog(DialogFolder::Images).add_filter("Images", &["png", "jpg", "jpeg"]).pick_file() else {
             return;
         };
-        let img = match image::open(&path) {
-            Ok(img) => img.to_rgba8(),
-            Err(e) => return self.error(format!("Couldn't import {}: {e}", path.display())),
+        self.remember_folder(DialogFolder::Images, &path);
+        let (w, h) = (self.document.width(), self.document.height());
+        let pixels = match oxide_commands::import::image_layer_pixels(&path, w, h, false) {
+            Ok(pixels) => pixels,
+            Err(e) => return self.error(e),
         };
         let name = path.file_stem().map_or("Image".into(), |s| s.to_string_lossy().into_owned());
-        let (w, h) = (self.document.width() as i64, self.document.height() as i64);
-        let (iw, ih) = (img.width() as i64, img.height() as i64);
-        // Top-left corner that centers the image on the canvas (negative if it's larger).
-        let (ox, oy) = ((w - iw) / 2, (h - ih) / 2);
-
-        let mut pixels = vec![[0.0_f32; 4]; (w * h) as usize];
-        for (x, y, px) in img.enumerate_pixels() {
-            let (cx, cy) = (ox + x as i64, oy + y as i64);
-            if (0..w).contains(&cx) && (0..h).contains(&cy) {
-                let a = px[3] as f32 / 255.0;
-                let c = |v: u8| v as f32 / 255.0 * a; // premultiply
-                pixels[(cy * w + cx) as usize] = [c(px[0]), c(px[1]), c(px[2]), a];
-            }
-        }
         let mut layer = self.document.new_layer(&name);
         layer.canvas.set_pixels(pixels, None);
         self.document.insert_layer(layer);
-        self.info(format!("Imported {} as a new layer", path.display()));
+        self.start_transform();
+        self.info(format!("Imported {}. Drag the handles to size and place it, then press Enter.", path.display()));
     }
 
     /// The "Save changes?" dialog, shown while an action is pending.

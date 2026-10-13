@@ -271,7 +271,7 @@ pub fn render_preview(brush: &Brush, width: usize, height: usize) -> egui::Color
 
 /// A preset thumbnail: the shape with plain dark ink, independent of medium.
 fn thumbnail(preset: &BrushPreset) -> egui::ColorImage {
-    let ink = ToolState { shape: preset.shape(), opacity: 1.0, loading: 1.0, oiliness: 0.0 };
+    let ink = ToolState { shape: preset.shape(), ..Tool::Ink.default_state() };
     // (Ink is a dry medium, so the thumbnail shows only the shape and texture.)
     render_preview(&ink.brush(Tool::Ink, Color::rgb(0.15, 0.15, 0.18)), THUMB_W, THUMB_H)
 }

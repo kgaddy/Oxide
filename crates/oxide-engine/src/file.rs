@@ -53,6 +53,12 @@ struct LayerInfo {
     /// The layer's wet paint (same format as `pixels`), only if it has any.
     #[serde(default)]
     wet_pixels: Option<String>,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    lock_transparency: bool,
+    #[serde(default)]
+    tracing: bool,
 }
 
 /// Something went wrong reading or writing a file.
@@ -120,6 +126,9 @@ impl Document {
                     pixels: format!("layers/{i}.f32"),
                     // Only store wetness for layers that have wet paint.
                     wet_pixels: layer.canvas.has_wet_paint().then(|| format!("layers/{i}.wet.f32")),
+                    locked: layer.locked,
+                    lock_transparency: layer.lock_transparency(),
+                    tracing: layer.tracing,
                 })
                 .collect(),
         };
@@ -182,7 +191,15 @@ impl Document {
             let mut canvas = Canvas::new(manifest.width, manifest.height, Color::TRANSPARENT);
             canvas.set_pixels(dry, wet);
             canvas.take_changed();
-            layers.push(Layer { name: info.name.clone(), canvas, visible: info.visible, opacity: info.opacity });
+            canvas.set_preserve_alpha(info.lock_transparency);
+            layers.push(Layer {
+                name: info.name.clone(),
+                canvas,
+                visible: info.visible,
+                opacity: info.opacity,
+                locked: info.locked,
+                tracing: info.tracing,
+            });
         }
 
         let [r, g, b] = manifest.paper;
@@ -256,9 +273,18 @@ mod tests {
         doc.rename_layer(1, "Ink".into());
         doc.set_opacity(1, 0.5);
         doc.toggle_visible(1);
-        let linen = PaperSettings { kind: crate::PaperKind::Linen, scale: 1.5, depth: 0.7, light_angle: 200.0 };
+        let linen = PaperSettings {
+            kind: crate::PaperKind::Linen,
+            scale: 1.5,
+            depth: 0.7,
+            light_angle: 200.0,
+            paper_visibility: 0.6,
+            paint_visibility: 0.15,
+        };
         doc.set_surface(linen);
         doc.set_dpi(300.0);
+        doc.set_tracing(0, true);
+        doc.set_lock_transparency(1, true);
 
         let mut file = Cursor::new(Vec::new());
         doc.save(&mut file).unwrap();
@@ -269,6 +295,8 @@ mod tests {
         assert_eq!(loaded.paper(), paper);
         assert_eq!(loaded.surface().settings(), linen);
         assert_eq!(loaded.dpi(), 300.0);
+        assert!(loaded.layers()[0].tracing && loaded.layers()[0].locked, "tracing + lock saved");
+        assert!(loaded.layers()[1].lock_transparency(), "lock transparency saved");
         assert!(loaded.palette.is_none(), "no palette saved, none loaded");
         assert_eq!(loaded.layers().len(), 2);
         assert_eq!(loaded.active_index(), 1);

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::canvas::unpremultiply;
 use crate::paint::mix_paint;
 use crate::tip::{DabTexture, hash2};
-use crate::brush::Rotation;
+use crate::brush::{PaintMode, Rotation};
 use crate::paint::Mixing;
 use crate::spectral::Pigment;
 use crate::{Brush, Canvas, Color, DabMode, DabStyle, Wetness};
@@ -121,8 +121,9 @@ impl Stroke {
         let wet = (mode == DabMode::Paint && brush.is_wet()).then_some(WetPaint {
             color: tip.map_or(loaded, |c| Color { a: 1.0, ..c }),
             loaded,
-            amount: brush.loading.clamp(0.0, 1.0),
-            initial: brush.loading.clamp(0.0, 1.0),
+            // Blend mode carries no paint of its own.
+            amount: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
+            initial: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
             started: false,
         });
         // Until the brush moves, streaks follow the tip's angle.
@@ -286,12 +287,26 @@ impl Stroke {
         // distance between dabs measured in brush radii.
         let travel = (brush.step() / brush.radius.max(0.5)).min(1.0);
 
-        let oiliness = brush.oiliness.clamp(0.0, 1.0);
-        if under_alpha > 0.0 {
+        // Paint modes: how much fresh paint goes down and how oily (mixing) the
+        // brush acts, depending on pen pressure (a mouse is always 1).
+        let p = pressure.clamp(0.0, 1.0);
+        let base_oil = brush.oiliness.clamp(0.0, 1.0);
+        let (fresh, oiliness) = match brush.paint_mode {
+            // Pure color: no pickup, no smearing.
+            PaintMode::Paint => (1.0, 0.0),
+            // Light touch: less paint, more mixing. Full pressure = as set.
+            PaintMode::PaintMix => (0.4 + 0.6 * p, (base_oil * (1.0 + (1.0 - p) * 0.8)).min(1.0)),
+            // Light touch: blend only; firm: paint.
+            PaintMode::PaintBlend => (smoothstep(0.25, 0.85, p), base_oil + (1.0 - p) * (0.9 - base_oil).max(0.0)),
+            // No paint: light = soft blending, firm = smudging further.
+            PaintMode::Blend => (0.0, 0.35 + 0.6 * p),
+        };
+        let amount = wet.amount * fresh;
+        if under_alpha > 0.0 && oiliness > 0.0 {
             if !wet.started {
                 // Touching down in wet paint. An empty brush (smudge) becomes
                 // whatever it lands in; a loaded brush barely changes.
-                let touch = if wet.amount <= 0.0 { 1.0 } else { (1.0 - wet.amount) * oiliness };
+                let touch = if amount <= 0.0 { 1.0 } else { (1.0 - amount) * oiliness };
                 wet.color = mix_paint(wet.color, under_color, touch * under_alpha, brush.mixing);
             } else {
                 // Pick up some of the paint underneath.
@@ -304,13 +319,13 @@ impl Stroke {
         // picked-up color washes out again. As it runs dry this slows down
         // and the brush gets dirtier; oily paint also holds onto what it
         // picked up longer (it blends), while lean paint stays clean.
-        let refresh = (wet.amount * 0.6 * travel * (1.0 - oiliness * 0.7)).min(1.0);
+        let refresh = (amount * 0.6 * travel * (1.0 - oiliness * 0.7)).min(1.0);
         wet.color = mix_paint(wet.color, wet.loaded, refresh, brush.mixing);
 
         // Lay down paint: fresh paint from the brush, plus smeared paint that
         // oily brushes drag along even when they're out of fresh paint.
-        let smear = brush.oiliness.clamp(0.0, 1.0) * under_alpha;
-        let deposit = wet.amount + (1.0 - wet.amount) * smear;
+        let smear = oiliness * under_alpha;
+        let deposit = amount + (1.0 - amount) * smear;
         // A brush running low leaves broken, streaky marks: weak bristles go
         // dry first. "Low" is relative to what it started with, so a lightly
         // loaded brush starts clean and breaks up as it empties.
@@ -318,13 +333,15 @@ impl Stroke {
         let dryness = (1.0 - (left + (1.0 - left) * smear)).max(lift_dryness);
         let texture = DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness };
         // Prepare the brush color for pigment mixing on the canvas (once per dab).
-        let pigment = (brush.mixing == Mixing::Pigment).then(|| Pigment::from_srgb([wet.color.r, wet.color.g, wet.color.b]));
+        // (Paint mode covers instead of mixing with the wet paint underneath.)
+        let mixes_on_surface = brush.mixing == Mixing::Pigment && brush.paint_mode != PaintMode::Paint;
+        let pigment = mixes_on_surface.then(|| Pigment::from_srgb([wet.color.r, wet.color.g, wet.color.b]));
         let style = DabStyle {
             color: wet.color,
             opacity: brush.opacity * deposit * fade_opacity,
             mode: DabMode::Paint,
             // Oils leave wet paint; a smudge (no paint of its own) just moves paint.
-            wetness: if brush.loading > 0.0 { Wetness::Wet } else { Wetness::Keep },
+            wetness: if wet.initial > 0.0 { Wetness::Wet } else { Wetness::Keep },
             texture: Some(&texture),
             // A loaded brush fills the paper's valleys; as it dries it only
             // catches the peaks (dry-brush scumbling).
@@ -333,10 +350,15 @@ impl Stroke {
         };
         canvas.dab_with(x, y, brush, &style);
 
-        // Use up paint. Loading 1 never runs out.
-        let use_rate = (1.0 - brush.loading.clamp(0.0, 1.0)) * 0.12 * travel;
+        // Use up paint (only as much as actually went down). Length 1 never runs out.
+        let use_rate = (1.0 - brush.length.clamp(0.0, 1.0)) * 0.12 * travel * fresh;
         wet.amount *= 1.0 - use_rate;
     }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// How many dabs to hold back for the lift-off taper.
@@ -381,12 +403,14 @@ mod tests {
         assert!(!Brush::default().is_wet());
         assert!(Brush { oiliness: 0.3, ..Brush::default() }.is_wet());
         assert!(Brush { loading: 0.5, ..Brush::default() }.is_wet());
+        assert!(Brush { length: 0.5, ..Brush::default() }.is_wet());
+        assert!(Brush { wet_medium: true, ..Brush::default() }.is_wet());
     }
 
     #[test]
     fn low_loading_runs_dry() {
         let mut canvas = Canvas::new(400, 20, Color::TRANSPARENT);
-        let brush = Brush { radius: 5.0, loading: 0.3, spacing: 0.05, ..Brush::default() };
+        let brush = Brush { radius: 5.0, loading: 0.9, length: 0.3, spacing: 0.05, ..Brush::default() };
         line(&mut canvas, &brush, (10.0, 10.0), (390.0, 10.0));
         let start = canvas.pixel(15, 10).unwrap().a;
         let end = canvas.pixel(385, 10).unwrap().a;
@@ -422,7 +446,7 @@ mod tests {
 
         // RGB mixing here: this test is about the pickup *mechanics*.
         let oily_blue =
-            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.9, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.9, length: 0.9, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let stroke = line(&mut canvas, &oily_blue, (20.0, 10.0), (90.0, 10.0));
 
         // Just after passing through red, the blue paint is tinted red.
@@ -534,6 +558,53 @@ mod tests {
         assert!(purpleness(pigment) < 0.08, "pigment mix should be near neutral, got {pigment:?}");
         assert!(lightness(pigment) < 0.25, "pigment mix should be dark, got {pigment:?}");
         assert!(purpleness(pigment) < purpleness(rgb), "pigment {pigment:?} should be less purple than rgb {rgb:?}");
+    }
+
+    /// Wet red paint on the left half, for testing paint modes.
+    fn red_field() -> Canvas {
+        let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
+        let block = Brush { color: RED, radius: 60.0, hardness: 1.0, ..Brush::default() };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        canvas.dab_with(50.0, 20.0, &block, &wet);
+        canvas
+    }
+
+    fn stroke_through_red(mode: PaintMode, pressure: f32) -> (Color, Color) {
+        let mut canvas = red_field();
+        let brush = Brush { color: BLUE, radius: 6.0, oiliness: 0.6, wet_medium: true, paint_mode: mode, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+        let p = |x| StrokePoint { x, y: 20.0, pressure, tilt: None, rotation: None };
+        let mut s = Stroke::begin_at(&mut canvas, &brush, DabMode::Paint, p(20.0), None);
+        s.line_to_point(&mut canvas, &brush, p(80.0));
+        s.finish(&mut canvas, &brush);
+        (canvas.pixel(60, 20).unwrap(), s.carried_color().unwrap())
+    }
+
+    #[test]
+    fn paint_mode_lays_pure_color_without_mixing() {
+        let (pixel, carried) = stroke_through_red(PaintMode::Paint, 1.0);
+        assert!(pixel.b > 0.95 && pixel.r < 0.05, "pure blue over the red: {pixel:?}");
+        assert_eq!(carried, BLUE, "the brush stays clean");
+    }
+
+    #[test]
+    fn paint_and_blend_only_blends_at_light_pressure() {
+        let (light, _) = stroke_through_red(PaintMode::PaintBlend, 0.1);
+        let (firm, _) = stroke_through_red(PaintMode::PaintBlend, 1.0);
+        assert!(light.r > 0.6, "light pressure adds no blue, just moves the red: {light:?}");
+        assert!(firm.b > light.b + 0.3, "firm pressure paints blue: light {light:?} firm {firm:?}");
+    }
+
+    #[test]
+    fn blend_mode_adds_no_paint() {
+        let (pixel, _) = stroke_through_red(PaintMode::Blend, 1.0);
+        assert!(pixel.b < 0.05, "blend must not add its own blue: {pixel:?}");
+    }
+
+    #[test]
+    fn paint_and_mix_mixes_more_at_light_pressure() {
+        let (_, light) = stroke_through_red(PaintMode::PaintMix, 0.2);
+        let (_, firm) = stroke_through_red(PaintMode::PaintMix, 1.0);
+        assert!(light.r > firm.r, "a light touch picks up more red: light {light:?} firm {firm:?}");
     }
 
     #[test]

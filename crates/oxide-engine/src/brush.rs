@@ -33,6 +33,34 @@ impl Rotation {
     }
 }
 
+/// How a wet brush treats the paint already on the canvas (another app's
+/// paint modes for oils & acrylics). Pressure matters: with a mouse it's 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PaintMode {
+    /// Lay the color down without mixing it with what's on the canvas.
+    Paint,
+    /// Firm pressure paints; light pressure mixes with the wet paint underneath.
+    #[default]
+    PaintMix,
+    /// Firm pressure paints; light pressure only blends (no fresh paint).
+    PaintBlend,
+    /// No paint of its own: light pressure blends softly, firm pressure smudges.
+    Blend,
+}
+
+impl PaintMode {
+    pub const ALL: [PaintMode; 4] = [PaintMode::Paint, PaintMode::PaintMix, PaintMode::PaintBlend, PaintMode::Blend];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PaintMode::Paint => "Paint",
+            PaintMode::PaintMix => "Paint & Mix",
+            PaintMode::PaintBlend => "Paint & Blend",
+            PaintMode::Blend => "Blend",
+        }
+    }
+}
+
 /// Settings for a brush tip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Brush {
@@ -55,9 +83,16 @@ pub struct Brush {
     pub angle: f32,
     /// How the tip turns while painting.
     pub rotation: Rotation,
-    /// How much paint the brush holds (0..=1). 1 = never runs out; lower
-    /// values make the stroke fade and run dry, like a real brush.
+    /// How much paint the brush lays down (0..=1).
     pub loading: f32,
+    /// How long the paint lasts along a stroke (0..=1): low = runs out fast,
+    /// 1 = never runs out.
+    pub length: f32,
+    /// Always paint wet (oils & acrylics), even with settings that would
+    /// otherwise count as a dry brush.
+    pub wet_medium: bool,
+    /// How the brush treats paint already on the canvas (wet brushes only).
+    pub paint_mode: PaintMode,
     /// How much the brush picks up and drags the paint already on the
     /// canvas (0..=1). 0 = plain paint; higher = wet, blending, oily paint.
     pub oiliness: f32,
@@ -94,6 +129,9 @@ impl Default for Brush {
             angle: 0.0,
             rotation: Rotation::None,
             loading: 1.0,
+            length: 1.0,
+            wet_medium: false,
+            paint_mode: PaintMode::PaintMix,
             oiliness: 0.0,
             roughness: 0.0,
             streaks: 0.0,
@@ -160,7 +198,7 @@ impl Brush {
 
     /// Wet brushes interact with the paint already on the canvas.
     pub fn is_wet(&self) -> bool {
-        self.oiliness > 0.0 || self.loading < 1.0
+        self.wet_medium || self.oiliness > 0.0 || self.loading < 1.0 || self.length < 1.0
     }
 
     /// Distance in pixels between dabs along a stroke.

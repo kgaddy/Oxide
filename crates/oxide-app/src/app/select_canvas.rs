@@ -15,7 +15,7 @@ pub struct PaperPreset {
 }
 
 fn paper_presets() -> Vec<PaperPreset> {
-    let p = |name, kind, scale, depth| PaperPreset { name, settings: PaperSettings { kind, scale, depth, light_angle: 225.0 } };
+    let p = |name, kind, scale, depth| PaperPreset { name, settings: PaperSettings { kind, scale, depth, ..PaperSettings::default() } };
     vec![
         p("Hot Pressed", PaperKind::Smooth, 1.0, 0.35),
         p("Cold Pressed", PaperKind::ColdPress, 1.0, 0.5),
@@ -196,7 +196,13 @@ impl OxideApp {
                     );
                     if response.clicked() {
                         let light_angle = sc.settings.light_angle;
-                        sc.settings = PaperSettings { light_angle, ..preset.settings };
+                        // A new surface keeps your light direction and texture visibility.
+                        sc.settings = PaperSettings {
+                            light_angle,
+                            paper_visibility: sc.settings.paper_visibility,
+                            paint_visibility: sc.settings.paint_visibility,
+                            ..preset.settings
+                        };
                     }
                 }
             });

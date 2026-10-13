@@ -5,7 +5,7 @@
 //! the tip looks like. A **medium** (oils & acrylics, ink, pencil, ...) says
 //! how the paint behaves. Any medium can use any brush preset.
 
-use oxide_engine::{Brush, Color, Rotation};
+use oxide_engine::{Brush, Color, PaintMode, Rotation};
 
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,7 +57,8 @@ impl Tool {
             Tool::Ink => "N",
             Tool::Pencil => "P",
             Tool::Marker => "M",
-            Tool::Airbrush => "A",
+            // (A toggles Erase mode for oils.)
+            Tool::Airbrush => "U",
             Tool::Eraser => "E",
             Tool::Smudge => "S",
             Tool::Picker => "I",
@@ -82,7 +83,7 @@ impl Tool {
             // Oils start with a natural, slightly worn brush.
             Tool::OilsAcrylics => {
                 let natural = BrushShape { roughness: 0.35, streaks: 0.45, lift_off: 0.6, ..shape(14.0, 0.6, 0.04, 0.6) };
-                (natural, 1.0, 0.75, 0.4)
+                (natural, 1.0, 0.85, 0.4)
             }
             Tool::Ink => (shape(3.0, 0.95, 0.05, 0.2), 1.0, 1.0, 0.0),
             Tool::Pencil => (shape(1.5, 0.5, 0.1, 0.9), 0.6, 1.0, 0.0),
@@ -106,7 +107,9 @@ impl Tool {
             Tool::Picker => (0.0, 0.0),
         };
         let shape = BrushShape { size_pressure, opacity_pressure, ..shape };
-        ToolState { shape, opacity, loading, oiliness }
+        // Oils hold paint for a while; everything else never runs out.
+        let length = if self == Tool::OilsAcrylics { 0.75 } else { 1.0 };
+        ToolState { shape, opacity, loading, oiliness, length, paint_mode: PaintMode::PaintMix, erase: false }
     }
 }
 
@@ -166,11 +169,17 @@ impl Default for BrushShape {
 pub struct ToolState {
     pub shape: BrushShape,
     pub opacity: f32,
-    /// Wet media only: how much paint the brush holds.
+    /// Wet media only: how much paint the brush lays down.
     pub loading: f32,
     /// Wet media: how much paint gets picked up and dragged.
     /// Smudge: how strongly it drags.
     pub oiliness: f32,
+    /// Wet media: how long the paint lasts (1 = never runs out).
+    pub length: f32,
+    /// Wet media: Paint / Paint & Mix / Paint & Blend / Blend (keys 1–4).
+    pub paint_mode: PaintMode,
+    /// Wet media: Erase mode (key 5, or A).
+    pub erase: bool,
 }
 
 impl ToolState {
@@ -197,6 +206,9 @@ impl ToolState {
         if tool.is_wet_medium() {
             brush.loading = self.loading;
             brush.oiliness = self.oiliness;
+            brush.length = self.length;
+            brush.paint_mode = self.paint_mode;
+            brush.wet_medium = true;
         }
         if tool == Tool::Smudge {
             // No paint of its own, just drags what's there (wet or dry).

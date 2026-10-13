@@ -37,6 +37,18 @@ pub(crate) enum Edit {
     Paper { before: Color, after: Color },
     /// The paper texture changed.
     Surface { before: PaperSettings, after: PaperSettings },
+    /// A layer's lock / lock-transparency / tracing flags changed (holds the *other* flags).
+    LayerFlags { layer: usize, flags: LayerFlagSet },
+    /// Several edits done as one step (e.g. Merge Down). Undone in reverse order.
+    Batch { edits: Vec<Edit>, label: &'static str },
+}
+
+/// The per-layer switches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerFlagSet {
+    pub locked: bool,
+    pub lock_transparency: bool,
+    pub tracing: bool,
 }
 
 impl Edit {
@@ -46,6 +58,7 @@ impl Edit {
         match self {
             Edit::Pixels { before, after, .. } => (before.0.len() + before.1.len() + after.0.len() + after.1.len()) * PIXEL,
             Edit::Wetness { layers, .. } => layers.iter().map(|(_, (d, w))| (d.len() + w.len()) * PIXEL).sum(),
+            Edit::Batch { edits, .. } => edits.iter().map(Edit::bytes).sum(),
             Edit::RemoveLayer { layer, .. } => layer.canvas.dry_pixels().len() * 2 * PIXEL,
             _ => 64,
         }
@@ -63,6 +76,8 @@ impl Edit {
             Edit::Rename { .. } => "Rename layer",
             Edit::Paper { .. } => "Paper color",
             Edit::Surface { .. } => "Paper texture",
+            Edit::LayerFlags { .. } => "Layer lock",
+            Edit::Batch { label, .. } => label,
         }
     }
 }
@@ -157,6 +172,17 @@ impl History {
 
     pub(crate) fn push_redo(&mut self, id: u64, edit: Edit) {
         self.redo.push(Entry { id, edit });
+    }
+
+    /// Rename the most recent step (e.g. an AddLayer that was really a Duplicate).
+    pub(crate) fn relabel_last(&mut self, label: &'static str) {
+        if let Some(entry) = self.undo.pop_back() {
+            let edit = match entry.edit {
+                Edit::Batch { edits, .. } => Edit::Batch { edits, label },
+                other => Edit::Batch { edits: vec![other], label },
+            };
+            self.undo.push_back(Entry { id: entry.id, edit });
+        }
     }
 
     pub(crate) fn undo_description(&self) -> Option<&'static str> {
