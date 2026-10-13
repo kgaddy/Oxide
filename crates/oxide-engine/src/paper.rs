@@ -83,6 +83,38 @@ pub struct PaperSettings {
     /// "Paint Texture"). Opaque paint mostly hides the weave; thin paint shows it.
     #[serde(default = "default_paint_visibility")]
     pub paint_visibility: f32,
+    /// How strongly thick paint (impasto) is lit, 0..=1 (shown 0–10 like
+    /// another app's Impasto Depth). 0 = paint looks flat.
+    #[serde(default = "default_impasto_depth")]
+    pub impasto_depth: f32,
+    /// How shiny thick paint is, 0..=1 (shown 0–10): highlights on the
+    /// ridges that face the light.
+    #[serde(default = "default_gloss")]
+    pub gloss: f32,
+    /// How dark the shadows thick paint casts are, 0..=1 (shown 0–10;
+    /// another app's SoftShadows strength).
+    #[serde(default = "default_shadows")]
+    pub shadows: f32,
+    /// How high the light is above the canvas, in degrees (10 = low, raking
+    /// light with long shadows; 80 = nearly overhead). another app's Shadow Altitude.
+    #[serde(default = "default_light_height")]
+    pub light_height: f32,
+}
+
+fn default_shadows() -> f32 {
+    0.5
+}
+
+fn default_light_height() -> f32 {
+    40.0
+}
+
+fn default_impasto_depth() -> f32 {
+    0.5
+}
+
+fn default_gloss() -> f32 {
+    0.3
 }
 
 fn default_paper_visibility() -> f32 {
@@ -102,6 +134,10 @@ impl Default for PaperSettings {
             light_angle: 225.0,
             paper_visibility: default_paper_visibility(),
             paint_visibility: default_paint_visibility(),
+            impasto_depth: default_impasto_depth(),
+            gloss: default_gloss(),
+            shadows: default_shadows(),
+            light_height: default_light_height(),
         }
     }
 }

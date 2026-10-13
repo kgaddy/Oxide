@@ -115,11 +115,14 @@ impl OxideApp {
                 };
                 match self.tool {
                     Tool::Picker => {
+                        // Mix Color (X held): mix once per click, not every frame of a drag.
+                        let fresh_press = ui.input(|i| i.pointer.primary_pressed());
                         if p.x >= 0.0
                             && p.y >= 0.0
+                            && (!self.mix_key || fresh_press)
                             && let Some(c) = self.document.composite_pixel(p.x as usize, p.y as usize)
                         {
-                            self.set_color(c);
+                            self.pick_color(c);
                         }
                     }
                     _ if !blocked => {
@@ -233,7 +236,8 @@ impl OxideApp {
 
     /// Paint left on a dirty brush from the last stroke, if it should be used.
     fn dirty_tip(&self) -> Option<oxide_engine::Color> {
-        self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush)
+        // A MultiColored brush starts each stroke clean, with its colors side by side.
+        self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush && !self.multicolor_active())
     }
 
     /// Follow which way the pointer is moving (smoothed), for the cursor.

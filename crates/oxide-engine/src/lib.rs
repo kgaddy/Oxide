@@ -9,17 +9,19 @@ mod document;
 mod file;
 mod history;
 mod paint;
+pub mod multicolor;
 mod paper;
 mod psd;
 mod region;
 mod spectral;
 mod stroke;
 mod tip;
+mod tips;
 mod transform;
 
-pub use brush::{Brush, PaintMode, Rotation};
-pub use canvas::{Canvas, Color, DabMode, DabStyle, Wetness};
-pub use document::{DEFAULT_DPI, Document, Layer};
+pub use brush::{Bristles, Brush, PaintMode, Rotation};
+pub use canvas::{Buffers, Canvas, Color, DabMode, DabStyle, MAX_RELIEF, ReliefDab, Wetness};
+pub use document::{DEFAULT_DPI, Document, Layer, LayerGroup};
 pub use file::FileError;
 pub use paint::{Mixing, mix_paint};
 /// Exposed for benchmarks (examples/bench_mix.rs).
@@ -31,4 +33,5 @@ pub use paper::{Paper, PaperKind, PaperSettings, surface_acceptance};
 pub use region::Region;
 pub use stroke::{Stroke, StrokePoint};
 pub use tip::DabTexture;
+pub use tips::{Tip, TipImage, image_tips, register_tip, unregister_tip};
 pub use transform::Transform;

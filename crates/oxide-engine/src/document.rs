@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::canvas::{over, premultiply, scale};
+use crate::canvas::{Buffers, MAX_RELIEF, over, premultiply, scale};
 use crate::paper::{Paper, PaperSettings};
 use crate::history::{Edit, History, LayerFlagSet};
 use crate::transform::{self, Transform};
@@ -11,9 +11,9 @@ use crate::{Canvas, Color, Region};
 /// The layer being transformed, as it was before (see `begin_transform`).
 struct TransformSource {
     layer: usize,
-    dry: Vec<[f32; 4]>,
-    wet: Vec<[f32; 4]>,
+    original: Buffers,
     has_wet: bool,
+    has_relief: bool,
     /// The box around the paint: what the handles frame.
     bounds: Region,
     /// The transform shown now.
@@ -33,6 +33,37 @@ pub struct Layer {
     /// A tracing layer (marked "T"): a reference image whose colors new
     /// strokes pick up where they start. Always locked.
     pub tracing: bool,
+    /// This layer's own impasto depth (0..=1), or None to use the painting's
+    ///.
+    pub impasto: Option<f32>,
+    /// The group it's in (layers of a group sit together in the list).
+    pub group: Option<u32>,
+}
+
+/// A layer group (one level, another app's Ctrl/Cmd+Alt+G): its layers are
+/// composited together, then faded by the group's opacity as one picture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerGroup {
+    pub id: u32,
+    pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
+    /// Shown open in the Layers panel.
+    pub open: bool,
+}
+
+/// All groups plus which group each layer is in (for undo).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GroupState {
+    groups: Vec<LayerGroup>,
+    membership: Vec<Option<u32>>,
+}
+
+/// One step of compositing: a layer (with its opacity), or a group whose
+/// layers are composited together and then faded by the group's opacity.
+enum Step {
+    Layer(usize, f32),
+    Group(Vec<(usize, f32)>, f32),
 }
 
 impl Layer {
@@ -83,6 +114,9 @@ pub struct Document {
     pub palette: Option<Box<Document>>,
     /// Free-text notes (e.g. the paints used on a mixing palette). Saved in the file.
     pub notes: String,
+    /// Layer groups (see [`LayerGroup`]); layers point to them by id.
+    groups: Vec<LayerGroup>,
+    next_group_id: u32,
 }
 
 /// Default print resolution for new paintings.
@@ -92,6 +126,8 @@ struct StrokeSnapshot {
     layer: usize,
     dry: Vec<[f32; 4]>,
     wet: Vec<[f32; 4]>,
+    relief: Vec<f32>,
+    wet_relief: Vec<f32>,
 }
 
 impl Document {
@@ -118,6 +154,8 @@ impl Document {
             dpi: DEFAULT_DPI,
             palette: None,
             notes: String::new(),
+            groups: Vec::new(),
+            next_group_id: 1,
         };
         // Two steps: `doc.layers.push(doc.blank_layer())` would borrow `doc`
         // mutably twice in one expression, which Rust doesn't allow.
@@ -159,6 +197,8 @@ impl Document {
             dpi: DEFAULT_DPI,
             palette: None,
             notes: String::new(),
+            groups: Vec::new(),
+            next_group_id: 1,
         }
     }
 
@@ -181,6 +221,8 @@ impl Document {
             opacity: 1.0,
             locked: false,
             tracing: false,
+            impasto: None,
+            group: None,
         };
         self.next_layer_number += 1;
         layer
@@ -228,12 +270,16 @@ impl Document {
         let mut snapshot = self
             .stroke_snapshot
             .take()
-            .unwrap_or(StrokeSnapshot { layer, dry: Vec::new(), wet: Vec::new() });
+            .unwrap_or(StrokeSnapshot { layer, dry: Vec::new(), wet: Vec::new(), relief: Vec::new(), wet_relief: Vec::new() });
         snapshot.layer = layer;
         snapshot.dry.clear();
         snapshot.dry.extend_from_slice(canvas.dry_pixels());
         snapshot.wet.clear();
         snapshot.wet.extend_from_slice(canvas.wet_pixels());
+        snapshot.relief.clear();
+        snapshot.relief.extend_from_slice(canvas.relief());
+        snapshot.wet_relief.clear();
+        snapshot.wet_relief.extend_from_slice(canvas.wet_relief());
         self.stroke_snapshot = Some(snapshot);
     }
 
@@ -250,11 +296,18 @@ impl Document {
         let Some(region) = canvas.take_changed() else { return };
         let after = canvas.read_region(region);
         let n = region.width() * region.height();
-        let mut before = (Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut before = Buffers {
+            dry: Vec::with_capacity(n),
+            wet: Vec::with_capacity(n),
+            relief: Vec::with_capacity(n),
+            wet_relief: Vec::with_capacity(n),
+        };
         for y in region.y0..region.y1 {
             let row = y * self.width + region.x0..y * self.width + region.x1;
-            before.0.extend_from_slice(&snapshot.dry[row.clone()]);
-            before.1.extend_from_slice(&snapshot.wet[row]);
+            before.dry.extend_from_slice(&snapshot.dry[row.clone()]);
+            before.wet.extend_from_slice(&snapshot.wet[row.clone()]);
+            before.relief.extend_from_slice(&snapshot.relief[row.clone()]);
+            before.wet_relief.extend_from_slice(&snapshot.wet_relief[row]);
         }
         self.history.seal();
         self.history.record(Edit::Pixels { layer, region, before, after });
@@ -270,8 +323,12 @@ impl Document {
     }
 
     /// Add a layer with existing contents (e.g. an imported image) above the active one.
-    pub fn insert_layer(&mut self, layer: Layer) {
+    pub fn insert_layer(&mut self, mut layer: Layer) {
         let index = self.active + 1;
+        // A layer added inside a group joins it (like other paint apps).
+        if layer.group.is_none() {
+            layer.group = self.layers.get(self.active).and_then(|l| l.group);
+        }
         self.layers.insert(index, layer);
         self.active = index;
         self.all_dirty = true;
@@ -304,6 +361,21 @@ impl Document {
     pub fn move_active_layer(&mut self, direction: isize) {
         let from = self.active;
         let to = from as isize + direction;
+        // At a group's edge, moving first leaves the group (or joins the one
+        // next to it) without changing places, so groups stay together.
+        let mine = self.layers[from].group;
+        let theirs = (to >= 0 && (to as usize) < self.layers.len()).then(|| self.layers[to as usize].group);
+        let new_group = match (mine, theirs) {
+            (Some(_), Some(t)) if t != mine => Some(None), // leave my group
+            (Some(_), None) => Some(None),                  // leave (at the end of the list)
+            (None, Some(Some(g))) => Some(Some(g)),         // join the group next to me
+            _ => None,
+        };
+        if let Some(group) = new_group {
+            let label = if group.is_some() { "Move layer into group" } else { "Move layer out of group" };
+            self.change_groups(label, |doc| doc.layers[from].group = group);
+            return;
+        }
         if to >= 0 && (to as usize) < self.layers.len() {
             let to = to as usize;
             self.layers.swap(from, to);
@@ -332,6 +404,24 @@ impl Document {
         self.history.record(Edit::Opacity { layer: index, before, after: opacity });
     }
 
+    /// Give a layer its own impasto depth (0..=1), or None for the painting's.
+    /// Slider drags merge into one undo step.
+    pub fn set_layer_impasto(&mut self, index: usize, depth: Option<f32>) {
+        let depth = depth.map(|d| d.clamp(0.0, 1.0));
+        let before = self.layers[index].impasto;
+        if before == depth {
+            return;
+        }
+        self.layers[index].impasto = depth;
+        self.all_dirty = true;
+        self.history.record(Edit::LayerImpasto { layer: index, before, after: depth });
+    }
+
+    /// The impasto depth a layer is shown with (its own, or the painting's).
+    pub fn layer_impasto(&self, index: usize) -> f32 {
+        self.layers[index].impasto.unwrap_or_else(|| self.surface.settings().impasto_depth)
+    }
+
     pub fn rename_layer(&mut self, index: usize, name: String) {
         let before = std::mem::replace(&mut self.layers[index].name, name.clone());
         if before != name {
@@ -354,7 +444,7 @@ impl Document {
     /// Can the current layer be painted on? (Not hidden, locked, or a tracing layer.)
     pub fn can_paint_active(&self) -> bool {
         let l = &self.layers[self.active];
-        l.visible && !l.locked && !l.tracing
+        self.layer_shown(self.active) && !l.locked && !l.tracing
     }
 
     /// Copy the current layer (above it, named "… copy").
@@ -378,12 +468,24 @@ impl Document {
         let below = upper - 1;
         let n = self.width * self.height;
         let (u, b) = (&self.layers[upper], &self.layers[below]);
-        let (uo, bo) = (if u.visible { u.opacity } else { 0.0 }, if b.visible { b.opacity } else { 0.0 });
-        let mut dry: Vec<[f32; 4]> = (0..n).map(|i| over(scale(u.canvas.combined(i), uo), scale(b.canvas.combined(i), bo))).collect();
-        let mut wet = vec![[0.0; 4]; n];
+        // (A layer from another group brings that group's opacity along.)
+        let in_other_group = u.group != b.group;
+        let (uo, bo) = (
+            if in_other_group { self.layer_weight(upper) } else if u.visible { u.opacity } else { 0.0 },
+            if b.visible { b.opacity } else { 0.0 },
+        );
+        let dry: Vec<[f32; 4]> = (0..n).map(|i| over(scale(u.canvas.combined(i), uo), scale(b.canvas.combined(i), bo))).collect();
+        // Thick paint stacks: the merged layer is as thick as both were.
+        // Thick paint keeps its look: each layer's relief is scaled by its
+        // impasto depth relative to the depth the merged layer is shown with.
+        let (du, db) = (self.layer_impasto(upper), self.layer_impasto(below));
+        let (ku, kb) = if db > 0.0 { (uo * du / db, bo) } else { (uo, bo) };
+        let relief = (0..n).map(|i| (u.canvas.relief()[i] * ku + b.canvas.relief()[i] * kb).min(MAX_RELIEF)).collect();
+        // (Merging dries the paint, so all of its thickness is dry.)
+        let mut merged = Buffers { dry, wet: vec![[0.0; 4]; n], relief, wet_relief: vec![0.0; n] };
         // Put the merged pixels into the lower layer (keeping its old ones for undo).
-        self.layers[below].canvas.swap_buffers(&mut dry, &mut wet);
-        let mut edits = vec![Edit::Wetness { layers: vec![(below, (dry, wet))], label: "Merge" }];
+        self.layers[below].canvas.swap_buffers(&mut merged);
+        let mut edits = vec![Edit::Wetness { layers: vec![(below, merged)], label: "Merge" }];
         let before = self.layers[below].opacity;
         self.layers[below].opacity = 1.0;
         let was_visible = self.layers[below].visible;
@@ -402,7 +504,7 @@ impl Document {
 
     /// Merge all visible layers into one (replacing them), as one undo step.
     pub fn merge_visible(&mut self) -> bool {
-        let visible: Vec<usize> = (0..self.layers.len()).filter(|&i| self.layers[i].visible).collect();
+        let visible: Vec<usize> = (0..self.layers.len()).filter(|&i| self.layer_shown(i)).collect();
         if visible.len() < 2 {
             return false;
         }
@@ -436,17 +538,22 @@ impl Document {
 
     fn merged_visible_layer(&mut self, name: &str) -> Layer {
         let n = self.width * self.height;
-        let pixels: Vec<[f32; 4]> = (0..n)
+        let plan = self.plan();
+        let pixels: Vec<[f32; 4]> = (0..n).map(|i| self.stack(&plan, i, [0.0; 4]).0).collect();
+        // Bake each layer's impasto depth in, relative to the painting's (the merged layer uses that).
+        let global = self.surface.settings().impasto_depth;
+        let weights: Vec<f32> = (0..self.layers.len())
             .map(|i| {
-                let mut p = [0.0f32; 4];
-                for layer in self.layers.iter().filter(|l| l.visible && l.opacity > 0.0) {
-                    p = over(scale(layer.canvas.combined(i), layer.opacity), p);
-                }
-                p
+                let w = self.layer_weight(i);
+                if global > 0.0 { w * self.layer_impasto(i) / global } else { w }
             })
+            .collect();
+        let relief = (0..n)
+            .map(|i| self.layers.iter().zip(&weights).map(|(l, w)| l.canvas.relief()[i] * w).sum::<f32>().min(MAX_RELIEF))
             .collect();
         let mut layer = self.new_layer(name);
         layer.canvas.set_pixels(pixels, None);
+        layer.canvas.set_relief(relief, None);
         layer.canvas.take_changed();
         layer
     }
@@ -458,12 +565,11 @@ impl Document {
         if !canvas.dry_pixels().iter().any(|p| p[3] > 0.0) && !canvas.has_wet_paint() {
             return false;
         }
-        let n = self.width * self.height;
-        let (mut dry, mut wet) = (vec![[0.0; 4]; n], vec![[0.0; 4]; n]);
-        canvas.swap_buffers(&mut dry, &mut wet);
+        let mut empty = Buffers::empty(self.width * self.height);
+        canvas.swap_buffers(&mut empty);
         self.all_dirty = true;
         self.history.seal();
-        self.history.record(Edit::Wetness { layers: vec![(i, (dry, wet))], label: "Clear layer" });
+        self.history.record(Edit::Wetness { layers: vec![(i, empty)], label: "Clear layer" });
         self.history.seal();
         true
     }
@@ -528,6 +634,126 @@ impl Document {
         self.history.seal();
     }
 
+    // ----- Layer groups -----
+
+    pub fn groups(&self) -> &[LayerGroup] {
+        &self.groups
+    }
+
+    pub fn group(&self, id: u32) -> Option<&LayerGroup> {
+        self.groups.iter().find(|g| g.id == id)
+    }
+
+    /// Is layer `i` shown (its eye, and its group's eye, are on)?
+    pub fn layer_shown(&self, i: usize) -> bool {
+        let l = &self.layers[i];
+        l.visible && l.group.and_then(|id| self.group(id)).is_none_or(|g| g.visible)
+    }
+
+    /// How much layer `i` counts in the picture: its opacity times its
+    /// group's (0 if hidden).
+    pub fn layer_weight(&self, i: usize) -> f32 {
+        if !self.layer_shown(i) {
+            return 0.0;
+        }
+        let l = &self.layers[i];
+        l.opacity * l.group.and_then(|id| self.group(id)).map_or(1.0, |g| g.opacity)
+    }
+
+    /// Put the current layer in a new group (⌥⌘G). Returns the group's id,
+    /// or None if the layer is already in a group.
+    pub fn group_active_layer(&mut self) -> Option<u32> {
+        if self.layers[self.active].group.is_some() {
+            return None;
+        }
+        let id = self.next_group_id;
+        let used: Vec<String> = self.groups.iter().map(|g| g.name.clone()).collect();
+        let name = (1..).map(|n| format!("Group {n}")).find(|n| !used.contains(n)).unwrap_or_default();
+        let active = self.active;
+        self.change_groups("Group layer", |doc| {
+            doc.groups.push(LayerGroup { id, name, visible: true, opacity: 1.0, open: true });
+            doc.layers[active].group = Some(id);
+        });
+        self.next_group_id += 1;
+        Some(id)
+    }
+
+    /// Dissolve a group; its layers stay where they are.
+    pub fn ungroup(&mut self, id: u32) {
+        self.change_groups("Ungroup", |doc| {
+            doc.groups.retain(|g| g.id != id);
+            for l in &mut doc.layers {
+                if l.group == Some(id) {
+                    l.group = None;
+                }
+            }
+        });
+    }
+
+    pub fn set_group_visible(&mut self, id: u32, visible: bool) {
+        self.change_groups("Show/hide group", |doc| {
+            if let Some(g) = doc.group_mut(id) {
+                g.visible = visible;
+            }
+        });
+    }
+
+    /// Group opacity (0..=1); slider drags merge into one undo step.
+    pub fn set_group_opacity(&mut self, id: u32, opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let before = self.group_state();
+        if let Some(g) = self.group_mut(id) {
+            g.opacity = opacity;
+        }
+        if self.group_state() != before {
+            self.all_dirty = true;
+            self.history.record(Edit::Groups { other: before, label: "Group opacity" });
+        }
+    }
+
+    pub fn rename_group(&mut self, id: u32, name: String) {
+        if self.group(id).is_some_and(|g| g.name != name) {
+            self.change_groups("Rename group", |doc| {
+                if let Some(g) = doc.group_mut(id) {
+                    g.name = name;
+                }
+            });
+        }
+    }
+
+    /// Open or close a group in the Layers panel (not an undo step).
+    pub fn set_group_open(&mut self, id: u32, open: bool) {
+        if let Some(g) = self.group_mut(id) {
+            g.open = open;
+        }
+    }
+
+    fn group_mut(&mut self, id: u32) -> Option<&mut LayerGroup> {
+        self.groups.iter_mut().find(|g| g.id == id)
+    }
+
+    fn group_state(&self) -> GroupState {
+        GroupState { groups: self.groups.clone(), membership: self.layers.iter().map(|l| l.group).collect() }
+    }
+
+    /// Make a change to groups/membership as one undo step (if anything changed).
+    fn change_groups(&mut self, label: &'static str, change: impl FnOnce(&mut Self)) {
+        let before = self.group_state();
+        change(self);
+        if self.group_state() != before {
+            self.all_dirty = true;
+            self.history.seal();
+            self.history.record(Edit::Groups { other: before, label });
+            self.history.seal();
+        }
+    }
+
+    /// Restore groups from a file (ids as saved).
+    pub(crate) fn set_groups(&mut self, groups: Vec<LayerGroup>) {
+        self.next_group_id = groups.iter().map(|g| g.id + 1).max().unwrap_or(1);
+        self.groups = groups;
+    }
+
     // ----- Transform (move / scale / rotate / flip a layer) -----
 
     /// Start transforming the current layer. Returns the box around its
@@ -541,14 +767,16 @@ impl Document {
         if layer.locked {
             return None;
         }
-        let (dry, wet) = (layer.canvas.dry_pixels().to_vec(), layer.canvas.wet_pixels().to_vec());
-        let bounds = match (transform::content_bounds(&dry, self.width), transform::content_bounds(&wet, self.width)) {
+        let original = layer.canvas.buffers();
+        let bounds = match (transform::content_bounds(&original.dry, self.width), transform::content_bounds(&original.wet, self.width)) {
             (Some(a), Some(b)) => a.union(b),
             (a, b) => a.or(b)?,
         };
         let has_wet = layer.canvas.has_wet_paint();
+        let has_relief = original.relief.iter().any(|&h| h > 0.0);
         self.history.seal();
-        self.transforming = Some(TransformSource { layer: self.active, dry, wet, has_wet, bounds, current: Transform::default() });
+        self.transforming =
+            Some(TransformSource { layer: self.active, original, has_wet, has_relief, bounds, current: Transform::default() });
         Some(bounds)
     }
 
@@ -564,38 +792,38 @@ impl Document {
             return;
         }
         src.current = *t;
-        let (w, h) = (self.width, self.height);
-        let mut dry = if t.is_identity() { src.dry.clone() } else { transform::resample(&src.dry, w, h, src.bounds, t) };
-        let mut wet = if !src.has_wet {
-            vec![[0.0; 4]; w * h]
-        } else if t.is_identity() {
-            src.wet.clone()
+        let mut shown = if t.is_identity() {
+            src.original.clone()
         } else {
-            transform::resample(&src.wet, w, h, src.bounds, t)
+            let (w, h, o) = (self.width, self.height, &src.original);
+            Buffers {
+                dry: transform::resample(&o.dry, w, h, src.bounds, t),
+                wet: if src.has_wet { transform::resample(&o.wet, w, h, src.bounds, t) } else { vec![[0.0; 4]; w * h] },
+                relief: if src.has_relief { transform::resample_scalar(&o.relief, w, h, src.bounds, t) } else { vec![0.0; w * h] },
+                wet_relief: if src.has_relief { transform::resample_scalar(&o.wet_relief, w, h, src.bounds, t) } else { vec![0.0; w * h] },
+            }
         };
-        self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+        self.layers[src.layer].canvas.swap_buffers(&mut shown);
     }
 
     /// Keep the transform as one undo step.
     pub fn apply_transform(&mut self) -> bool {
-        let Some(src) = self.transforming.take() else { return false };
+        let Some(mut src) = self.transforming.take() else { return false };
         if src.current.is_identity() {
             // Nothing changed: put the exact original back (no resampling blur).
-            let (mut dry, mut wet) = (src.dry, src.wet);
-            self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+            self.layers[src.layer].canvas.swap_buffers(&mut src.original);
             return false;
         }
         self.history.seal();
-        self.history.record(Edit::Wetness { layers: vec![(src.layer, (src.dry, src.wet))], label: "Transform" });
+        self.history.record(Edit::Wetness { layers: vec![(src.layer, src.original)], label: "Transform" });
         self.history.seal();
         true
     }
 
     /// Throw the transform away and put the layer back as it was.
     pub fn cancel_transform(&mut self) -> bool {
-        let Some(src) = self.transforming.take() else { return false };
-        let (mut dry, mut wet) = (src.dry, src.wet);
-        self.layers[src.layer].canvas.swap_buffers(&mut dry, &mut wet);
+        let Some(mut src) = self.transforming.take() else { return false };
+        self.layers[src.layer].canvas.swap_buffers(&mut src.original);
         true
     }
 
@@ -679,9 +907,13 @@ impl Document {
             }
             let n = canvas.dry_pixels().len();
             let merged: Vec<[f32; 4]> = (0..n).map(|p| canvas.combined(p)).collect();
-            let (mut dry, mut wet) = if to_wet { (vec![[0.0; 4]; n], merged) } else { (merged, vec![[0.0; 4]; n]) };
-            canvas.swap_buffers(&mut dry, &mut wet); // now hold the old buffers
-            changed.push((i, (dry, wet)));
+            let (dry, wet) = if to_wet { (vec![[0.0; 4]; n], merged) } else { (merged, vec![[0.0; 4]; n]) };
+            // Drying doesn't change how thick the paint is, only whether it can still move.
+            let relief = canvas.relief().to_vec();
+            let wet_relief = if to_wet { relief.clone() } else { vec![0.0; n] };
+            let mut buffers = Buffers { dry, wet, relief, wet_relief };
+            canvas.swap_buffers(&mut buffers); // now holds the old buffers
+            changed.push((i, buffers));
         }
         if !changed.is_empty() {
             self.all_dirty = true;
@@ -751,14 +983,14 @@ impl Document {
         match edit {
             Edit::Pixels { layer, region, before, after } => {
                 let canvas = &mut self.layers[layer].canvas;
-                canvas.write_region(region, &before.0, &before.1);
+                canvas.write_region(region, &before);
                 canvas.take_changed();
                 self.active = layer;
                 Edit::Pixels { layer, region, before: after, after: before }
             }
             Edit::Wetness { mut layers, label } => {
-                for (i, (dry, wet)) in &mut layers {
-                    self.layers[*i].canvas.swap_buffers(dry, wet);
+                for (i, buffers) in &mut layers {
+                    self.layers[*i].canvas.swap_buffers(buffers);
                 }
                 Edit::Wetness { layers, label }
             }
@@ -783,6 +1015,21 @@ impl Document {
             Edit::Visibility { layer } => {
                 self.layers[layer].visible = !self.layers[layer].visible;
                 Edit::Visibility { layer }
+            }
+            Edit::Groups { other, label } => {
+                let current = self.group_state();
+                // (Recorded with the same number of layers it's flipped with.)
+                if other.membership.len() == self.layers.len() {
+                    self.groups = other.groups;
+                    for (l, g) in self.layers.iter_mut().zip(other.membership) {
+                        l.group = g;
+                    }
+                }
+                Edit::Groups { other: current, label }
+            }
+            Edit::LayerImpasto { layer, before, after } => {
+                self.layers[layer].impasto = before;
+                Edit::LayerImpasto { layer, before: after, after: before }
             }
             Edit::Opacity { layer, before, after } => {
                 self.layers[layer].opacity = before;
@@ -829,7 +1076,135 @@ impl Document {
         if std::mem::take(&mut self.all_dirty) {
             dirty = Some(self.bounds());
         }
-        dirty
+        // Impasto lighting uses the neighbors' thickness, so a change also
+        // re-lights the pixels around it.
+        // (and its shadow, up to SHADOW_REACH pixels away).
+        let m = 2 + SHADOW_REACH;
+        dirty.map(|r| Region::new(r.x0.saturating_sub(m), r.y0.saturating_sub(m), (r.x1 + m).min(self.width), (r.y1 + m).min(self.height)))
+    }
+
+    /// The lighting for thick paint (from the paper settings), worked out once per redraw.
+    fn impasto_light(&self) -> ImpastoLight {
+        let s = self.surface.settings();
+        let (ly, lx) = s.light_angle.to_radians().sin_cos();
+        let elevation = s.light_height.clamp(10.0, 80.0);
+        let (se, ce) = elevation.to_radians().sin_cos();
+        let light = [lx * ce, ly * ce, se];
+        let half = normalize3([light[0], light[1], light[2] + 1.0]);
+        let on = self.layers.iter().enumerate().any(|(i, l)| self.layer_shown(i) && l.canvas.has_relief() && self.layer_impasto(i) > 0.0);
+        ImpastoLight {
+            on,
+            light,
+            half,
+            // Each layer's own depth is applied when the thickness is stacked up (`relief_window`).
+            steepness: 8.0,
+            gloss: s.gloss,
+            flat_highlight: shine(half[2]),
+            shadows: s.shadows.clamp(0.0, 1.0),
+            // How much a shadow ray climbs per pixel toward the light.
+            rise: elevation.to_radians().tan(),
+            toward_light: (lx, ly),
+        }
+    }
+
+    /// The stacked paint thickness of all visible layers over `region` plus
+    /// a 2-pixel border (what lighting needs), added up once per redraw.
+    fn relief_window(&self, region: Region, lit: &ImpastoLight) -> Option<ReliefWindow> {
+        if !lit.on {
+            return None;
+        }
+        // Slopes need 2 pixels around; shadows reach further, toward the light.
+        let m = 2 + SHADOW_REACH;
+        let x0 = region.x0.saturating_sub(m);
+        let y0 = region.y0.saturating_sub(m);
+        let (x1, y1) = ((region.x1 + m).min(self.width), (region.y1 + m).min(self.height));
+        let w = x1 - x0;
+        // Each layer's thickness counts by its opacity and its impasto depth.
+        let thick: Vec<(&Layer, f32)> = (0..self.layers.len())
+            .map(|i| (&self.layers[i], self.layer_weight(i) * self.layer_impasto(i)))
+            .filter(|(l, k)| l.canvas.has_relief() && *k > 0.0)
+            .collect();
+        let mut data = vec![0.0f32; w * (y1 - y0)];
+        data.par_chunks_mut(w).enumerate().for_each(|(row, line)| {
+            let start = (y0 + row) * self.width + x0;
+            for (layer, k) in &thick {
+                let relief = &layer.canvas.relief()[start..start + w];
+                let k = *k;
+                for (h, r) in line.iter_mut().zip(relief) {
+                    *h += r * k;
+                }
+            }
+        });
+        let highest = data.iter().cloned().fold(0.0, f32::max);
+        Some(ReliefWindow { x0, y0, x1, y1, w, data, highest })
+    }
+
+    /// Light a finished pixel (premultiplied; `coverage` = how much paint is
+    /// over the paper): the paper's texture, which thick paint hides, then the
+    /// paint's own relief, lit from the paper's light direction, with gloss.
+    #[allow(clippy::too_many_arguments)]
+    fn light_pixel(
+        &self,
+        x: usize,
+        y: usize,
+        p: [f32; 4],
+        coverage: f32,
+        include_paper: bool,
+        lit: &ImpastoLight,
+        relief: Option<&ReliefWindow>,
+    ) -> [f32; 4] {
+        let h = relief.map_or(0.0, |r| r.at(x as isize, y as isize));
+        let mut s = 1.0;
+        if include_paper {
+            let paper = self.surface.visible_shade_at(x, y, coverage);
+            // (`h` includes impasto depth; 0.5 is the default depth.)
+            s = 1.0 + (paper - 1.0) * (1.0 - 0.85 * (h / 0.5).min(1.0));
+        }
+        let mut highlight = 0.0;
+        if let Some(relief) = relief {
+            let (xi, yi) = (x as isize, y as isize);
+            // Slope over 1 and 2 pixels, averaged: rounder, less "embossed" paint.
+            let slope = |dx: isize, dy: isize| {
+                let near = (relief.at(xi + dx, yi + dy) - relief.at(xi - dx, yi - dy)) * 0.5;
+                let far = (relief.at(xi + 2 * dx, yi + 2 * dy) - relief.at(xi - 2 * dx, yi - 2 * dy)) * 0.25;
+                (near + far) * 0.5 * lit.steepness
+            };
+            let (gx, gy) = (slope(1, 0), slope(0, 1));
+            if gx != 0.0 || gy != 0.0 {
+                let n = normalize3([-gx, -gy, 1.0]);
+                // Brighter where the paint faces the light, darker on the far side of ridges.
+                s *= (dot3(n, lit.light) / lit.light[2]).clamp(0.35, 1.8);
+                // Gloss: a highlight only where a slope catches the light (flat paint has none).
+                highlight = (shine(dot3(n, lit.half)) - lit.flat_highlight).max(0.0) * lit.gloss * 1.2 * coverage;
+            }
+            // Cast shadow: walk toward the light; if thicker paint rises above
+            // the ray, this pixel is in its shadow (softly, more when it's close).
+            if lit.shadows > 0.0 && relief.highest > h {
+                let (lx, ly) = lit.toward_light;
+                let base = h * lit.steepness;
+                let top = relief.highest * lit.steepness;
+                let mut shade = 0.0f32;
+                let mut d = 1.0;
+                while d <= SHADOW_REACH as f32 {
+                    let ray = base + d * lit.rise;
+                    if ray >= top {
+                        break; // nothing can be taller than this any further on
+                    }
+                    let above = relief.at((x as f32 + lx * d).round() as isize, (y as f32 + ly * d).round() as isize) * lit.steepness - ray;
+                    if above > 0.0 {
+                        // Soft: a little above the ray = light shade; well above = full.
+                        let depth = (above / 1.5).min(1.0) * (1.0 - d / (SHADOW_REACH as f32 + 1.0)).sqrt();
+                        shade = shade.max(depth);
+                    }
+                    d += 1.0;
+                }
+                s *= 1.0 - 0.55 * lit.shadows * shade;
+            }
+        }
+        if s == 1.0 && highlight == 0.0 {
+            return p;
+        }
+        [p[0] * s + highlight, p[1] * s + highlight, p[2] * s + highlight, p[3]]
     }
 
     /// The finished color at (x, y): paper plus all visible layers.
@@ -841,29 +1216,67 @@ impl Document {
         Some(Color { r: p[0], g: p[1], b: p[2], a: 1.0 })
     }
 
-    /// The finished color at pixel `i` (premultiplied, opaque) plus how much
-    /// paint covers it, in one pass over the layers.
-    fn composite_and_coverage(&self, i: usize) -> ([f32; 4], f32) {
-        let mut out = premultiply(Color { a: 1.0, ..self.paper });
-        let mut coverage = 0.0;
-        for layer in &self.layers {
-            if layer.visible && layer.opacity > 0.0 {
-                let p = scale(layer.canvas.combined(i), layer.opacity);
-                out = over(p, out);
-                coverage = p[3] + coverage * (1.0 - p[3]);
+    /// How the visible layers combine, worked out once per redraw.
+    fn plan(&self) -> Vec<Step> {
+        let mut steps = Vec::new();
+        let mut i = 0;
+        while i < self.layers.len() {
+            let layer = &self.layers[i];
+            match layer.group.and_then(|id| self.group(id)) {
+                // A faded group: its layers are composited together first.
+                Some(g) if g.opacity < 1.0 => {
+                    let mut members = Vec::new();
+                    while i < self.layers.len() && self.layers[i].group == layer.group {
+                        let l = &self.layers[i];
+                        if l.visible && l.opacity > 0.0 {
+                            members.push((i, l.opacity));
+                        }
+                        i += 1;
+                    }
+                    if g.visible && g.opacity > 0.0 && !members.is_empty() {
+                        steps.push(Step::Group(members, g.opacity));
+                    }
+                }
+                group => {
+                    if layer.visible && layer.opacity > 0.0 && group.is_none_or(|g| g.visible) {
+                        steps.push(Step::Layer(i, layer.opacity));
+                    }
+                    i += 1;
+                }
             }
+        }
+        steps
+    }
+
+    /// Pixel `i` of the plan's layers over `base` (premultiplied), plus how much paint covers it.
+    fn stack(&self, plan: &[Step], i: usize, base: [f32; 4]) -> ([f32; 4], f32) {
+        let mut out = base;
+        let mut coverage = 0.0;
+        for step in plan {
+            let p = match step {
+                Step::Layer(n, opacity) => scale(self.layers[*n].canvas.combined(i), *opacity),
+                Step::Group(members, opacity) => {
+                    let mut g = [0.0f32; 4];
+                    for (n, o) in members {
+                        g = over(scale(self.layers[*n].canvas.combined(i), *o), g);
+                    }
+                    scale(g, *opacity)
+                }
+            };
+            out = over(p, out);
+            coverage = p[3] + coverage * (1.0 - p[3]);
         }
         (out, coverage)
     }
 
+    /// The finished color at pixel `i` (premultiplied, opaque) plus how much
+    /// paint covers it, in one pass over the layers.
+    fn composite_and_coverage(&self, plan: &[Step], i: usize) -> ([f32; 4], f32) {
+        self.stack(plan, i, premultiply(Color { a: 1.0, ..self.paper }))
+    }
+
     fn composite_at(&self, i: usize) -> [f32; 4] {
-        let mut out = premultiply(Color { a: 1.0, ..self.paper });
-        for layer in &self.layers {
-            if layer.visible && layer.opacity > 0.0 {
-                out = over(scale(layer.canvas.combined(i), layer.opacity), out);
-            }
-        }
-        out
+        self.composite_and_coverage(&self.plan(), i).0
     }
 
     /// Tint a finished pixel blue in proportion to the wettest visible paint there.
@@ -871,8 +1284,9 @@ impl Document {
         let wet = self
             .layers
             .iter()
-            .filter(|l| l.visible)
-            .map(|l| l.canvas.wet_pixels()[i][3])
+            .enumerate()
+            .filter(|(n, _)| self.layer_shown(*n))
+            .map(|(_, l)| l.canvas.wet_pixels()[i][3])
             .fold(0.0_f32, f32::max);
         let t = 0.45 * wet;
         let tint = [0.25, 0.55, 1.0];
@@ -883,6 +1297,9 @@ impl Document {
     /// row by row. With `include_paper` the result is opaque and shows the
     /// paper and its lit texture; without it, the background is transparent.
     pub fn composite_rgba_f32(&self, region: Region, include_paper: bool) -> Vec<[f32; 4]> {
+        let lit = self.impasto_light();
+        let relief = self.relief_window(region, &lit);
+        let plan = self.plan();
         let mut out = vec![[0.0f32; 4]; region.width() * region.height()];
         let width = region.width();
         if width == 0 {
@@ -894,18 +1311,13 @@ impl Document {
                 let x = region.x0 + col;
                 let i = y * self.width + x;
                 let p = if include_paper {
-                    let (p, coverage) = self.composite_and_coverage(i);
-                    let s = self.surface.visible_shade_at(x, y, coverage);
-                    [p[0] * s, p[1] * s, p[2] * s, 1.0]
+                    let (p, coverage) = self.composite_and_coverage(&plan, i);
+                    let p = self.light_pixel(x, y, p, coverage, true, &lit, relief.as_ref());
+                    [p[0], p[1], p[2], 1.0]
                 } else {
                     // Layers only, over nothing.
-                    let mut p = [0.0f32; 4];
-                    for layer in &self.layers {
-                        if layer.visible && layer.opacity > 0.0 {
-                            p = over(scale(layer.canvas.combined(i), layer.opacity), p);
-                        }
-                    }
-                    p
+                    let p = self.stack(&plan, i, [0.0; 4]).0;
+                    self.light_pixel(x, y, p, p[3], false, &lit, relief.as_ref())
                 };
                 *px = straight(p);
             }
@@ -940,18 +1352,18 @@ impl Document {
         if row_bytes == 0 {
             return bytes;
         }
+        let lit = self.impasto_light();
+        let relief = self.relief_window(region, &lit);
+        let plan = self.plan();
         let fill_row = |(row, out): (usize, &mut [u8])| {
             let y = region.y0 + row;
             for (col, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = region.x0 + col;
                 let i = y * self.width + x;
-                let (mut p, coverage) = self.composite_and_coverage(i);
-                // Light the surface relief: strong on bare paper, softer through
-                // paint (paper vs. paint texture visibility).
-                let shade = self.surface.visible_shade_at(x, y, coverage);
-                if shade != 1.0 {
-                    p = [p[0] * shade, p[1] * shade, p[2] * shade, p[3]];
-                }
+                let (p, coverage) = self.composite_and_coverage(&plan, i);
+                // Light the paper texture (strong on bare paper, softer through
+                // paint) and the thick paint's relief.
+                let mut p = self.light_pixel(x, y, p, coverage, true, &lit, relief.as_ref());
                 if self.show_wet {
                     p = self.tint_wet(p, i);
                 }
@@ -970,6 +1382,67 @@ impl Document {
     }
 }
 
+/// How far (pixels) thick paint can cast a shadow.
+const SHADOW_REACH: usize = 24;
+/// How tight gloss highlights are: the highlight is cos³² (see `shine`).
+fn shine(cos: f32) -> f32 {
+    let mut v = cos.max(0.0);
+    for _ in 0..5 {
+        v *= v;
+    }
+    v
+}
+
+/// Stacked paint thickness over part of the canvas (see `relief_window`).
+struct ReliefWindow {
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    w: usize,
+    data: Vec<f32>,
+    /// The thickest paint in the window (shadow rays stop above it).
+    highest: f32,
+}
+
+impl ReliefWindow {
+    /// Thickness at (x, y); past the window's edge the edge pixel repeats.
+    fn at(&self, x: isize, y: isize) -> f32 {
+        let x = (x.max(self.x0 as isize) as usize).min(self.x1 - 1) - self.x0;
+        let y = (y.max(self.y0 as isize) as usize).min(self.y1 - 1) - self.y0;
+        self.data[y * self.w + x]
+    }
+}
+
+/// Impasto lighting, worked out once per redraw.
+struct ImpastoLight {
+    /// Any thick paint showing and impasto depth above 0?
+    on: bool,
+    /// Unit vector toward the light (x right, y down, z up out of the canvas).
+    light: [f32; 3],
+    /// Halfway between the light and the viewer (for highlights).
+    half: [f32; 3],
+    /// How steep a unit of thickness per pixel looks.
+    steepness: f32,
+    gloss: f32,
+    /// The highlight on flat paint (subtracted, so only slopes shine).
+    flat_highlight: f32,
+    /// Cast-shadow strength 0..=1, how fast a ray toward the light climbs per
+    /// pixel, and the direction toward the light on the canvas.
+    shadows: f32,
+    rise: f32,
+    toward_light: (f32, f32),
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let len = dot3(v, v).sqrt();
+    [v[0] / len, v[1] / len, v[2] / len]
+}
+
 /// Premultiplied -> straight alpha, clamped to 0..=1.
 fn straight(p: [f32; 4]) -> [f32; 4] {
     let a = p[3].clamp(0.0, 1.0);
@@ -986,7 +1459,7 @@ fn to_u8(v: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Brush, DabMode, Stroke};
+    use crate::{Brush, DabMode, PaintMode, Stroke};
 
     const RED: Color = Color::rgb(1.0, 0.0, 0.0);
 
@@ -1198,7 +1671,7 @@ mod tests {
         let mut doc = Document::with_surface(128, 128, Color::WHITE, rough);
         let pencil = Brush { radius: 60.0, hardness: 1.0, grain: 1.0, ..Brush::default() };
         let light_touch =
-            DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None };
+            DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None, relief: None, bands: None };
         doc.active_canvas().dab_with(64.0, 64.0, &pencil, &light_touch);
         let covered = (0..128 * 128)
             .filter(|&i| doc.layers()[0].canvas.dry_pixels()[i][3] > 0.5)
@@ -1278,6 +1751,226 @@ mod tests {
 
         doc.add_layer();
         assert!(doc.transform_layer(Transform::default(), None).is_err(), "empty layer");
+    }
+
+    #[test]
+    fn impasto_is_lit_undoable_and_moves_with_transform() {
+        let mut doc = Document::new(80, 40, Color::WHITE);
+        let oil = Brush { radius: 6.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+        doc.begin_stroke();
+        let mut stroke = Stroke::begin(doc.active_canvas(), &oil, DabMode::Paint, 10.0, 20.0);
+        stroke.line_to(doc.active_canvas(), &oil, 40.0, 20.0);
+        stroke.finish(doc.active_canvas(), &oil);
+        doc.end_stroke();
+        assert!(doc.layers()[0].canvas.relief()[20 * 80 + 25] > 0.3);
+
+        // Lit: the edge facing the top-left light is brighter than the far edge.
+        let lit = doc.composite_rgba8(doc.bounds());
+        let red_at = |bytes: &[u8], x: usize, y: usize| bytes[(y * 80 + x) * 4] as i32 + bytes[(y * 80 + x) * 4 + 1] as i32;
+        // Rows 15 and 24 are the same distance from the stroke's center (y = 20).
+        let (near, far) = (red_at(&lit, 25, 15), red_at(&lit, 25, 24));
+        assert!(near > far + 10, "lit side {near} vs shadow side {far}");
+        // Impasto depth 0: flat again.
+        doc.set_surface(PaperSettings { impasto_depth: 0.0, ..doc.surface().settings() });
+        let flat = doc.composite_rgba8(doc.bounds());
+        assert_eq!(red_at(&flat, 25, 15), red_at(&flat, 25, 24));
+        doc.undo();
+
+        // Undoing the stroke removes the thickness too.
+        doc.undo();
+        assert!(doc.layers()[0].canvas.relief().iter().all(|&h| h == 0.0));
+        doc.redo();
+        assert!(doc.layers()[0].canvas.relief()[20 * 80 + 25] > 0.3);
+
+        // Transform moves the relief with the paint.
+        doc.transform_layer(Transform { dx: 30.0, ..Transform::default() }, None).unwrap();
+        assert!(doc.layers()[0].canvas.relief()[20 * 80 + 55] > 0.3);
+        assert_eq!(doc.layers()[0].canvas.relief()[20 * 80 + 15], 0.0);
+    }
+
+    #[test]
+    fn a_stroke_plows_through_wet_impasto_but_not_dried_impasto() {
+        let oil = Brush { radius: 8.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, ..Brush::default() };
+        let crossing = Brush { impasto: 0.3, color: RED, ..oil.clone() };
+        let paint = |doc: &mut Document, brush: &Brush, from: (f32, f32), to: (f32, f32)| {
+            doc.begin_stroke();
+            let mut stroke = Stroke::begin(doc.active_canvas(), brush, DabMode::Paint, from.0, from.1);
+            stroke.line_to(doc.active_canvas(), brush, to.0, to.1);
+            stroke.finish(doc.active_canvas(), brush);
+            doc.end_stroke();
+        };
+        // A thick horizontal stroke, then a thinner vertical one across it.
+        let setup = |dry_first: bool| {
+            let mut doc = Document::new(100, 100, Color::WHITE);
+            paint(&mut doc, &oil, (10.0, 50.0), (90.0, 50.0));
+            if dry_first {
+                doc.dry_layer();
+            }
+            let before: Vec<f32> = doc.layers()[0].canvas.relief().to_vec();
+            paint(&mut doc, &crossing, (50.0, 10.0), (50.0, 90.0));
+            (before, doc.layers()[0].canvas.relief().to_vec())
+        };
+        let at = |r: &[f32], x: usize, y: usize| r[y * 100 + x];
+
+        let (before, after) = setup(false);
+        assert!(at(&after, 50, 50) < at(&before, 50, 50) - 0.15, "wet: the crossing stroke scraped a furrow ({} → {})", at(&before, 50, 50), at(&after, 50, 50));
+        let ridge = (40..47).map(|x| at(&after, x, 50) - at(&before, x, 50)).fold(f32::MIN, f32::max);
+        assert!(ridge > 0.05, "wet: paint pushed up along the crossing stroke's side ({ridge})");
+
+        let (before, after) = setup(true);
+        assert!(at(&after, 50, 50) >= at(&before, 50, 50), "dried: nothing scraped away; new paint sits on top");
+        assert!(at(&after, 50, 50) > at(&before, 50, 50) + 0.1, "dried: the new paint piles up on the old");
+    }
+
+    #[test]
+    fn palette_knife_spreads_flat_and_scrapes_only_wet_paint() {
+        let knife = Brush {
+            radius: 16.0,
+            roundness: 0.15,
+            hardness: 1.0,
+            spacing: 0.03,
+            rotation: crate::Rotation::FollowStroke,
+            loading: 1.0,
+            length: 1.0,
+            oiliness: 0.7,
+            impasto: 0.9,
+            wet_medium: true,
+            knife: true,
+            color: RED,
+            ..Brush::default()
+        };
+        let stroke = |doc: &mut Document, brush: &Brush, from: (f32, f32), to: (f32, f32)| {
+            doc.begin_stroke();
+            let mut s = Stroke::begin(doc.active_canvas(), brush, DabMode::Paint, from.0, from.1);
+            s.line_to(doc.active_canvas(), brush, to.0, to.1);
+            s.finish(doc.active_canvas(), brush);
+            doc.end_stroke();
+        };
+        // Spreading: a flat-topped band (the thickness hardly varies across it).
+        let mut doc = Document::new(120, 60, Color::WHITE);
+        stroke(&mut doc, &knife, (10.0, 30.0), (110.0, 30.0));
+        let relief = |y: usize| doc.layers()[0].canvas.relief()[y * 120 + 60];
+        let middle: Vec<f32> = (24..37).map(relief).collect();
+        let (lo, hi) = middle.iter().fold((f32::MAX, 0.0f32), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+        assert!(lo > 0.6 && hi - lo < 0.05, "flat top: {middle:?}");
+        // The paint squeezed out at the blade's edges stands a little higher.
+        assert!(relief(22).max(relief(23)) > hi && relief(38).max(relief(37)) > hi, "edge ridges");
+
+        // Scraping: wet paint comes off, dried paint stays.
+        let scraper = Brush { loading: 0.0, paint_mode: PaintMode::Blend, ..knife.clone() };
+        let paint = Brush { radius: 12.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+        let mut doc = Document::new(120, 80, Color::WHITE);
+        stroke(&mut doc, &paint, (10.0, 20.0), (110.0, 20.0));
+        doc.dry_layer();
+        stroke(&mut doc, &paint, (10.0, 60.0), (110.0, 60.0));
+        stroke(&mut doc, &scraper, (60.0, 2.0), (60.0, 78.0));
+        let alpha = |doc: &Document, y: usize| doc.layers()[0].canvas.pixel(60, y).unwrap().a;
+        assert!(alpha(&doc, 60) < 0.5, "wet paint scraped off ({})", alpha(&doc, 60));
+        assert!(alpha(&doc, 20) > 0.95, "dried paint stays ({})", alpha(&doc, 20));
+    }
+
+    #[test]
+    fn thick_paint_casts_a_shadow_away_from_the_light() {
+        let mut doc = Document::new(100, 100, Color::WHITE);
+        doc.set_surface(PaperSettings { light_height: 20.0, shadows: 1.0, ..PaperSettings::flat() });
+        let blob = Brush { radius: 10.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+        doc.begin_stroke();
+        let mut stroke = Stroke::begin(doc.active_canvas(), &blob, DabMode::Paint, 50.0, 50.0);
+        stroke.finish(doc.active_canvas(), &blob);
+        doc.end_stroke();
+        // The light is at the top-left (225°): the shadow falls down-right, on bare paper.
+        let paper = |doc: &Document, x: usize, y: usize| doc.composite_rgba8(Region::new(x, y, x + 1, y + 1))[1];
+        let (lit_side, shadow_side) = (paper(&doc, 39, 39), paper(&doc, 62, 62));
+        assert!(shadow_side + 15 < lit_side, "shadow {shadow_side} vs lit {lit_side}");
+        doc.set_surface(PaperSettings { shadows: 0.0, ..doc.surface().settings() });
+        assert_eq!(paper(&doc, 62, 62), paper(&doc, 39, 39), "no shadows at 0");
+    }
+
+    #[test]
+    fn each_layer_can_have_its_own_impasto_depth() {
+        let mut doc = Document::new(80, 40, Color::WHITE);
+        // Thin enough that stronger relief isn't already at the lighting's limits.
+        let oil = Brush { radius: 6.0, impasto: 0.15, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+        doc.begin_stroke();
+        let mut stroke = Stroke::begin(doc.active_canvas(), &oil, DabMode::Paint, 10.0, 20.0);
+        stroke.line_to(doc.active_canvas(), &oil, 70.0, 20.0);
+        stroke.finish(doc.active_canvas(), &oil);
+        doc.end_stroke();
+        let edge = |doc: &Document| {
+            let px = doc.composite_rgba8(doc.bounds());
+            let at = |y: usize| px[(y * 80 + 40) * 4] as i32 + px[(y * 80 + 40) * 4 + 1] as i32;
+            (at(15), at(24)) // lit edge, shadow edge (same distance from the middle)
+        };
+        let (lit, shade) = edge(&doc);
+        assert!(lit > shade + 10, "lit with the painting's depth");
+
+        // This layer: flat (depth 0), whatever the painting's setting.
+        doc.set_layer_impasto(0, Some(0.0));
+        assert_eq!(doc.layer_impasto(0), 0.0);
+        let (lit0, shade0) = edge(&doc);
+        assert_eq!(lit0, shade0, "a layer with impasto depth 0 looks flat");
+        // Deeper than the painting: stronger relief.
+        doc.set_layer_impasto(0, Some(1.0));
+        let (lit1, shade1) = edge(&doc);
+        assert!(lit1 - shade1 > lit - shade, "deeper layer, stronger relief");
+        // Both slider moves were one undo step, back to the painting's depth.
+        assert_eq!(doc.undo_description(), Some("Layer impasto depth"));
+        doc.undo();
+        assert_eq!(doc.layers()[0].impasto, None);
+        assert_eq!(edge(&doc), (lit, shade));
+    }
+
+    #[test]
+    fn layer_groups_composite_as_one_picture_and_keep_together() {
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, Color::BLACK); // layer 0
+        doc.add_layer();
+        paint_dot(&mut doc, 10.0, 10.0, RED); // layer 1, exactly over it
+        let gid = doc.group_active_layer().unwrap();
+        assert_eq!(doc.groups()[0].name, "Group 1");
+        // Layer 0 moves up against the group: it joins it (no swap).
+        doc.set_active(0);
+        doc.move_active_layer(1);
+        assert_eq!(doc.layers()[0].group, Some(gid));
+        assert_eq!(doc.layers()[0].name, "Layer 1", "joined in place");
+
+        // At 50%, the group fades as one picture: red over black, then half
+        // of it — the black underneath doesn't show through the red.
+        doc.set_group_opacity(gid, 0.6);
+        doc.set_group_opacity(gid, 0.5);
+        let p = doc.composite_pixel(10, 10).unwrap();
+        assert!((p.r - 1.0).abs() < 0.02 && (p.g - 0.5).abs() < 0.02, "half red over white: {p:?}");
+        assert_eq!(doc.undo_description(), Some("Group opacity"), "slider drags are one step");
+
+        // Hiding the group hides its layers and blocks painting on them.
+        doc.set_group_visible(gid, false);
+        assert_eq!(doc.composite_pixel(10, 10), Some(Color::WHITE));
+        assert!(!doc.can_paint_active());
+        doc.undo();
+        assert!(doc.can_paint_active());
+
+        // A new layer added inside the group joins it; the top member moving up leaves it.
+        doc.set_active(1);
+        doc.add_layer();
+        assert_eq!(doc.layers()[2].group, Some(gid));
+        doc.move_active_layer(1);
+        assert_eq!(doc.layers()[2].group, None, "left the group at its top edge");
+        doc.undo();
+        assert_eq!(doc.layers()[2].group, Some(gid));
+
+        // Ungroup keeps the layers; undo brings the group back.
+        doc.ungroup(gid);
+        assert!(doc.groups().is_empty() && doc.layers().iter().all(|l| l.group.is_none()));
+        doc.undo();
+        assert_eq!(doc.layers()[0].group, Some(gid));
+
+        // Saved and loaded.
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        doc.save(&mut bytes).unwrap();
+        let loaded = Document::load(std::io::Cursor::new(bytes.into_inner())).unwrap();
+        assert_eq!(loaded.groups(), doc.groups());
+        assert_eq!(loaded.layers()[1].group, Some(gid));
+        assert_eq!(loaded.composite_pixel(10, 10), doc.composite_pixel(10, 10));
     }
 
     #[test]

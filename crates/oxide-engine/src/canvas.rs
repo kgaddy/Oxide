@@ -60,6 +60,11 @@ pub struct DabStyle<'a> {
     /// on *different* wet paint mixes like real pigment instead of blending
     /// like light (ultramarine + burnt umber → near-black, not purple).
     pub pigment: Option<&'a Pigment>,
+    /// Paint thickness change (impasto), for wet media. None = flat media.
+    pub relief: Option<ReliefDab>,
+    /// MultiColored brush: colors in bands across the tip (and, for pigment
+    /// mixing, each band's pigment). None = one color (`color`).
+    pub bands: Option<Bands<'a>>,
 }
 
 /// A grid of pixels we paint into: one layer of a painting.
@@ -74,6 +79,60 @@ pub struct DabStyle<'a> {
 /// - **dry** paint underneath: locked in, wet brushes glide over it
 /// - **wet** paint on top: wet brushes pick it up, blend and smear it
 ///
+/// The tallest paint can pile up on one layer (relief units: 1 = a thick,
+/// loaded stroke).
+pub const MAX_RELIEF: f32 = 2.0;
+
+/// A layer's full contents: dry paint, wet paint (premultiplied RGBA) and
+/// relief (paint thickness), whole-canvas or for one region.
+#[derive(Clone, Debug, Default)]
+pub struct Buffers {
+    pub dry: Vec<[f32; 4]>,
+    pub wet: Vec<[f32; 4]>,
+    pub relief: Vec<f32>,
+    /// How much of `relief` is still wet (movable) paint.
+    pub wet_relief: Vec<f32>,
+}
+
+impl Buffers {
+    /// Nothing painted, `n` pixels.
+    pub fn empty(n: usize) -> Self {
+        Buffers { dry: vec![[0.0; 4]; n], wet: vec![[0.0; 4]; n], relief: vec![0.0; n], wet_relief: vec![0.0; n] }
+    }
+
+    pub fn bytes(&self) -> usize {
+        (self.dry.len() + self.wet.len()) * 16 + (self.relief.len() + self.wet_relief.len()) * 4
+    }
+}
+
+/// How a dab changes the paint's thickness (impasto). Only wet media have one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReliefDab {
+    /// Fresh paint piles up to this thickness (times the tip's coverage, so
+    /// bristle streaks leave ridges).
+    pub build: f32,
+    /// Paint dragged by the brush levels the surface toward this thickness...
+    pub smear_to: f32,
+    /// ...this strongly (0 = not at all).
+    pub smear: f32,
+    /// How hard the brush plows through *wet* thick paint: it scrapes paint
+    /// from under its middle (0 = glides over it)...
+    pub plow: f32,
+    /// ...and shoves this much up into ridges along its sides.
+    pub push: f32,
+    /// A knife: fresh paint is flat-topped (no grooves) with a crisp edge.
+    pub flat: bool,
+    /// A knife scraping: how much of the *wet* paint under it comes off (0..=1).
+    pub scrape: f32,
+}
+
+/// MultiColored brush: the colors loaded across the tip for one dab.
+#[derive(Clone, Copy, Debug)]
+pub struct Bands<'a> {
+    pub colors: &'a [Color],
+    pub pigments: Option<&'a [Pigment]>,
+}
+
 /// What you see is wet over dry. "Dry layer" merges wet into dry.
 #[derive(Clone)]
 pub struct Canvas {
@@ -81,6 +140,14 @@ pub struct Canvas {
     height: usize,
     dry: Vec<[f32; 4]>,
     wet: Vec<[f32; 4]>,
+    /// Paint thickness (impasto), 0 = flat. Lit when the painting is shown.
+    relief: Vec<f32>,
+    /// The part of `relief` that is still wet: the next stroke can move it.
+    /// Dried thickness stays put, and new paint piles on top of it.
+    wet_relief: Vec<f32>,
+    /// Might any pixel have relief? (Exact after whole-layer changes; set as
+    /// soon as paint builds up. Lets flat paintings skip impasto lighting.)
+    has_relief: bool,
     /// How many pixels have any wet paint. Kept up to date as we paint, so
     /// asking "is anything wet?" is instant instead of scanning millions of
     /// pixels (the UI asks every frame).
@@ -103,6 +170,9 @@ impl Canvas {
             height,
             dry: vec![[0.0; 4]; width * height],
             wet: vec![[0.0; 4]; width * height],
+            relief: vec![0.0; width * height],
+            wet_relief: vec![0.0; width * height],
+            has_relief: false,
             wet_count: 0,
             dirty: None,
             changed: None,
@@ -144,6 +214,47 @@ impl Canvas {
         &self.wet
     }
 
+    /// Paint thickness (impasto), row by row.
+    pub fn relief(&self) -> &[f32] {
+        &self.relief
+    }
+
+    /// How much of the thickness is still wet, row by row.
+    pub fn wet_relief(&self) -> &[f32] {
+        &self.wet_relief
+    }
+
+    /// Is there (possibly) any thick paint on this layer?
+    pub fn has_relief(&self) -> bool {
+        self.has_relief
+    }
+
+    /// Replace the thickness maps (loading a file, merging): total, and how
+    /// much of it is wet (None = all dry).
+    pub fn set_relief(&mut self, relief: Vec<f32>, wet_relief: Option<Vec<f32>>) {
+        assert_eq!(relief.len(), self.relief.len(), "relief size must match canvas size");
+        self.wet_relief = wet_relief.unwrap_or_else(|| vec![0.0; relief.len()]);
+        assert_eq!(self.wet_relief.len(), relief.len(), "wet relief size must match canvas size");
+        self.relief = relief;
+        self.has_relief = self.relief.iter().any(|&h| h > 0.0);
+        self.mark_changed(self.bounds());
+    }
+
+    /// A copy of everything on this layer.
+    pub fn buffers(&self) -> Buffers {
+        Buffers { dry: self.dry.clone(), wet: self.wet.clone(), relief: self.relief.clone(), wet_relief: self.wet_relief.clone() }
+    }
+
+    /// The paint at (x, y) (premultiplied): only the wet paint, or with
+    /// `include_dry` everything. None off the canvas.
+    pub fn paint_at(&self, x: f32, y: f32, include_dry: bool) -> Option<[f32; 4]> {
+        if x < 0.0 || y < 0.0 || x >= self.width as f32 || y >= self.height as f32 {
+            return None;
+        }
+        let i = y as usize * self.width + x as usize;
+        Some(if include_dry { self.combined(i) } else { self.wet[i] })
+    }
+
     /// What pixel `i` looks like: wet paint over dry paint (premultiplied).
     pub fn combined(&self, i: usize) -> [f32; 4] {
         over(self.wet[i], self.dry[i])
@@ -180,6 +291,9 @@ impl Canvas {
     pub fn clear(&mut self, color: Color) {
         self.dry.fill(premultiply(color));
         self.wet.fill([0.0; 4]);
+        self.relief.fill(0.0);
+        self.wet_relief.fill(0.0);
+        self.has_relief = false;
         self.wet_count = 0;
         self.mark_changed(self.bounds());
     }
@@ -205,19 +319,27 @@ impl Canvas {
         self.mark_dirty(region);
     }
 
-    /// Copy the (dry, wet) pixels in `region` out, row by row.
-    pub fn read_region(&self, region: Region) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
-        (read_rows(&self.dry, self.width, region), read_rows(&self.wet, self.width, region))
+    /// Copy everything in `region` out, row by row.
+    pub fn read_region(&self, region: Region) -> Buffers {
+        Buffers {
+            dry: read_rows(&self.dry, self.width, region),
+            wet: read_rows(&self.wet, self.width, region),
+            relief: read_rows(&self.relief, self.width, region),
+            wet_relief: read_rows(&self.wet_relief, self.width, region),
+        }
     }
 
     /// Put pixels (as returned by [`Canvas::read_region`]) back into `region`.
-    pub fn write_region(&mut self, region: Region, dry: &[[f32; 4]], wet: &[[f32; 4]]) {
+    pub fn write_region(&mut self, region: Region, b: &Buffers) {
         // Adjust the wet count for just the pixels being replaced.
         let before = read_rows(&self.wet, self.width, region).iter().filter(|p| p[3] > 0.0).count();
-        let after = wet.iter().filter(|p| p[3] > 0.0).count();
+        let after = b.wet.iter().filter(|p| p[3] > 0.0).count();
         self.wet_count = self.wet_count - before + after;
-        write_rows(&mut self.dry, self.width, region, dry);
-        write_rows(&mut self.wet, self.width, region, wet);
+        write_rows(&mut self.dry, self.width, region, &b.dry);
+        write_rows(&mut self.wet, self.width, region, &b.wet);
+        write_rows(&mut self.relief, self.width, region, &b.relief);
+        write_rows(&mut self.wet_relief, self.width, region, &b.wet_relief);
+        self.has_relief |= b.relief.iter().any(|&h| h > 0.0);
         self.mark_changed(region);
     }
 
@@ -232,12 +354,18 @@ impl Canvas {
         self.mark_changed(self.bounds());
     }
 
-    /// Swap both buffers with the given ones (drying, rewetting, and their undo).
-    pub fn swap_buffers(&mut self, dry: &mut Vec<[f32; 4]>, wet: &mut Vec<[f32; 4]>) {
-        assert_eq!(dry.len(), self.dry.len());
-        assert_eq!(wet.len(), self.wet.len());
-        std::mem::swap(&mut self.dry, dry);
-        std::mem::swap(&mut self.wet, wet);
+    /// Swap the whole layer with `b` (drying, rewetting, clearing, merging,
+    /// transforming, and their undo).
+    pub fn swap_buffers(&mut self, b: &mut Buffers) {
+        assert_eq!(b.dry.len(), self.dry.len());
+        assert_eq!(b.wet.len(), self.wet.len());
+        assert_eq!(b.relief.len(), self.relief.len());
+        assert_eq!(b.wet_relief.len(), self.wet_relief.len());
+        std::mem::swap(&mut self.wet_relief, &mut b.wet_relief);
+        std::mem::swap(&mut self.dry, &mut b.dry);
+        std::mem::swap(&mut self.wet, &mut b.wet);
+        std::mem::swap(&mut self.relief, &mut b.relief);
+        self.has_relief = self.relief.iter().any(|&h| h > 0.0);
         self.recount_wet();
         self.mark_dirty(self.bounds());
     }
@@ -258,7 +386,7 @@ impl Canvas {
     /// Strokes are made of many overlapping dabs; see [`crate::Stroke`].
     pub fn dab(&mut self, cx: f32, cy: f32, brush: &Brush, mode: DabMode) {
         let style =
-            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0, pigment: None };
+            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         self.dab_with(cx, cy, brush, &style);
     }
 
@@ -267,6 +395,9 @@ impl Canvas {
     pub fn dab_with(&mut self, cx: f32, cy: f32, brush: &Brush, style: &DabStyle) {
         let Some(Region { x0, y0, x1, y1 }) = self.dab_bounds(cx, cy, brush) else { return };
         let src = premultiply(style.color);
+        // MultiColored brush: which band a pixel is in depends on where it is across the tip.
+        let (band_sin, band_cos) = brush.angle.to_radians().sin_cos();
+        let band_span = 0.5 / brush.radius.max(0.5);
         // Only consult the paper if this brush feels it.
         let paper = self.surface.clone().filter(|_| brush.grain > 0.0 && style.mode == DabMode::Paint);
         for y in y0..y1 {
@@ -297,26 +428,35 @@ impl Canvas {
                     strength *= surface_acceptance(paper.height_at(x, y), brush.grain, style.reach);
                 }
                 let i = y * self.width + x;
-                let paint = scale(src, strength);
+                let (color, pigment) = match style.bands {
+                    Some(bands) => {
+                        let t = 0.5 + (dx * band_cos + dy * band_sin) * band_span;
+                        let (c, n) = crate::multicolor::band_at(bands.colors, t);
+                        (c, bands.pigments.map(|p| &p[n]))
+                    }
+                    None => (style.color, style.pigment),
+                };
+                let paint = if style.bands.is_some() { scale(premultiply(color), strength) } else { scale(src, strength) };
                 let was_wet = self.wet[i][3] > 0.0;
                 match style.mode {
                     DabMode::Paint => match style.wetness {
                         // Wet paint goes into the wet buffer, on top, mixing
                         // with the wet paint already there.
-                        Wetness::Wet => self.wet[i] = deposit_wet(paint, self.wet[i], style),
+                        Wetness::Wet => self.wet[i] = deposit_wet(paint, self.wet[i], color, pigment),
                         // Dry paint on top of wet paint: whatever wet paint is
                         // here dries underneath it, then the dry paint covers it.
                         Wetness::Dry => {
                             if self.wet[i][3] > 0.0 {
                                 self.dry[i] = over(self.wet[i], self.dry[i]);
                                 self.wet[i] = [0.0; 4];
+                                self.wet_relief[i] = 0.0; // its thickness dries too
                             }
                             self.dry[i] = over(paint, self.dry[i]);
                         }
                         // Smudging: moved paint stays wet where it's wet, dry where it's dry.
                         Wetness::Keep => {
                             if self.wet[i][3] > 0.01 {
-                                self.wet[i] = deposit_wet(paint, self.wet[i], style);
+                                self.wet[i] = deposit_wet(paint, self.wet[i], color, pigment);
                             } else {
                                 self.dry[i] = over(paint, self.dry[i]);
                             }
@@ -325,7 +465,42 @@ impl Canvas {
                     DabMode::Erase => {
                         self.dry[i] = scale(self.dry[i], 1.0 - strength);
                         self.wet[i] = scale(self.wet[i], 1.0 - strength);
+                        self.relief[i] *= 1.0 - strength;
+                        self.wet_relief[i] *= 1.0 - strength;
                     }
+                }
+                // Impasto: dragged paint levels the surface, fresh paint piles up.
+                // Only the wet part moves; dried thickness is a base the new paint sits on.
+                if let (DabMode::Paint, Some(r)) = (style.mode, style.relief) {
+                    let dry_h = (self.relief[i] - self.wet_relief[i]).max(0.0);
+                    let mut h = self.wet_relief[i];
+                    let c = coverage.clamp(0.0, 1.0);
+                    if r.plow > 0.0 {
+                        // Plowing: scrape wet paint from under the brush's middle...
+                        h -= h * (r.plow * strength).min(1.0);
+                        // ...and shove it up along the brush's edges.
+                        h += r.push * r.plow * 4.0 * c * (1.0 - c);
+                    }
+                    if r.smear > 0.0 {
+                        h += (r.smear_to - h) * (r.smear * strength).min(1.0);
+                    }
+                    // A full body of paint with softer grooves where the bristles part
+                    // (the square root lifts the grooves without filling them).
+                    if r.scrape > 0.0 {
+                        // Scraping: wet paint comes off the canvas (dried paint stays).
+                        // (By where the blade touches, not by how much paint it lays down.)
+                        let k = (r.scrape * c).min(0.95);
+                        self.wet[i] = scale(self.wet[i], 1.0 - k);
+                        h *= 1.0 - k;
+                    }
+                    let target = if r.flat { r.build * (c / 0.35).min(1.0) } else { r.build * c.sqrt() };
+                    if target > h {
+                        h += (target - h) * strength;
+                    }
+                    let h = h.clamp(0.0, (MAX_RELIEF - dry_h).max(0.0));
+                    self.wet_relief[i] = h;
+                    self.relief[i] = dry_h + h;
+                    self.has_relief |= self.relief[i] > 0.0;
                 }
                 match (was_wet, self.wet[i][3] > 0.0) {
                     (false, true) => self.wet_count += 1,
@@ -364,6 +539,24 @@ impl Canvas {
 }
 
 impl Canvas {
+    /// The average *wet* paint thickness under a dab, weighted by the brush
+    /// shape: what the brush can move.
+    pub fn sample_relief(&self, cx: f32, cy: f32, brush: &Brush) -> f32 {
+        let Some(Region { x0, y0, x1, y1 }) = self.dab_bounds(cx, cy, brush) else { return 0.0 };
+        let step = ((x1 - x0).max(y1 - y0) / 6).max(1);
+        let (mut sum, mut weight) = (0.0f32, 0.0f32);
+        for y in (y0..y1).step_by(step) {
+            for x in (x0..x1).step_by(step) {
+                let w = brush.coverage(x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                if w > 0.0 {
+                    sum += self.wet_relief[y * self.width + x] * w;
+                    weight += w;
+                }
+            }
+        }
+        if weight > 0.0 { sum / weight } else { 0.0 }
+    }
+
     /// Like [`Canvas::sample_under`], but the colors under the brush are
     /// averaged **like paint** (pigment mixing) instead of like light, so
     /// blending blue against brown gives a dark neutral, not purple.
@@ -420,10 +613,10 @@ fn write_rows<T: Copy>(buffer: &mut [T], width: usize, region: Region, data: &[T
 /// two colors really differ, the colors mix like paint (Kubelka-Munk);
 /// otherwise (or where they're the same color) it's a plain "over".
 #[inline]
-fn deposit_wet(paint: [f32; 4], dst: [f32; 4], style: &DabStyle) -> [f32; 4] {
+fn deposit_wet(paint: [f32; 4], dst: [f32; 4], src: Color, pigment: Option<&Pigment>) -> [f32; 4] {
     let (a_new, a_old) = (paint[3], dst[3]);
     let plain = over(paint, dst);
-    let Some(pigment) = style.pigment else { return plain };
+    let Some(pigment) = pigment else { return plain };
     // Nothing (much) underneath, or the new paint fully covers it: no mixing needed.
     if a_old < 0.01 || a_new >= 0.98 || a_new <= 0.0 {
         return plain;
@@ -431,7 +624,6 @@ fn deposit_wet(paint: [f32; 4], dst: [f32; 4], style: &DabStyle) -> [f32; 4] {
     // Same color underneath (the usual case inside a stroke): mixing would
     // give the same color, so skip the expensive part.
     let old = [dst[0] / a_old, dst[1] / a_old, dst[2] / a_old];
-    let src = style.color;
     let diff = (old[0] - src.r).abs() + (old[1] - src.g).abs() + (old[2] - src.b).abs();
     if diff < 0.02 {
         return plain;
@@ -540,10 +732,10 @@ mod tests {
         let mut canvas = Canvas::new(10, 10, Color::WHITE);
         let region = Region::new(2, 3, 6, 8);
         let saved = canvas.read_region(region);
-        assert_eq!(saved.0.len(), 4 * 5);
+        assert_eq!(saved.dry.len(), 4 * 5);
         canvas.dab(4.0, 5.0, &Brush { radius: 2.0, ..Brush::default() }, DabMode::Paint);
         assert_eq!(canvas.pixel(4, 5), Some(Color::BLACK));
-        canvas.write_region(region, &saved.0, &saved.1);
+        canvas.write_region(region, &saved);
         assert_eq!(canvas.pixel(4, 5), Some(Color::WHITE));
     }
 
@@ -553,7 +745,7 @@ mod tests {
         let brush = Brush { radius: 5.0, ..Brush::default() };
         // Dry red underneath, wet blue on top.
         canvas.dab(10.0, 10.0, &Brush { color: Color::rgb(1.0, 0.0, 0.0), ..brush.clone() }, DabMode::Paint);
-        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet_blue);
         assert!(canvas.has_wet_paint());
 
@@ -569,7 +761,7 @@ mod tests {
     fn wet_count_stays_exact() {
         let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
         let brush = Brush { radius: 6.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         let exact = |c: &Canvas| c.wet_pixels().iter().filter(|p| p[3] > 0.0).count();
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab_with(14.0, 12.0, &brush, &wet);
@@ -581,7 +773,7 @@ mod tests {
         let saved = canvas.read_region(canvas.bounds());
         canvas.clear(Color::TRANSPARENT);
         assert!(!canvas.has_wet_paint());
-        canvas.write_region(canvas.bounds(), &saved.0, &saved.1);
+        canvas.write_region(canvas.bounds(), &saved);
         assert_eq!(canvas.wet_count, exact(&canvas));
         assert!(canvas.has_wet_paint());
     }
@@ -603,7 +795,7 @@ mod tests {
     fn dry_media_dries_the_wet_paint_it_covers() {
         let mut canvas = Canvas::new(20, 20, Color::TRANSPARENT);
         let brush = Brush { radius: 5.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab(10.0, 10.0, &Brush { color: Color::WHITE, ..brush }, DabMode::Paint);
         assert_eq!(canvas.wetness_at(10, 10), 0.0);

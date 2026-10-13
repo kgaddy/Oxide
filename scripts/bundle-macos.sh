@@ -47,6 +47,43 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key>   <string>11.0</string>
     <key>NSHighResolutionCapable</key>  <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <!-- .oxide paintings open in Oxide (double-click, Open With); brush files and images can be opened with it too. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>        <string>Oxide Painting</string>
+            <key>CFBundleTypeRole</key>        <string>Editor</string>
+            <key>LSHandlerRank</key>           <string>Owner</string>
+            <key>CFBundleTypeIconFile</key>    <string>Oxide</string>
+            <key>LSItemContentTypes</key>      <array><string>com.kevingaddy.oxide.painting</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>        <string>Brush Tips</string>
+            <key>CFBundleTypeRole</key>        <string>Viewer</string>
+            <key>LSHandlerRank</key>           <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>  <array><string>abr</string><string>gbr</string><string>gih</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>        <string>Image</string>
+            <key>CFBundleTypeRole</key>        <string>Viewer</string>
+            <key>LSHandlerRank</key>           <string>Alternate</string>
+            <key>LSItemContentTypes</key>      <array><string>public.image</string></array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>        <string>com.kevingaddy.oxide.painting</string>
+            <key>UTTypeDescription</key>       <string>Oxide Painting</string>
+            <key>UTTypeIconFile</key>          <string>Oxide</string>
+            <key>UTTypeConformsTo</key>        <array><string>public.data</string><string>public.content</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key> <array><string>oxide</string></array>
+                <key>public.mime-type</key>          <array><string>application/vnd.oxide+zip</string></array>
+            </dict>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
@@ -59,5 +96,7 @@ if [ "${1:-}" = "--install" ]; then
     mkdir -p "$HOME/Applications"
     rm -rf "$HOME/Applications/Oxide.app"
     cp -R "$APP" "$HOME/Applications/Oxide.app"
+    # Tell Finder about the app (and the .oxide file type) right away.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Applications/Oxide.app" >/dev/null 2>&1 || true
     echo "Installed ~/Applications/Oxide.app"
 fi

@@ -10,8 +10,7 @@ use std::collections::VecDeque;
 
 use crate::{Color, Layer, PaperSettings, Region};
 
-/// A layer's full contents: (dry paint, wet paint), premultiplied RGBA.
-pub(crate) type Buffers = (Vec<[f32; 4]>, Vec<[f32; 4]>);
+pub(crate) use crate::canvas::Buffers;
 
 pub(crate) enum Edit {
     /// Pixels (dry and wet) in one layer changed: a stroke, an erase, ...
@@ -33,6 +32,11 @@ pub(crate) enum Edit {
     /// A layer's visibility was toggled.
     Visibility { layer: usize },
     Opacity { layer: usize, before: f32, after: f32 },
+    /// Layer groups or which group layers belong to changed. Holds the *other*
+    /// state; flipping swaps it in.
+    Groups { other: crate::document::GroupState, label: &'static str },
+    /// A layer's own impasto depth changed (None = uses the painting's).
+    LayerImpasto { layer: usize, before: Option<f32>, after: Option<f32> },
     Rename { layer: usize, before: String, after: String },
     Paper { before: Color, after: Color },
     /// The paper texture changed.
@@ -56,10 +60,10 @@ impl Edit {
     fn bytes(&self) -> usize {
         const PIXEL: usize = std::mem::size_of::<[f32; 4]>();
         match self {
-            Edit::Pixels { before, after, .. } => (before.0.len() + before.1.len() + after.0.len() + after.1.len()) * PIXEL,
-            Edit::Wetness { layers, .. } => layers.iter().map(|(_, (d, w))| (d.len() + w.len()) * PIXEL).sum(),
+            Edit::Pixels { before, after, .. } => before.bytes() + after.bytes(),
+            Edit::Wetness { layers, .. } => layers.iter().map(|(_, b)| b.bytes()).sum(),
             Edit::Batch { edits, .. } => edits.iter().map(Edit::bytes).sum(),
-            Edit::RemoveLayer { layer, .. } => layer.canvas.dry_pixels().len() * 2 * PIXEL,
+            Edit::RemoveLayer { layer, .. } => layer.canvas.dry_pixels().len() * (2 * PIXEL + 4),
             _ => 64,
         }
     }
@@ -73,6 +77,8 @@ impl Edit {
             Edit::MoveLayer { .. } => "Move layer",
             Edit::Visibility { .. } => "Show/hide layer",
             Edit::Opacity { .. } => "Layer opacity",
+            Edit::LayerImpasto { .. } => "Layer impasto depth",
+            Edit::Groups { label, .. } => label,
             Edit::Rename { .. } => "Rename layer",
             Edit::Paper { .. } => "Paper color",
             Edit::Surface { .. } => "Paper texture",
@@ -132,6 +138,12 @@ impl History {
         let Some(last) = self.undo.back_mut() else { return false };
         match (&mut last.edit, edit) {
             (Edit::Opacity { layer: a, after, .. }, Edit::Opacity { layer: b, after: new, .. }) if a == b => {
+                *after = *new;
+                true
+            }
+            // A group-opacity slider drag: keep the state from before the drag.
+            (Edit::Groups { label: a, .. }, Edit::Groups { label: b, .. }) if *a == "Group opacity" && *b == "Group opacity" => true,
+            (Edit::LayerImpasto { layer: a, after, .. }, Edit::LayerImpasto { layer: b, after: new, .. }) if a == b => {
                 *after = *new;
                 true
             }

@@ -362,8 +362,8 @@ impl OxideApp {
         });
 
         if let Some(color) = picked {
-            self.set_color(color);
-            self.remember_color(color);
+            self.pick_color(color);
+            self.remember_color(self.color);
         }
 
         // ---------- Notes ----------

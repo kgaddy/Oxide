@@ -9,6 +9,8 @@ use super::{Command, OxideApp, SHORTCUTS};
 pub enum Entry {
     Item { label: String, command: Command, enabled: bool, checked: Option<bool> },
     Separator,
+    /// A submenu whose items change (File → Open Recent).
+    Submenu { label: &'static str, entries: Vec<Entry> },
 }
 
 pub struct Menu {
@@ -30,13 +32,14 @@ fn check(label: impl Into<String>, command: Command, checked: bool, enabled: boo
 
 /// The keyboard shortcuts that aren't in a menu (single keys and gestures).
 pub const OTHER_SHORTCUTS: &[(&str, &str)] = &[
-    ("Tools", "B oils & acrylics · N ink · P pencil · M marker · U airbrush · E eraser · S smudge · I picker"),
+    ("Tools", "B oils & acrylics · N ink · P pencil · M marker · U airbrush · E eraser · S smudge · K palette knife · I picker"),
     ("Oils paint modes", "1 Paint · 2 Paint & Mix · 3 Paint & Blend · 4 Blend · 5 Erase"),
     ("Blend / Erase", "V Blend · A Erase (tap = switch, hold = only while held)"),
     ("Brush size", "[ smaller · ] bigger · ⌘-drag on the canvas: size (←→) and loading (↑↓)"),
     ("View", "R-drag rotate · Shift+F flip · G greyscale · 0 = 100% · . = fit"),
     ("Pan and zoom", "Space+drag or middle-drag to pan · pinch or ⌘+scroll to zoom"),
     ("Layers", "/ lock transparency"),
+    ("Mix Color", "hold X and pick a color (swatch, canvas with the Picker, palette, reference image): it mixes into the current color like paint"),
     ("Transform (⌘T)", "drag inside = move · handles = scale (Shift = free) · outside = rotate (Shift = 15°) · arrows nudge · Enter apply · Esc cancel"),
     ("Reference image", "scroll = zoom · drag = pan · double-click = fit · ⌥-click (or Picker) = pick a color"),
 ];
@@ -59,6 +62,7 @@ impl OxideApp {
                 entries: vec![
                     item("New…", New),
                     item("Open…", Open),
+                    Entry::Submenu { label: "Open Recent", entries: self.recent_entries() },
                     Entry::Separator,
                     item("Save", Save),
                     item("Save As…", SaveAs),
@@ -76,6 +80,8 @@ impl OxideApp {
                     item_if(redo.map_or("Redo".into(), |d| format!("Redo {d}")), Redo, redo.is_some()),
                     Entry::Separator,
                     check("Natural Colors (mix like paint)", NaturalColors, self.app_settings.natural_colors, true),
+                    check("MultiColored Brush", MultiColor, self.multicolor_on, true),
+                    item("Swap Primary/Secondary Color", SwapColors),
                 ],
             },
             Menu {
@@ -103,6 +109,9 @@ impl OxideApp {
                     item_if("Duplicate Layer", DuplicateLayer, free),
                     item_if("Delete Layer", DeleteLayer, free && count > 1),
                     item_if("Clear Layer", ClearLayer, free),
+                    Entry::Separator,
+                    item_if("Group Layer", GroupLayer, free && layer.group.is_none()),
+                    item_if("Ungroup", Ungroup, free && layer.group.is_some()),
                     Entry::Separator,
                     item_if("Merge Down", MergeDown, free && active > 0),
                     item_if("Merge Visible", MergeVisible, free && count > 1),
@@ -136,6 +145,28 @@ impl OxideApp {
         ]
     }
 
+    /// File → Open Recent: the last paintings (missing ones greyed), then Clear Menu.
+    fn recent_entries(&self) -> Vec<Entry> {
+        let mut entries: Vec<Entry> = self
+            .app_settings
+            .recent_files
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(n, path)| {
+                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                item_if(name, Command::OpenRecent(n as u8), path.exists())
+            })
+            .collect();
+        if entries.is_empty() {
+            entries.push(item_if("No Recent Paintings", Command::ClearRecent, false));
+        } else {
+            entries.push(Entry::Separator);
+            entries.push(item("Clear Menu", Command::ClearRecent));
+        }
+        entries
+    }
+
     /// The in-window menu bar (used when there's no macOS menu bar).
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let mut clicked = None;
@@ -143,26 +174,7 @@ impl OxideApp {
         egui::MenuBar::new().ui(ui, |ui| {
             for menu in &menus {
                 ui.menu_button(menu.title, |ui| {
-                    for entry in &menu.entries {
-                        match entry {
-                            Entry::Separator => {
-                                ui.separator();
-                            }
-                            Entry::Item { label, command, enabled, checked } => {
-                                let text = match checked {
-                                    Some(true) => format!("✔ {label}"),
-                                    _ => label.clone(),
-                                };
-                                let mut button = egui::Button::new(text);
-                                if let Some((_, shortcut)) = SHORTCUTS.iter().find(|(c, _)| c == command) {
-                                    button = button.shortcut_text(ui.ctx().format_shortcut(shortcut));
-                                }
-                                if ui.add_enabled(*enabled, button).clicked() {
-                                    clicked = Some(*command);
-                                }
-                            }
-                        }
-                    }
+                    show_entries(ui, &menu.entries, &mut clicked);
                     if menu.title == "File" {
                         ui.separator();
                         if ui.button("Quit").clicked() {
@@ -211,6 +223,33 @@ impl OxideApp {
     }
 }
 
+/// Menu entries inside the in-window menu bar (submenus recurse).
+fn show_entries(ui: &mut egui::Ui, entries: &[Entry], clicked: &mut Option<Command>) {
+    for entry in entries {
+        match entry {
+            Entry::Separator => {
+                ui.separator();
+            }
+            Entry::Submenu { label, entries } => {
+                ui.menu_button(*label, |ui| show_entries(ui, entries, clicked));
+            }
+            Entry::Item { label, command, enabled, checked } => {
+                let text = match checked {
+                    Some(true) => format!("✔ {label}"),
+                    _ => label.clone(),
+                };
+                let mut button = egui::Button::new(text);
+                if let Some((_, shortcut)) = SHORTCUTS.iter().find(|(c, _)| c == command) {
+                    button = button.shortcut_text(ui.ctx().format_shortcut(shortcut));
+                }
+                if ui.add_enabled(*enabled, button).clicked() {
+                    *clicked = Some(*command);
+                }
+            }
+        }
+    }
+}
+
 /// The real macOS menu bar (top of the screen), built with `muda`.
 #[cfg(target_os = "macos")]
 pub mod native {
@@ -237,10 +276,15 @@ pub mod native {
         checked: Option<bool>,
     }
 
+    /// A submenu item as shown: (label, command, enabled); an empty label is a separator.
+    type ShownItem = (String, Command, bool);
+
     pub struct NativeMenu {
         _menu: muda::Menu,
         items: Vec<(Native, Shown)>,
         commands: HashMap<MenuId, Command>,
+        /// Submenus whose items change (Open Recent), with what they show now.
+        dynamic: Vec<(Submenu, Vec<ShownItem>)>,
         /// Commands whose shortcut the menu bar handles (macOS sends those keys
         /// to the menu, so the app must not also react to them).
         handled_shortcuts: Vec<Command>,
@@ -292,6 +336,7 @@ pub mod native {
             let mut items = Vec::new();
             let mut commands = HashMap::new();
             let mut handled_shortcuts = Vec::new();
+            let mut dynamic = Vec::new();
 
             // The app menu (named after the app by macOS).
             let quit = MenuItem::with_id("Quit", "Quit Oxide", true, "cmd+q".parse().ok());
@@ -330,6 +375,12 @@ pub mod native {
                     match entry {
                         Entry::Separator => {
                             submenu.append(&PredefinedMenuItem::separator()).ok()?;
+                        }
+                        Entry::Submenu { label, .. } => {
+                            // Filled in by `sync` (its items change).
+                            let inner = Submenu::new(*label, true);
+                            submenu.append(&inner).ok()?;
+                            dynamic.push((inner, Vec::new()));
                         }
                         Entry::Item { label, command, enabled, checked } => {
                             let accel = SHORTCUTS.iter().find(|(c, _)| c == command).and_then(|(_, s)| accelerator(s));
@@ -375,7 +426,9 @@ pub mod native {
                 tx.send(event.id).ok();
                 ctx.request_repaint();
             }));
-            Some(NativeMenu { _menu: menu, items, commands, handled_shortcuts, events: rx })
+            let mut native = NativeMenu { _menu: menu, items, commands, dynamic, handled_shortcuts, events: rx };
+            native.sync(menus);
+            Some(native)
         }
 
         /// Menu items chosen since the last frame.
@@ -390,9 +443,37 @@ pub mod native {
 
         /// Update labels, check marks and enabled states (same structure as at install).
         pub fn sync(&mut self, menus: &[Menu]) {
+            // Submenus that change: rebuild when their list differs.
+            let submenus = menus.iter().flat_map(|m| &m.entries).filter_map(|e| match e {
+                Entry::Submenu { entries, .. } => Some(entries),
+                _ => None,
+            });
+            for ((submenu, shown), entries) in self.dynamic.iter_mut().zip(submenus) {
+                let now: Vec<ShownItem> = entries
+                    .iter()
+                    .map(|e| match e {
+                        Entry::Item { label, command, enabled, .. } => (label.clone(), *command, *enabled),
+                        _ => (String::new(), Command::ClearRecent, false), // separator
+                    })
+                    .collect();
+                if *shown == now {
+                    continue;
+                }
+                while submenu.remove_at(0).is_some() {}
+                for (label, command, enabled) in &now {
+                    if label.is_empty() {
+                        submenu.append(&PredefinedMenuItem::separator()).ok();
+                    } else {
+                        let item = MenuItem::with_id(format!("{command:?}"), label, *enabled, None);
+                        self.commands.insert(item.id().clone(), *command);
+                        submenu.append(&item).ok();
+                    }
+                }
+                *shown = now;
+            }
             let entries = menus.iter().flat_map(|m| &m.entries).filter_map(|e| match e {
                 Entry::Item { label, enabled, checked, .. } => Some(Shown { label: label.clone(), enabled: *enabled, checked: *checked }),
-                Entry::Separator => None,
+                _ => None,
             });
             for ((native, shown), now) in self.items.iter_mut().zip(entries) {
                 // macOS ticks a check item itself when it's clicked, so compare with what it really shows.

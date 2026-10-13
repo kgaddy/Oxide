@@ -8,6 +8,7 @@ pub mod export;
 pub mod import;
 pub mod palette;
 pub mod session;
+pub mod tip_import;
 pub mod tools;
 
 pub use command::Command;

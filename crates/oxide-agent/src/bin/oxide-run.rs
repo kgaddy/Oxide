@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use oxide_commands::{Command, Session};
 
 fn main() {
+    oxide_commands::tip_import::load_library();
     let input: Box<dyn BufRead> = match std::env::args().nth(1) {
         Some(path) => match std::fs::File::open(&path) {
             Ok(f) => Box::new(BufReader::new(f)),

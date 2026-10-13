@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
-use crate::canvas::unpremultiply;
+mod bristle;
+
+use crate::canvas::{Bands, ReliefDab, unpremultiply};
 use crate::paint::mix_paint;
 use crate::tip::{DabTexture, hash2};
 use crate::brush::{PaintMode, Rotation};
@@ -73,6 +75,8 @@ pub struct Stroke {
     has_direction: bool,
     /// Dabs placed but not painted yet, in case the brush lifts off soon.
     tail: VecDeque<PendingDab>,
+    /// The hairs of a bristle brush (empty for stamped tips, or until the first step).
+    bristles: Vec<bristle::Bristle>,
 }
 
 struct WetPaint {
@@ -87,6 +91,14 @@ struct WetPaint {
     initial: f32,
     /// False until the first dab has touched the canvas.
     started: bool,
+    /// How thick the paint the brush is pushing along is (impasto it picked up).
+    relief: f32,
+    /// MultiColored brush: the colors at the tip, band by band across it
+    /// (empty for a single color), the fresh paint feeding each band, and
+    /// the average they drift toward as the colors mix on the brush.
+    bands: Vec<Color>,
+    band_loaded: Vec<Color>,
+    band_average: Color,
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +137,11 @@ impl Stroke {
             amount: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
             initial: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
             started: false,
+            relief: 0.0,
+            // (A MultiColored brush starts clean, with its colors side by side.)
+            bands: brush.colors.clone(),
+            band_loaded: brush.colors.clone(),
+            band_average: crate::multicolor::average(&brush.colors, brush.mixing),
         });
         // Until the brush moves, streaks follow the tip's angle.
         let (sin, cos) = brush.angle.to_radians().sin_cos();
@@ -139,6 +156,7 @@ impl Stroke {
             dir: (cos, sin),
             has_direction: false,
             tail: VecDeque::new(),
+            bristles: Vec::new(),
         };
         stroke.place(canvas, brush, x, y, point.pressure, point.pen_angle(brush.rotation));
         stroke
@@ -192,7 +210,10 @@ impl Stroke {
     /// The color on the brush now (for wet brushes), so a "dirty brush" can
     /// carry it into the next stroke.
     pub fn carried_color(&self) -> Option<Color> {
-        self.wet.as_ref().map(|w| w.color)
+        self.wet.as_ref().map(|w| match w.bands.is_empty() {
+            true => w.color,
+            false => crate::multicolor::average(&w.bands, Mixing::Rgb),
+        })
     }
 
     /// Smoothly turn the travel direction toward (x, y), so mouse jitter
@@ -236,9 +257,22 @@ impl Stroke {
         }
         adjusted.radius = (brush.radius * brush.pressure_size(pressure)).max(0.5);
         adjusted.opacity = brush.opacity * brush.pressure_opacity(pressure);
-        let brush = &adjusted;
         let dab_seed = hash2(self.seed, self.dab_count);
         self.dab_count += 1;
+        // A multi-frame imported tip: each dab picks one of its variations.
+        adjusted.tip_frame = crate::tip::hash(dab_seed ^ 0x7f);
+        // Jitter: each dab turned, sized and placed a little differently, so
+        // texture tips don't repeat like a rubber stamp.
+        let (mut x, mut y) = (x, y);
+        if brush.bristles.is_none() && (brush.jitter_angle > 0.0 || brush.jitter_size > 0.0 || brush.scatter > 0.0) {
+            let rand = |n: u32| (crate::tip::hash(dab_seed ^ n) >> 8) as f32 / (1u32 << 24) as f32;
+            adjusted.angle += (rand(1) - 0.5) * 360.0 * brush.jitter_angle.clamp(0.0, 1.0);
+            adjusted.radius = (adjusted.radius * (1.0 - 0.7 * brush.jitter_size.clamp(0.0, 1.0) * rand(2))).max(0.5);
+            let (a, d) = (rand(3) * std::f32::consts::TAU, rand(4) * brush.scatter.clamp(0.0, 1.0) * brush.radius);
+            x += a.cos() * d;
+            y += a.sin() * d;
+        }
+        let brush = &adjusted;
 
         // Lifting off: fewer bristles touch, so the mark gets thinner and fainter.
         let lifted;
@@ -248,6 +282,11 @@ impl Stroke {
         } else {
             brush
         };
+        // Bristle brushes paint hair by hair.
+        if let Some(set) = brush.bristles {
+            self.paint_bristles(canvas, brush, set, dab, fade);
+            return;
+        }
         let fade_opacity = 0.3 + 0.7 * fade;
         let lift_dryness = (1.0 - fade) * 0.9;
 
@@ -264,6 +303,8 @@ impl Stroke {
                 texture: texture.as_ref(),
                 reach,
                 pigment: None,
+                relief: None,
+                bands: brush.is_multicolor().then_some(Bands { colors: &brush.colors, pigments: None }),
             };
             canvas.dab_with(x, y, brush, &style);
             return;
@@ -290,30 +331,35 @@ impl Stroke {
         // Paint modes: how much fresh paint goes down and how oily (mixing) the
         // brush acts, depending on pen pressure (a mouse is always 1).
         let p = pressure.clamp(0.0, 1.0);
-        let base_oil = brush.oiliness.clamp(0.0, 1.0);
-        let (fresh, oiliness) = match brush.paint_mode {
-            // Pure color: no pickup, no smearing.
-            PaintMode::Paint => (1.0, 0.0),
-            // Light touch: less paint, more mixing. Full pressure = as set.
-            PaintMode::PaintMix => (0.4 + 0.6 * p, (base_oil * (1.0 + (1.0 - p) * 0.8)).min(1.0)),
-            // Light touch: blend only; firm: paint.
-            PaintMode::PaintBlend => (smoothstep(0.25, 0.85, p), base_oil + (1.0 - p) * (0.9 - base_oil).max(0.0)),
-            // No paint: light = soft blending, firm = smudging further.
-            PaintMode::Blend => (0.0, 0.35 + 0.6 * p),
-        };
+        let (fresh, oiliness) = mode_rates(brush, p);
         let amount = wet.amount * fresh;
         if under_alpha > 0.0 && oiliness > 0.0 {
-            if !wet.started {
+            let rate = if !wet.started {
                 // Touching down in wet paint. An empty brush (smudge) becomes
                 // whatever it lands in; a loaded brush barely changes.
-                let touch = if amount <= 0.0 { 1.0 } else { (1.0 - amount) * oiliness };
-                wet.color = mix_paint(wet.color, under_color, touch * under_alpha, brush.mixing);
+                if amount <= 0.0 { 1.0 } else { (1.0 - amount) * oiliness }
             } else {
                 // Pick up some of the paint underneath.
-                let pickup = 1.0 - (1.0 - oiliness * 0.95).powf(travel);
-                wet.color = mix_paint(wet.color, under_color, pickup * under_alpha, brush.mixing);
+                1.0 - (1.0 - oiliness * 0.95).powf(travel)
+            };
+            wet.color = mix_paint(wet.color, under_color, rate * under_alpha, brush.mixing);
+            // MultiColored: each band picks up the paint under its own part of the tip.
+            let k = wet.bands.len() as f32;
+            let (sin, cos) = brush.angle.to_radians().sin_cos();
+            for (n, band) in wet.bands.iter_mut().enumerate() {
+                let u = ((n as f32 + 0.5) / k - 0.5) * 2.0 * brush.radius;
+                let Some(under) = canvas.paint_at(x + u * cos, y + u * sin, brush.pickup_dry) else { continue };
+                if under[3] > 0.01 {
+                    let color = Color { a: 1.0, ..unpremultiply(under) };
+                    *band = mix_paint(*band, color, rate * under[3], brush.mixing);
+                }
             }
         }
+        // Impasto: the brush pushes along the paint it moves (its thickness
+        // follows what's under it), and fresh paint builds up.
+        let under_relief = canvas.sample_relief(x, y, brush);
+        let follow = if wet.started { 1.0 - (1.0 - 0.5f32).powf(travel) } else { 1.0 };
+        wet.relief += (under_relief - wet.relief) * follow;
         wet.started = true;
         // A brush with paint left keeps feeding clean paint to the tip, so
         // picked-up color washes out again. As it runs dry this slows down
@@ -321,10 +367,26 @@ impl Stroke {
         // picked up longer (it blends), while lean paint stays clean.
         let refresh = (amount * 0.6 * travel * (1.0 - oiliness * 0.7)).min(1.0);
         wet.color = mix_paint(wet.color, wet.loaded, refresh, brush.mixing);
+        if !wet.bands.is_empty() {
+            for (band, loaded) in wet.bands.iter_mut().zip(&wet.band_loaded) {
+                *band = mix_paint(*band, *loaded, refresh, brush.mixing);
+            }
+            // The colors loaded side by side mix on the brush as it paints.
+            let drift = crate::multicolor::drift(travel, oiliness);
+            for loaded in &mut wet.band_loaded {
+                *loaded = mix_paint(*loaded, wet.band_average, drift, brush.mixing);
+            }
+        }
 
         // Lay down paint: fresh paint from the brush, plus smeared paint that
         // oily brushes drag along even when they're out of fresh paint.
-        let smear = oiliness * under_alpha;
+        // (A scraping knife leaves only a thin film of what it drags.)
+        let scraping = brush.knife && wet.initial <= 0.0;
+        // A knife's blade is thin: a pixel is under it only for the blade's
+        // thickness, so the knife's effects are measured against that (one
+        // pass of the blade = the full effect, whatever the spacing).
+        let blade_travel = (brush.step() / (2.0 * brush.radius * brush.roundness.clamp(0.05, 1.0)).max(1.0)).min(1.0);
+        let smear = oiliness * under_alpha * if scraping { 0.15 } else { 1.0 };
         let deposit = amount + (1.0 - amount) * smear;
         // A brush running low leaves broken, streaky marks: weak bristles go
         // dry first. "Low" is relative to what it started with, so a lightly
@@ -336,17 +398,39 @@ impl Stroke {
         // (Paint mode covers instead of mixing with the wet paint underneath.)
         let mixes_on_surface = brush.mixing == Mixing::Pigment && brush.paint_mode != PaintMode::Paint;
         let pigment = mixes_on_surface.then(|| Pigment::from_srgb([wet.color.r, wet.color.g, wet.color.b]));
+        let band_pigments: Option<Vec<Pigment>> =
+            (mixes_on_surface && !wet.bands.is_empty()).then(|| wet.bands.iter().map(|c| Pigment::from_srgb([c.r, c.g, c.b])).collect());
         let style = DabStyle {
             color: wet.color,
             opacity: brush.opacity * deposit * fade_opacity,
             mode: DabMode::Paint,
             // Oils leave wet paint; a smudge (no paint of its own) just moves paint.
             wetness: if wet.initial > 0.0 { Wetness::Wet } else { Wetness::Keep },
-            texture: Some(&texture),
+            // A knife has no bristles: no streaks; running low it skips over
+            // the canvas tooth instead (through `reach`).
+            texture: (!brush.knife).then_some(&texture),
             // A loaded brush fills the paper's valleys; as it dries it only
             // catches the peaks (dry-brush scumbling).
             reach: (0.5 + 0.5 * left) * (1.0 - 0.7 * dryness),
             pigment: pigment.as_ref(),
+            relief: Some(ReliefDab {
+                build: brush.impasto.max(0.0) * amount.min(1.0),
+                smear_to: wet.relief,
+                smear: oiliness * (1.0 - 0.5 * amount.min(1.0)),
+                // Over wet thick paint the bristles plow a furrow and push the
+                // paint aside (harder with more pressure; blending only nudges it).
+                // Per dab, so the total doesn't depend on the brush spacing.
+                plow: match brush.knife {
+                    true => 1.0 - (1.0 - 0.85 * (0.5 + 0.5 * p)).powf(blade_travel),
+                    false => 1.0 - (1.0 - plow_force(brush.paint_mode, p)).powf(travel),
+                },
+                // A knife squeezes the paint it pushes into sharp ridges at its edges.
+                push: under_relief * if brush.knife { 3.5 } else { 2.5 },
+                flat: brush.knife,
+                // An empty knife scrapes: wet paint comes off as it passes.
+                scrape: if scraping { 1.0 - (1.0 - 0.85 * (0.4 + 0.6 * p)).powf(blade_travel) } else { 0.0 },
+            }),
+            bands: (!wet.bands.is_empty()).then(|| Bands { colors: &wet.bands, pigments: band_pigments.as_deref() }),
         };
         canvas.dab_with(x, y, brush, &style);
 
@@ -354,6 +438,35 @@ impl Stroke {
         let use_rate = (1.0 - brush.length.clamp(0.0, 1.0)) * 0.12 * travel * fresh;
         wet.amount *= 1.0 - use_rate;
     }
+}
+
+/// Paint modes: how much fresh paint goes down and how oily (mixing) the
+/// brush acts at this pen pressure (0..=1; a mouse is always 1).
+fn mode_rates(brush: &Brush, p: f32) -> (f32, f32) {
+    let base_oil = brush.oiliness.clamp(0.0, 1.0);
+    match brush.paint_mode {
+        // Pure color: no pickup, no smearing.
+        PaintMode::Paint => (1.0, 0.0),
+        // Light touch: less paint, more mixing. Full pressure = as set.
+        PaintMode::PaintMix => (0.4 + 0.6 * p, (base_oil * (1.0 + (1.0 - p) * 0.8)).min(1.0)),
+        // Light touch: blend only; firm: paint.
+        PaintMode::PaintBlend => (smoothstep(0.25, 0.85, p), base_oil + (1.0 - p) * (0.9 - base_oil).max(0.0)),
+        // No paint: light = soft blending, firm = smudging further.
+        PaintMode::Blend => (0.0, 0.35 + 0.6 * p),
+    }
+}
+
+/// How strongly a stroke plows through wet thick paint, for a paint mode
+/// and pen pressure (0..=1): the share of the paint under it pushed aside
+/// as the brush passes.
+fn plow_force(mode: PaintMode, pressure: f32) -> f32 {
+    let base = match mode {
+        PaintMode::Paint => 0.5,
+        PaintMode::PaintMix => 0.45,
+        PaintMode::PaintBlend => 0.35,
+        PaintMode::Blend => 0.2,
+    };
+    (base * (0.4 + 0.6 * pressure)).clamp(0.0, 0.9)
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -378,6 +491,39 @@ mod tests {
 
     const RED: Color = Color::rgb(1.0, 0.0, 0.0);
     const BLUE: Color = Color::rgb(0.0, 0.0, 1.0);
+
+    #[test]
+    fn thick_paint_builds_relief_and_blending_levels_it() {
+        let mut canvas = Canvas::new(120, 40, Color::TRANSPARENT);
+        let oil = Brush { radius: 8.0, impasto: 0.8, loading: 1.0, length: 1.0, wet_medium: true, streaks: 0.6, ..Brush::default() };
+        line(&mut canvas, &oil, (10.0, 20.0), (110.0, 20.0));
+        let mid = canvas.relief()[20 * 120 + 60];
+        assert!(mid > 0.3, "a loaded oil stroke leaves thick paint: {mid}");
+        assert_eq!(canvas.relief()[2 * 120 + 60], 0.0, "nothing outside the stroke");
+        // Bristle streaks leave ridges: the thickness varies across the stroke.
+        let across: Vec<f32> = (14..27).map(|y| canvas.relief()[y * 120 + 60]).collect();
+        let (lo, hi) = across.iter().fold((f32::MAX, 0.0f32), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+        assert!(hi - lo > 0.1, "ridges across the stroke: {across:?}");
+
+        // A flat brush (no impasto) doesn't add thickness.
+        let mut flat_canvas = Canvas::new(120, 40, Color::TRANSPARENT);
+        line(&mut flat_canvas, &Brush { impasto: 0.0, ..oil.clone() }, (10.0, 20.0), (110.0, 20.0));
+        assert!(flat_canvas.relief().iter().all(|&h| h == 0.0));
+
+        // Blending (no paint of its own) smooths the ridges down.
+        let blend = Brush { paint_mode: PaintMode::Blend, oiliness: 0.9, ..oil.clone() };
+        for _ in 0..4 {
+            line(&mut canvas, &blend, (10.0, 20.0), (110.0, 20.0));
+        }
+        let after: Vec<f32> = (14..27).map(|y| canvas.relief()[y * 120 + 60]).collect();
+        let (lo2, hi2) = after.iter().fold((f32::MAX, 0.0f32), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+        assert!(hi2 - lo2 < hi - lo, "blending flattened the ridges: {after:?}");
+
+        // Erasing removes thickness too.
+        let mut eraser = Stroke::begin(&mut canvas, &Brush { radius: 30.0, ..Brush::default() }, DabMode::Erase, 0.0, 20.0);
+        eraser.line_to(&mut canvas, &Brush { radius: 30.0, ..Brush::default() }, 120.0, 20.0);
+        assert!(canvas.relief()[20 * 120 + 60] < 0.05);
+    }
 
     fn line(canvas: &mut Canvas, brush: &Brush, from: (f32, f32), to: (f32, f32)) -> Stroke {
         let mut stroke = Stroke::begin(canvas, brush, DabMode::Paint, from.0, from.1);
@@ -441,7 +587,7 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         // Wet red paint (a block painted with the wet medium).
         let red_block = Brush { color: RED, radius: 20.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(60.0, 10.0, &red_block, &wet);
 
         // RGB mixing here: this test is about the pickup *mechanics*.
@@ -470,7 +616,7 @@ mod tests {
     fn loaded_brush_stays_mostly_its_own_color_over_wet_paint() {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(100.0, 10.0, &red_block, &wet);
 
         // A freshly loaded brush with moderate oiliness (like the default oils).
@@ -484,7 +630,7 @@ mod tests {
     fn brush_cleans_up_after_leaving_wet_paint() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 15.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(40.0, 10.0, &red_block, &wet);
 
         let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.6, loading: 0.9, spacing: 0.05, ..Brush::default() };
@@ -513,7 +659,7 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let yellow = Color::rgb(0.988, 0.827, 0.0);
         let block = Brush { color: yellow, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(100.0, 10.0, &block, &wet);
 
         let blue = Color::rgb(0.0, 0.129, 0.522);
@@ -564,7 +710,7 @@ mod tests {
     fn red_field() -> Canvas {
         let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
         let block = Brush { color: RED, radius: 60.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(50.0, 20.0, &block, &wet);
         canvas
     }

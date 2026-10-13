@@ -1,7 +1,7 @@
 //! The side panels: Tools, Properties, Brush presets (left) and
 //! Navigator, Color, Layers (right).
 
-use eframe::egui::{self, Color32, CollapsingHeader, Sense, Stroke as LineStroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, CollapsingHeader, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
@@ -76,7 +76,16 @@ impl OxideApp {
             }
         }
 
-        if tool.is_wet_medium() {
+        if tool == Tool::Knife {
+            // The knife's two jobs instead of paint modes.
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut state.scrape, false, "Spread")
+                    .on_hover_text("Lay thick, smooth paint with crisp edges; drags wet paint along and pushes it into ridges");
+                ui.selectable_value(&mut state.scrape, true, "Scrape")
+                    .on_hover_text("An empty knife: scrapes wet paint off, leaving a thin smeared film (dried paint stays)");
+            });
+        }
+        if tool.is_wet_medium() && tool != Tool::Knife {
             // Paint modes (keys 1–5; V toggles Blend, A toggles Erase).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -97,6 +106,8 @@ impl OxideApp {
                     }
                 }
             });
+        }
+        if tool.is_wet_medium() {
             // another app's combined Oils & Acrylics: oiliness is what makes it
             // behave more like oil (blends, drags) or acrylic (covers).
             ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
@@ -105,6 +116,8 @@ impl OxideApp {
                 .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
             ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
                 .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
+            ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
+                .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
             ui.horizontal(|ui| {
                 if ui
                     .checkbox(&mut self.dirty_brush, "Dirty brush")
@@ -143,41 +156,76 @@ impl OxideApp {
     fn presets_section(&mut self, ui: &mut egui::Ui) {
         let mut apply = None;
         let mut delete = None;
+        let mut move_to: Option<(usize, String)> = None;
+        // Search across all groups.
+        ui.add(egui::TextEdit::singleline(&mut self.brush_search).hint_text("🔍 Search brushes").desired_width(f32::INFINITY));
+        let search = self.brush_search.trim().to_lowercase();
+        let groups = self.presets.groups();
         // A wrapping grid of small tiles (thumbnail + name) that fits any panel width.
         let thumb = Vec2::new(THUMB_W as f32, THUMB_H as f32) * 0.75;
         let cell = Vec2::new(thumb.x + 8.0, thumb.y + 22.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::splat(4.0);
-            for (i, entry) in self.presets.entries.iter().enumerate() {
-                let selected = entry.preset.matches(&self.state().shape);
-                let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
-                let response = response.on_hover_text(&entry.preset.name);
-                let visuals = ui.style().interact_selectable(&response, selected);
-                if selected || response.hovered() {
-                    ui.painter().rect_filled(rect, 4.0, visuals.weak_bg_fill);
-                }
-                let image_rect = egui::Rect::from_min_size(rect.min + Vec2::new(4.0, 3.0), thumb);
-                egui::Image::new(&entry.thumbnail).paint_at(ui, image_rect);
-                let name = ui.painter().layout(
-                    entry.preset.name.clone(),
-                    egui::FontId::proportional(11.0),
-                    visuals.text_color(),
-                    cell.x - 4.0,
-                );
-                let text_pos = egui::pos2(rect.center().x - name.size().x / 2.0, image_rect.max.y + 2.0);
-                ui.painter().with_clip_rect(rect).galley(text_pos, name, visuals.text_color());
-                if response.clicked() {
-                    apply = Some(i);
-                }
-                if entry.file.is_some() {
-                    response.context_menu(|ui| {
-                        if ui.button("Delete brush").clicked() {
-                            delete = Some(i);
-                        }
-                    });
-                }
+        let current = self.state().shape;
+        for group in &groups {
+            let members: Vec<usize> = (0..self.presets.entries.len())
+                .filter(|&i| self.presets.entries[i].group() == group.as_str())
+                .filter(|&i| search.is_empty() || self.presets.entries[i].preset.name.to_lowercase().contains(&search))
+                .collect();
+            if members.is_empty() {
+                continue;
             }
-        });
+            let holds_current = members.iter().any(|&i| self.presets.entries[i].preset.matches(&current));
+            let header = egui::CollapsingHeader::new(format!("{group}  ({})", members.len()))
+                .id_salt(("brush-group", group.as_str()))
+                .default_open(holds_current);
+            // While searching, show every matching group open.
+            let header = if search.is_empty() { header } else { header.open(Some(true)) };
+            header.show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(4.0);
+                    for &i in &members {
+                        let entry = &self.presets.entries[i];
+                        let selected = entry.preset.matches(&current);
+                        let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+                        let response = response.on_hover_text(&entry.preset.name);
+                        let visuals = ui.style().interact_selectable(&response, selected);
+                        if selected || response.hovered() {
+                            ui.painter().rect_filled(rect, 4.0, visuals.weak_bg_fill);
+                        }
+                        let image_rect = egui::Rect::from_min_size(rect.min + Vec2::new(4.0, 3.0), thumb);
+                        egui::Image::new(&entry.thumbnail).paint_at(ui, image_rect);
+                        let name = ui.painter().layout(entry.preset.name.clone(), egui::FontId::proportional(11.0), visuals.text_color(), cell.x - 4.0);
+                        let text_pos = egui::pos2(rect.center().x - name.size().x / 2.0, image_rect.max.y + 2.0);
+                        ui.painter().with_clip_rect(rect).galley(text_pos, name, visuals.text_color());
+                        if response.clicked() {
+                            apply = Some(i);
+                        }
+                        // Your own presets: move to another group, or delete.
+                        if entry.file.is_some() {
+                            response.context_menu(|ui| {
+                                ui.menu_button("Move to group", |ui| {
+                                    for other in groups.iter().filter(|g| *g != group) {
+                                        if ui.button(other).clicked() {
+                                            move_to = Some((i, other.clone()));
+                                        }
+                                    }
+                                    if !groups.iter().any(|g| g == crate::presets::MY_BRUSHES) && ui.button(crate::presets::MY_BRUSHES).clicked() {
+                                        move_to = Some((i, crate::presets::MY_BRUSHES.to_string()));
+                                    }
+                                    ui.separator();
+                                    ui.weak("New group: name it when saving in the Brush Creator");
+                                });
+                                if ui.button("Delete brush").clicked() {
+                                    delete = Some(i);
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+        }
+        if let Some((i, group)) = move_to {
+            self.presets.set_group(i, &group);
+        }
         if let Some(i) = apply {
             if self.tool == Tool::Picker {
                 self.tool = Tool::OilsAcrylics;
@@ -284,10 +332,45 @@ impl OxideApp {
     }
 
     fn color_section(&mut self, ui: &mut egui::Ui) {
+        // Primary and secondary color, familiar: the big swatch is what
+        // you paint with; click the small one (or ⌘\\) to swap them.
+        let mut swap = false;
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 44.0), Sense::hover());
+            let secondary = Rect::from_min_size(rect.min + Vec2::new(22.0, 16.0), Vec2::new(30.0, 26.0));
+            let primary = Rect::from_min_size(rect.min, Vec2::new(36.0, 32.0));
+            let back = ui.interact(secondary, ui.id().with("secondary-color"), Sense::click());
+            ui.painter().rect_filled(secondary, 3.0, to_color32(self.secondary));
+            ui.painter().rect_stroke(secondary, 3.0, LineStroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+            ui.painter().rect_filled(primary, 3.0, to_color32(self.color));
+            ui.painter().rect_stroke(primary, 3.0, LineStroke::new(1.5, Color32::from_gray(200)), StrokeKind::Inside);
+            if back.on_hover_text("Secondary color: click (or ⌘\\) to swap").clicked() {
+                swap = true;
+            }
+            ui.vertical(|ui| {
+                ui.monospace(oxide_commands::palette::to_hex(self.color));
+                if ui.small_button("⇄ Swap").on_hover_text("Swap primary and secondary colors (⌘\\)").clicked() {
+                    swap = true;
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let s = &mut self.app_settings.ryb_wheel;
+                let mut changed = ui.selectable_value(s, true, "RYB").on_hover_text("Painter's wheel: red–yellow–blue primaries, paint complements opposite (red–green, yellow–purple, blue–orange)").changed();
+                changed |= ui.selectable_value(s, false, "HSV").on_hover_text("Screen colors: red–green–blue").changed();
+                if changed {
+                    self.save_app_settings();
+                }
+            });
+        });
+        if swap {
+            self.swap_colors();
+        }
+
         let diameter = ui.available_width().min(220.0);
         let mut hsv = self.hsv;
+        let ryb = self.app_settings.ryb_wheel;
         ui.vertical_centered(|ui| {
-            if color_wheel(ui, &mut hsv, diameter) {
+            if color_wheel(ui, &mut hsv, diameter, ryb) {
                 self.set_hsv(hsv);
             }
         });
@@ -305,11 +388,14 @@ impl OxideApp {
         ui.add_space(6.0);
         ui.label("Pigments");
         let mut picked = None;
+        // ⌥-click a swatch: load it onto the MultiColored brush instead.
+        let mut load = None;
+        let alt = ui.input(|i| i.modifiers.alt);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(3.0);
             for (name, color) in SWATCHES {
-                if swatch(ui, color).on_hover_text(name).clicked() {
-                    picked = Some(color);
+                if swatch(ui, color).on_hover_text(format!("{name}\n⌥-click: add to the MultiColored brush")).clicked() {
+                    if alt { load = Some(color) } else { picked = Some(color) }
                 }
             }
         });
@@ -319,13 +405,55 @@ impl OxideApp {
                 ui.spacing_mut().item_spacing = Vec2::splat(3.0);
                 for &color in &self.recent_colors {
                     if swatch(ui, color).clicked() {
-                        picked = Some(color);
+                        if alt { load = Some(color) } else { picked = Some(color) }
                     }
                 }
             });
         }
+
+        // MultiColored brush (⌥M): several colors loaded side by side.
+        ui.add_space(6.0);
+        let mut on = self.multicolor_on;
+        if ui
+            .checkbox(&mut on, "MultiColored brush   ⌥M")
+            .on_hover_text("Load several colors side by side across the brush. A stroke starts striped with all of them, and they blend toward their average as you paint.")
+            .changed()
+        {
+            self.run_command_multicolor();
+        }
+        if self.multicolor_on {
+            let mut remove = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(3.0);
+                for (n, &color) in self.multicolor.iter().enumerate() {
+                    if swatch(ui, color).on_hover_text("Click to remove").clicked() {
+                        remove = Some(n);
+                    }
+                }
+            });
+            if let Some(n) = remove {
+                self.multicolor.remove(n);
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(self.multicolor.len() < 6, egui::Button::new("Add current color")).clicked() {
+                    load = Some(self.color);
+                }
+                if ui.button("Clear").clicked() {
+                    self.multicolor.clear();
+                }
+            });
+            if self.multicolor.len() < 2 {
+                ui.weak("Load at least two colors (⌥-click swatches, or Add current color).");
+            }
+        }
+        if let Some(color) = load {
+            self.add_multicolor(color);
+        }
+        if self.mix_key {
+            ui.colored_label(Color32::from_rgb(230, 170, 60), "Mix Color: picked colors mix into the current one");
+        }
         if let Some(color) = picked {
-            self.set_color(color);
+            self.pick_color(color);
             if !self.tool.paints() {
                 self.tool = Tool::OilsAcrylics;
             }

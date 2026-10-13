@@ -7,7 +7,7 @@ use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
 
 use oxide_engine::{
-    Color, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, Stroke, StrokePoint, Transform,
+    Bristles, Color, Tip, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, Stroke, StrokePoint, Transform,
 };
 use serde_json::{Value, json};
 
@@ -39,6 +39,8 @@ pub struct Session {
     pub dirty_brush: bool,
     /// Paint left on a dirty brush from the last stroke.
     pub carried: Option<Color>,
+    /// MultiColored brush: colors loaded side by side (empty = one color).
+    pub multicolor: Vec<Color>,
 }
 
 impl Default for Session {
@@ -66,6 +68,7 @@ impl Session {
             natural_colors: true,
             dirty_brush: true,
             carried: None,
+            multicolor: Vec::new(),
         }
     }
 
@@ -93,6 +96,18 @@ impl Session {
                 self.color = color_from(a.hex.as_deref(), a.pigment.as_deref())?;
                 self.carried = None; // fresh paint
                 Ok(Output::Text(format!("Color {}", to_hex(self.color))))
+            }
+            Command::SetMulticolor(a) => {
+                if a.colors.len() == 1 || a.colors.len() > 6 {
+                    return Err("Give 2–6 colors (or none to go back to one color).".into());
+                }
+                self.multicolor =
+                    a.colors.iter().map(|c| if c.starts_with('#') { color_from(Some(c), None) } else { color_from(None, Some(c)) }).collect::<Result<_, _>>()?;
+                self.carried = None;
+                Ok(Output::Text(match self.multicolor.len() {
+                    0 => "MultiColored brush off".to_string(),
+                    n => format!("MultiColored brush: {n} colors ({})", self.multicolor.iter().map(|c| to_hex(*c)).collect::<Vec<_>>().join(", ")),
+                }))
             }
             Command::SetTool(a) => {
                 self.tool = parse_tool(&a.tool)?;
@@ -165,6 +180,37 @@ impl Session {
                 Ok(Output::Json(self.layers_json()))
             }
             Command::ImportImage(a) => self.import_image(a),
+            Command::GroupLayer(_) => {
+                self.document.group_active_layer().ok_or("The current layer is already in a group.")?;
+                Ok(Output::Json(self.layers_json()))
+            }
+            Command::Ungroup(_) => {
+                let id = self.document.layers()[self.document.active_index()].group.ok_or("The current layer isn't in a group.")?;
+                self.document.ungroup(id);
+                Ok(Output::Json(self.layers_json()))
+            }
+            Command::SetGroup(a) => {
+                let id = self.document.layers()[self.document.active_index()].group.ok_or("The current layer isn't in a group (group_layer first).")?;
+                if let Some(name) = a.name {
+                    self.document.rename_group(id, name);
+                }
+                if let Some(o) = a.opacity {
+                    self.document.set_group_opacity(id, o);
+                    self.document.seal_history();
+                }
+                if let Some(v) = a.visible {
+                    self.document.set_group_visible(id, v);
+                }
+                Ok(Output::Json(self.layers_json()))
+            }
+            Command::ImportTip(a) => {
+                let tips = crate::tip_import::import_tips(std::path::Path::new(&a.path))?;
+                let names: Vec<String> = tips.iter().map(|t| t.key()).collect();
+                if let Some(&first) = tips.first() {
+                    self.state_mut().shape.tip = first;
+                }
+                Ok(Output::Json(json!({"imported": names, "now_using": names.first()})))
+            }
             Command::TransformLayer(a) => self.transform_layer(a),
             Command::Dry(a) => {
                 if a.all.unwrap_or(false) {
@@ -287,7 +333,16 @@ impl Session {
         if !self.tool.is_wet_medium() {
             return Err("Paint modes are for the oils tool (set_tool \"oils\").".into());
         }
+        let is_knife = self.tool == Tool::Knife;
         let state = self.state_mut();
+        if is_knife {
+            state.scrape = match mode.to_lowercase().as_str() {
+                "spread" => false,
+                "scrape" => true,
+                _ => return Err(format!("The knife's modes are \"spread\" and \"scrape\", not \"{mode}\".")),
+            };
+            return Ok(Output::Text(format!("Knife: {mode}")));
+        }
         match mode.to_lowercase().replace(['-', ' ', '&'], "_").as_str() {
             "erase" => state.erase = true,
             m => {
@@ -311,13 +366,47 @@ impl Session {
             other => Err(format!("Unknown rotation \"{other}\" (none, follow_stroke).")),
         });
         let rotation = rotation.transpose()?;
+        let tip = a
+            .tip
+            .as_deref()
+            .map(|t| {
+                Tip::from_key(t).ok_or_else(|| {
+                    let imported: Vec<String> = oxide_engine::image_tips().iter().map(|t| t.name().to_string()).collect();
+                    format!(
+                        "Unknown tip \"{t}\" (round, sponge, chalk, splatter, dry_brush, rag, speckle{}{}).",
+                        if imported.is_empty() { "" } else { ", or imported: " },
+                        imported.join(", ")
+                    )
+                })
+            })
+            .transpose()?;
         let s = self.state_mut();
         let unit = |v: f32| v.clamp(0.0, 1.0);
+        if let Some(t) = tip { s.shape.tip = t }
+        if let Some(v) = a.spacing { s.shape.spacing = v.clamp(0.02, 1.0) }
+        if let Some(v) = a.jitter_angle { s.shape.jitter_angle = unit(v) }
+        if let Some(v) = a.jitter_size { s.shape.jitter_size = unit(v) }
+        if let Some(v) = a.scatter { s.shape.scatter = unit(v) }
         if let Some(v) = a.size { s.shape.radius = v.clamp(0.5, 200.0) }
         if let Some(v) = a.opacity { s.opacity = v.clamp(0.01, 1.0) }
         if let Some(v) = a.loading { s.loading = unit(v) }
         if let Some(v) = a.length { s.length = unit(v) }
         if let Some(v) = a.oiliness { s.oiliness = unit(v) }
+        if let Some(v) = a.thickness { s.thickness = unit(v) }
+        match a.bristles {
+            Some(0) => s.shape.bristles = None,
+            Some(n) => s.shape.bristles = Some(Bristles { count: n.clamp(4, 300), ..s.shape.bristles.unwrap_or_default() }),
+            None => {}
+        }
+        let tune = a.bristle_thickness.is_some() || a.bristle_spread.is_some() || a.bristle_stiffness.is_some();
+        if tune && s.shape.bristles.is_none() {
+            return Err("Those settings are for bristle brushes; set bristles (e.g. 60) first.".into());
+        }
+        if let Some(b) = &mut s.shape.bristles {
+            if let Some(v) = a.bristle_thickness { b.thickness = unit(v) }
+            if let Some(v) = a.bristle_spread { b.spread = unit(v) }
+            if let Some(v) = a.bristle_stiffness { b.stiffness = unit(v) }
+        }
         if let Some(v) = a.hardness { s.shape.hardness = unit(v) }
         if let Some(v) = a.roundness { s.shape.roundness = v.clamp(0.05, 1.0) }
         if let Some(v) = a.angle { s.shape.angle = v }
@@ -352,10 +441,13 @@ impl Session {
         }
 
         let mut brush = self.state().brush(self.tool, self.color);
+        if self.tool.paints() {
+            brush.colors = self.multicolor.clone();
+        }
         brush.mixing = if self.natural_colors { Mixing::Pigment } else { Mixing::Rgb };
         let erasing = self.tool == Tool::Eraser || (self.tool.is_wet_medium() && self.state().erase);
         let mode = if erasing { DabMode::Erase } else { DabMode::Paint };
-        let tip = self.carried.filter(|_| self.tool.is_wet_medium() && self.dirty_brush);
+        let tip = self.carried.filter(|_| self.tool.is_wet_medium() && self.dirty_brush && self.multicolor.is_empty());
         let on_palette = a.target.as_deref() == Some("palette");
 
         let doc: &mut Document = if on_palette { self.document.palette.get_or_insert_with(|| Box::new(new_palette())) } else { &mut self.document };
@@ -446,6 +538,10 @@ impl Session {
         if let Some(on) = a.tracing {
             self.document.set_tracing(i, on);
         }
+        if let Some(depth) = a.impasto_depth {
+            self.document.set_layer_impasto(i, (depth >= 0.0).then(|| (depth / 10.0).clamp(0.0, 1.0)));
+            self.document.seal_history();
+        }
         if let Some(name) = a.name {
             self.document.rename_layer(i, name);
         }
@@ -471,6 +567,10 @@ impl Session {
         if let Some(v) = a.light_angle { s.light_angle = v }
         if let Some(v) = a.paper_texture { s.paper_visibility = (v / 10.0).clamp(0.0, 1.0) }
         if let Some(v) = a.paint_texture { s.paint_visibility = (v / 10.0).clamp(0.0, 1.0) }
+        if let Some(v) = a.impasto_depth { s.impasto_depth = (v / 10.0).clamp(0.0, 1.0) }
+        if let Some(v) = a.gloss { s.gloss = (v / 10.0).clamp(0.0, 1.0) }
+        if let Some(v) = a.shadows { s.shadows = (v / 10.0).clamp(0.0, 1.0) }
+        if let Some(v) = a.light_height { s.light_height = v.clamp(10.0, 80.0) }
         self.document.set_surface(s);
         self.document.seal_history();
         if let Some(hex) = a.color.as_deref() {
@@ -518,6 +618,7 @@ impl Session {
             "tool": self.tool.label(),
             "color": to_hex(self.color),
             "brush": self.brush_json(),
+            "multicolor": self.multicolor.iter().map(|c| to_hex(*c)).collect::<Vec<_>>(),
             "natural_colors": self.natural_colors,
             "can_undo": self.document.undo_description(),
             "has_palette": self.document.palette.is_some(),
@@ -534,7 +635,9 @@ impl Session {
             .map(|(i, l)| {
                 json!({"index": i, "name": l.name, "visible": l.visible, "opacity": l.opacity,
                        "wet": l.canvas.has_wet_paint(), "current": i == active, "locked": l.locked,
-                       "lock_transparency": l.lock_transparency(), "tracing": l.tracing})
+                       "lock_transparency": l.lock_transparency(), "tracing": l.tracing,
+                       "impasto_depth": l.impasto.map(|d| d * 10.0),
+                       "group": l.group.and_then(|id| self.document.group(id)).map(|g| json!({"name": g.name, "opacity": g.opacity, "visible": g.visible}))})
             })
             .collect();
         json!(layers)
@@ -544,7 +647,9 @@ impl Session {
         let s = self.document.surface().settings();
         json!({"kind": format!("{:?}", s.kind), "depth": s.depth, "scale": s.scale,
                "light_angle": s.light_angle, "color": to_hex(self.document.paper()),
-               "paper_texture": s.paper_visibility * 10.0, "paint_texture": s.paint_visibility * 10.0})
+               "paper_texture": s.paper_visibility * 10.0, "paint_texture": s.paint_visibility * 10.0,
+               "impasto_depth": s.impasto_depth * 10.0, "gloss": s.gloss * 10.0,
+               "shadows": s.shadows * 10.0, "light_height": s.light_height})
     }
 
     fn brush_json(&self) -> Value {
@@ -552,9 +657,11 @@ impl Session {
         json!({
             "size": s.shape.radius, "opacity": s.opacity, "hardness": s.shape.hardness,
             "roundness": s.shape.roundness, "angle": s.shape.angle, "rotation": format!("{:?}", s.shape.rotation),
-            "loading": s.loading, "length": s.length, "oiliness": s.oiliness,
+            "loading": s.loading, "length": s.length, "oiliness": s.oiliness, "thickness": s.thickness,
             "paint_mode": if s.erase { "Erase".to_string() } else { format!("{:?}", s.paint_mode) },
             "roughness": s.shape.roughness, "streaks": s.shape.streaks, "lift_off": s.shape.lift_off, "grain": s.shape.grain,
+            "spacing": s.shape.spacing, "tip": s.shape.tip.key(), "jitter_angle": s.shape.jitter_angle, "jitter_size": s.shape.jitter_size, "scatter": s.shape.scatter,
+            "bristles": s.shape.bristles.map(|b| json!({"count": b.count, "thickness": b.thickness, "spread": b.spread, "stiffness": b.stiffness})),
         })
     }
 }
@@ -582,7 +689,8 @@ fn parse_tool(name: &str) -> Result<Tool, String> {
         "airbrush" => Tool::Airbrush,
         "eraser" => Tool::Eraser,
         "smudge" => Tool::Smudge,
-        _ => return Err(format!("Unknown tool \"{name}\" (oils, ink, pencil, marker, airbrush, eraser, smudge).")),
+        "knife" | "palette_knife" => Tool::Knife,
+        _ => return Err(format!("Unknown tool \"{name}\" (oils, ink, pencil, marker, airbrush, eraser, smudge, knife).")),
     })
 }
 
@@ -634,10 +742,16 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Paint behaves like real paint: colors mix as pigments (blue + yellow = green; ultramarine + burnt umber = near-black). Set colors by hex or by pigment name (list_pigments).
 - Tools are media. \"oils\" paints WET paint that can be picked up, blended and smeared until it is dried (dry). Ink, pencil, marker and airbrush are dry media.
 - Oils paint modes (set_paint_mode): paint (pure color), paint_mix (default; light pressure mixes more), paint_blend (light pressure only blends), blend (no paint; moves wet paint), erase.
-- Oils settings (set_brush): loading (how much paint), length (how long it lasts), oiliness (0 acrylic-like covers, 1 oily blends). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
+- Oils settings (set_brush): loading (how much paint), length (how long it lasts), oiliness (0 acrylic-like covers, 1 oily blends), thickness (impasto: 0 flat … 1 thick, default 0.5; brush marks show as lit ridges; set_paper impasto_depth / gloss 0–10 set how strongly they're lit). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
+- Imported tips: import_tip with a Photoshop .abr (brush packs; can hold many tips), a GIMP .gbr/.gih, or an image (PNG/JPEG: black-on-white, white-on-black or transparent). They're saved in Oxide's tip library and used as set_brush tip: \"image:<name>\" (info lists the current tip).
+- Texture tips (set_brush tip: sponge / chalk / splatter / dry_brush / rag / speckle, with spacing 0.25–0.7, jitter_angle ~1 and some jitter_size / scatter so the stamps don't fill in or repeat; round = back to normal). Good for foliage, texture, broken color.
+- Palette knife (set_tool knife): spreads thick, flat-topped paint with crisp edges and pushes wet paint into ridges; set_paint_mode scrape = an empty knife that scrapes wet paint off (dried paint stays). Long straight strokes work best.
+- Bristle brushes (set_brush bristles: 60, plus bristle_thickness / bristle_spread / bristle_stiffness): the tip is real hairs, each carrying, picking up and running out of paint on its own; the most realistic oil strokes. Light pressure = only the middle hairs touch; bristles: 0 = back to a stamped tip.
+- MultiColored brush (set_multicolor colors: [\"#C8553D\", \"Ultramarine Blue\"]): 2–6 colors loaded side by side across the brush; strokes start striped and the colors blend toward their average as you paint. Best with a flat brush following the stroke. Empty list = one color again.
 - Pressure (0–1) per point changes size/opacity/mixing like a pen. Use 3-value points [x, y, pressure] for tapered or expressive strokes; `smooth: true` draws a curve through sparse points.
 - The surface is textured paper/canvas (set_paper); grainy brushes catch its tooth.
 - Layers: add_layer, select_layer, set_layer (name, opacity, visible, locked, lock_transparency, tracing), move_layer, delete_layer, duplicate_layer, merge_down, merge_visible, clear_layer. dry locks wet paint so later strokes glide over it. Merging dries the merged paint.
+- Layer groups: group_layer puts the current layer in a new group; move_layer at a group's edge moves a layer into or out of it (add_layer inside a group joins it); set_group name / opacity (fades the group as one picture) / visible; ungroup keeps the layers. info shows each layer's group.
 - Lock transparency (set_layer lock_transparency: true) = paint only where the layer already has paint: recolor or shade finished shapes without spilling outside them.
 - transform_layer moves, scales, rotates or flips the current layer's paint (fit: \"fit\"/\"fill\" sizes an imported image to the canvas).
 - Reference photos: import_image with reference: true puts the photo on a locked tracing layer and adds a layer above to paint on. Every stroke then takes its color from the photo where the stroke starts (so place each stroke's first point on the color you want). pick_color with from: \"reference\" reads the photo's exact color. Hide the tracing layer (set_layer visible: false) to judge your painting on its own; tracing still works while hidden.
@@ -739,6 +853,34 @@ mod tests {
         assert!(c.contains("#00FF00"), "fitted image covers the middle: {c}");
         run(&mut s, r##"{"command": "transform_layer", "move_x": 30}"##);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn multicolor_brush() {
+        let mut s = Session::new(Document::new(300, 60, Color::WHITE));
+        run(&mut s, r##"{"command": "set_multicolor", "colors": ["#E01010", "Ultramarine Blue"]}"##);
+        run(&mut s, r##"{"command": "set_brush", "size": 14, "roundness": 0.4, "rotation": "follow_stroke"}"##);
+        run(&mut s, r##"{"command": "stroke", "points": [[20, 30], [280, 30]]}"##);
+        let Output::Text(top) = run(&mut s, r##"{"command": "pick_color", "x": 40, "y": 24}"##) else { panic!() };
+        let Output::Text(bottom) = run(&mut s, r##"{"command": "pick_color", "x": 40, "y": 36}"##) else { panic!() };
+        assert_ne!(top, bottom, "two colors side by side");
+        let Output::Text(off) = run(&mut s, r##"{"command": "set_multicolor", "colors": []}"##) else { panic!() };
+        assert!(off.contains("off"));
+        assert!(s.execute(serde_json::from_str(r##"{"command": "set_multicolor", "colors": ["#FFFFFF"]}"##).unwrap()).is_err());
+    }
+
+    #[test]
+    fn bristle_brushes() {
+        let mut s = Session::new(Document::new(200, 80, Color::WHITE));
+        let Output::Json(brush) = run(&mut s, r##"{"command": "set_brush", "size": 14, "bristles": 50, "bristle_stiffness": 0.3}"##) else { panic!() };
+        assert_eq!(brush["bristles"]["count"], 50);
+        run(&mut s, r##"{"command": "set_color", "hex": "#204080"}"##);
+        run(&mut s, r##"{"command": "stroke", "points": [[20, 40], [180, 40]]}"##);
+        let Output::Text(c) = run(&mut s, r##"{"command": "pick_color", "x": 100, "y": 40}"##) else { panic!() };
+        assert!(!c.contains("#FFFFFF"), "the bristle stroke painted: {c}");
+        let Output::Json(brush) = run(&mut s, r##"{"command": "set_brush", "bristles": 0}"##) else { panic!() };
+        assert!(brush["bristles"].is_null());
+        assert!(s.execute(serde_json::from_str(r##"{"command": "set_brush", "bristle_spread": 0.5}"##).unwrap()).unwrap_err().contains("bristles"));
     }
 
     #[test]

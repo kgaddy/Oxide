@@ -61,6 +61,29 @@ impl PaintMode {
     }
 }
 
+/// A bristle brush: the tip is made of separate hairs instead of one
+/// stamped shape. Each bristle lags the brush,
+/// carries its own paint, runs dry on its own, and leaves its own ridge.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Bristles {
+    /// How many hairs (4–300).
+    pub count: u32,
+    /// How thick each hair is, 0..=1: 0 = thin hairs with gaps between their
+    /// lines (scratchy dry brush), 0.5 = solid with fine streaks, 1 = fat hairs.
+    pub thickness: f32,
+    /// How much the hairs splay apart under pressure, 0..=1.
+    pub spread: f32,
+    /// 1 = stiff hairs that follow the brush exactly; low = soft hairs that
+    /// lag and fan out on curves.
+    pub stiffness: f32,
+}
+
+impl Default for Bristles {
+    fn default() -> Self {
+        Bristles { count: 48, thickness: 0.5, spread: 0.5, stiffness: 0.6 }
+    }
+}
+
 /// Settings for a brush tip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Brush {
@@ -112,6 +135,25 @@ pub struct Brush {
     pub opacity_pressure: f32,
     /// How picked-up paint mixes into the brush: like real pigment or like light.
     pub mixing: Mixing,
+    /// Wet media: how thick the paint goes on (impasto), 0 = flat, 1 = thick.
+    pub impasto: f32,
+    /// Some = a bristle brush (separate hairs); None = a stamped tip.
+    pub bristles: Option<Bristles>,
+    /// A palette knife: flat-topped paint with crisp edges, plows hard
+    /// through wet paint; with no paint loaded it scrapes wet paint off.
+    pub knife: bool,
+    /// MultiColored brush: two or more colors loaded side by side across the
+    /// tip (empty = just `color`).
+    pub colors: Vec<Color>,
+    /// The tip's shape: a smooth ellipse or a texture (sponge, chalk, ...).
+    pub tip: crate::Tip,
+    /// Which frame of a multi-frame imported tip this dab uses (any number; wraps).
+    pub tip_frame: u32,
+    /// Per-dab randomness, 0..=1: rotation (up to a full turn), size (down
+    /// to 30%), and scatter (up to one radius off the stroke's path).
+    pub jitter_angle: f32,
+    pub jitter_size: f32,
+    pub scatter: f32,
     /// How strongly the paper texture affects this brush (0..=1): high =
     /// catches the tooth and skips valleys (pencil, dry brush); 0 = ignores it.
     pub grain: f32,
@@ -140,6 +182,15 @@ impl Default for Brush {
             size_pressure: 0.0,
             opacity_pressure: 0.0,
             mixing: Mixing::Pigment,
+            impasto: 0.0,
+            bristles: None,
+            knife: false,
+            colors: Vec::new(),
+            tip: crate::Tip::Round,
+            tip_frame: 0,
+            jitter_angle: 0.0,
+            jitter_size: 0.0,
+            scatter: 0.0,
             grain: 0.0,
         }
     }
@@ -156,6 +207,10 @@ impl Brush {
         let (sin, cos) = self.angle.to_radians().sin_cos();
         let u = dx * cos + dy * sin;
         let v = (-dx * sin + dy * cos) / self.roundness.clamp(0.05, 1.0);
+        // A texture tip: the image, in the tip's own frame.
+        if let Some(mask) = self.tip.mask(self.tip_frame) {
+            return mask.sample(u / r, v / r);
+        }
         let dist = (u * u + v * v).sqrt();
         if dist >= r {
             return 0.0;
@@ -197,6 +252,11 @@ impl Brush {
     }
 
     /// Wet brushes interact with the paint already on the canvas.
+    /// Is this a MultiColored brush (two or more colors loaded)?
+    pub fn is_multicolor(&self) -> bool {
+        self.colors.len() >= 2
+    }
+
     pub fn is_wet(&self) -> bool {
         self.wet_medium || self.oiliness > 0.0 || self.loading < 1.0 || self.length < 1.0
     }
@@ -205,7 +265,25 @@ impl Brush {
     pub fn step(&self) -> f32 {
         // Flat tips are thinner across, so space dabs by the thin side too.
         let size = self.radius * 2.0 * self.roundness.clamp(0.05, 1.0).max(0.25);
-        (size * self.spacing).max(0.5)
+        let step = (size * self.spacing).max(0.5);
+        // Bristles draw their own lines between steps, so steps can be as long
+        // as a hair is thick (far fewer steps for big bristle brushes).
+        match self.bristles {
+            Some(_) => step.max(self.bristle_radius() * 0.7),
+            None => step,
+        }
+    }
+
+    /// Radius of one hair of a bristle brush, in pixels.
+    pub fn bristle_radius(&self) -> f32 {
+        let Some(b) = self.bristles else { return self.radius };
+        let n = b.count.clamp(4, 300) as f32;
+        // A moving brush sweeps each hair into a line across the stroke: n lines
+        // over the brush's width. Thinnest: the lines leave gaps between them.
+        let thin = (0.6 * self.radius / n).max(0.5);
+        // Fattest: twice what it takes to cover the tip's area with n hairs.
+        let fat = (self.radius * self.roundness.clamp(0.05, 1.0).sqrt() / n.sqrt() * 2.5).max(thin);
+        thin * (fat / thin).powf(b.thickness.clamp(0.0, 1.0))
     }
 }
 

@@ -123,9 +123,34 @@ impl OxideServer {
         run(&self.session, Command::ImportImage(a))
     }
 
+    #[tool(description = "MultiColored brush: load 2–6 colors side by side across the brush (strokes start striped, then blend). Empty list = one color.")]
+    async fn set_multicolor(&self, Parameters(a): Parameters<SetMulticolorArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::SetMulticolor(a))
+    }
+
     #[tool(description = "Move, scale, rotate or flip the current layer's paint, or fit/fill it to the canvas (e.g. after import_image).")]
     async fn transform_layer(&self, Parameters(a): Parameters<TransformLayerArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::TransformLayer(a))
+    }
+
+    #[tool(description = "Import brush tips from a Photoshop .abr (brush packs), GIMP .gbr/.gih, or an image (PNG/JPEG). They're saved in Oxide's tip library; the first one becomes the current tip.")]
+    async fn import_tip(&self, Parameters(a): Parameters<PathArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::ImportTip(a))
+    }
+
+    #[tool(description = "Put the current layer in a new layer group. Moving a layer (move_layer) against a group's edge moves it in or out of the group.")]
+    async fn group_layer(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::GroupLayer(NoArgs {}))
+    }
+
+    #[tool(description = "Dissolve the current layer's group (its layers stay).")]
+    async fn ungroup(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Ungroup(NoArgs {}))
+    }
+
+    #[tool(description = "Rename, fade (opacity 0–1, as one picture) or show/hide the current layer's group.")]
+    async fn set_group(&self, Parameters(a): Parameters<SetGroupArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::SetGroup(a))
     }
 
     #[tool(description = "Copy the current layer (the copy goes above it and becomes current).")]
@@ -230,6 +255,7 @@ impl ServerHandler for OxideServer {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stdout carries the MCP protocol; anything for humans goes to stderr.
+    oxide_commands::tip_import::load_library();
     eprintln!("oxide-mcp {} ready on stdio", env!("CARGO_PKG_VERSION"));
     let service = OxideServer::new().serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;

@@ -61,8 +61,11 @@ impl Document {
             layers.push(("Paper".to_string(), self.paper_rgba_f32(), 255, true));
         }
         for (i, layer) in self.layers().iter().enumerate() {
-            let opacity = (layer.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-            layers.push((layer.name.clone(), self.layer_rgba_f32(i), opacity, layer.visible));
+            // (PSD has groups too, but a flat list with each group's
+            // visibility and opacity folded in looks the same.)
+            let group = layer.group.and_then(|id| self.group(id));
+            let opacity = (layer.opacity * group.map_or(1.0, |g| g.opacity)).clamp(0.0, 1.0);
+            layers.push((layer.name.clone(), self.layer_rgba_f32(i), (opacity * 255.0).round() as u8, self.layer_shown(i)));
         }
         let layer_info = layer_info(&layers, w, h, options.sixteen_bit);
         // Section length = layer info block (with its own length) + global mask info (4 bytes).

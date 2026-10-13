@@ -42,6 +42,19 @@ struct Manifest {
     active_layer: usize,
     /// Bottom layer first.
     layers: Vec<LayerInfo>,
+    /// Layer groups (missing in older files: none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    groups: Vec<GroupInfo>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GroupInfo {
+    id: u32,
+    name: String,
+    visible: bool,
+    opacity: f32,
+    #[serde(default)]
+    open: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,12 +66,24 @@ struct LayerInfo {
     /// The layer's wet paint (same format as `pixels`), only if it has any.
     #[serde(default)]
     wet_pixels: Option<String>,
+    /// Paint thickness (impasto): one little-endian f32 per pixel, only if the layer has any.
+    #[serde(default)]
+    relief: Option<String>,
+    /// How much of that thickness is still wet (same format), only if any is.
+    #[serde(default)]
+    wet_relief: Option<String>,
     #[serde(default)]
     locked: bool,
     #[serde(default)]
     lock_transparency: bool,
     #[serde(default)]
     tracing: bool,
+    /// The layer's own impasto depth (missing = uses the painting's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    impasto: Option<f32>,
+    /// The id of the group it's in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<u32>,
 }
 
 /// Something went wrong reading or writing a file.
@@ -114,6 +139,13 @@ impl Document {
             surface: self.surface().settings(),
             dpi: self.dpi(),
             notes: self.notes.clone(),
+            // Only groups that still have layers.
+            groups: self
+                .groups()
+                .iter()
+                .filter(|g| self.layers().iter().any(|l| l.group == Some(g.id)))
+                .map(|g| GroupInfo { id: g.id, name: g.name.clone(), visible: g.visible, opacity: g.opacity, open: g.open })
+                .collect(),
             active_layer: self.active_index(),
             layers: self
                 .layers()
@@ -126,9 +158,13 @@ impl Document {
                     pixels: format!("layers/{i}.f32"),
                     // Only store wetness for layers that have wet paint.
                     wet_pixels: layer.canvas.has_wet_paint().then(|| format!("layers/{i}.wet.f32")),
+                    relief: layer.canvas.relief().iter().any(|&h| h > 0.0).then(|| format!("layers/{i}.relief.f32")),
+                    wet_relief: layer.canvas.wet_relief().iter().any(|&h| h > 0.0).then(|| format!("layers/{i}.wet-relief.f32")),
                     locked: layer.locked,
                     lock_transparency: layer.lock_transparency(),
                     tracing: layer.tracing,
+                    impasto: layer.impasto,
+                    group: layer.group,
                 })
                 .collect(),
         };
@@ -142,6 +178,12 @@ impl Document {
             if let Some(path) = &info.wet_pixels {
                 zip.start_file(path.as_str(), deflated)?;
                 zip.write_all(&pixels_to_bytes(layer.canvas.wet_pixels()))?;
+            }
+            for (path, values) in [(&info.relief, layer.canvas.relief()), (&info.wet_relief, layer.canvas.wet_relief())] {
+                if let Some(path) = path {
+                    zip.start_file(path.as_str(), deflated)?;
+                    zip.write_all(&values.iter().flat_map(|h| h.to_le_bytes()).collect::<Vec<u8>>())?;
+                }
             }
         }
 
@@ -190,6 +232,14 @@ impl Document {
             };
             let mut canvas = Canvas::new(manifest.width, manifest.height, Color::TRANSPARENT);
             canvas.set_pixels(dry, wet);
+            if let Some(path) = &info.relief {
+                let relief = read_floats(&mut zip, path, pixel_count, &info.name)?;
+                let wet_relief = match &info.wet_relief {
+                    Some(path) => Some(read_floats(&mut zip, path, pixel_count, &info.name)?),
+                    None => None,
+                };
+                canvas.set_relief(relief, wet_relief);
+            }
             canvas.take_changed();
             canvas.set_preserve_alpha(info.lock_transparency);
             layers.push(Layer {
@@ -199,6 +249,8 @@ impl Document {
                 opacity: info.opacity,
                 locked: info.locked,
                 tracing: info.tracing,
+                impasto: info.impasto,
+                group: info.group,
             });
         }
 
@@ -213,6 +265,13 @@ impl Document {
         );
         doc.set_dpi(manifest.dpi);
         doc.notes = manifest.notes;
+        doc.set_groups(
+            manifest
+                .groups
+                .into_iter()
+                .map(|g| crate::LayerGroup { id: g.id, name: g.name, visible: g.visible, opacity: g.opacity, open: g.open })
+                .collect(),
+        );
 
         // Optional mixing palette (older files don't have one).
         if let Ok(mut entry) = zip.by_name("palette.oxide") {
@@ -230,6 +289,16 @@ fn default_dpi() -> f32 {
 
 fn pixels_to_bytes(pixels: &[[f32; 4]]) -> Vec<u8> {
     pixels.iter().flatten().flat_map(|channel| channel.to_le_bytes()).collect()
+}
+
+/// One little-endian f32 per pixel (paint thickness maps).
+fn read_floats<R: Read + Seek>(zip: &mut ZipArchive<R>, path: &str, pixel_count: usize, layer_name: &str) -> Result<Vec<f32>, FileError> {
+    let mut bytes = Vec::with_capacity(pixel_count * 4);
+    zip.by_name(path)?.read_to_end(&mut bytes)?;
+    if bytes.len() != pixel_count * 4 {
+        return Err(FileError::Invalid(format!("layer \"{layer_name}\" has the wrong relief size")));
+    }
+    Ok(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
 fn read_pixels<R: Read + Seek>(
@@ -266,7 +335,8 @@ mod tests {
         let mut doc = Document::new(30, 20, paper);
         doc.begin_stroke();
         let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
-        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let relief = Some(crate::ReliefDab { build: 0.7, smear_to: 0.0, smear: 0.0, plow: 0.0, push: 0.0, flat: false, scrape: 0.0 });
+        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief, bands: None };
         doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
         doc.end_stroke();
         doc.add_layer();
@@ -280,11 +350,16 @@ mod tests {
             light_angle: 200.0,
             paper_visibility: 0.6,
             paint_visibility: 0.15,
+            impasto_depth: 0.8,
+            gloss: 0.6,
+            shadows: 0.7,
+            light_height: 30.0,
         };
         doc.set_surface(linen);
         doc.set_dpi(300.0);
         doc.set_tracing(0, true);
         doc.set_lock_transparency(1, true);
+        doc.set_layer_impasto(1, Some(0.2));
 
         let mut file = Cursor::new(Vec::new());
         doc.save(&mut file).unwrap();
@@ -297,6 +372,8 @@ mod tests {
         assert_eq!(loaded.dpi(), 300.0);
         assert!(loaded.layers()[0].tracing && loaded.layers()[0].locked, "tracing + lock saved");
         assert!(loaded.layers()[1].lock_transparency(), "lock transparency saved");
+        assert_eq!(loaded.layers()[1].impasto, Some(0.2), "per-layer impasto saved");
+        assert_eq!(loaded.layers()[0].impasto, None);
         assert!(loaded.palette.is_none(), "no palette saved, none loaded");
         assert_eq!(loaded.layers().len(), 2);
         assert_eq!(loaded.active_index(), 1);
@@ -307,13 +384,17 @@ mod tests {
         // Wet paint stays wet.
         assert!(loaded.layers()[0].canvas.has_wet_paint());
         assert_eq!(loaded.layers()[0].canvas.wet_pixels(), doc.layers()[0].canvas.wet_pixels());
+        assert_eq!(loaded.layers()[0].canvas.relief(), doc.layers()[0].canvas.relief(), "impasto saved");
+        assert_eq!(loaded.layers()[0].canvas.wet_relief(), doc.layers()[0].canvas.wet_relief(), "wet impasto saved");
+        assert!(doc.layers()[0].canvas.wet_relief().iter().any(|&h| h > 0.0));
+        assert_eq!(loaded.surface().settings(), linen);
     }
 
     #[test]
     fn mixing_palette_is_saved_inside_the_painting() {
         let mut doc = Document::new(20, 20, Color::WHITE);
         let mut palette = Document::new(16, 8, Color::rgb(0.9, 0.9, 0.9));
-        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         palette.active_canvas().dab_with(8.0, 4.0, &Brush { radius: 3.0, ..Brush::default() }, &wet);
         palette.notes = "Paints:\n• Ultramarine Blue (#1C2A6B)\n• Burnt Umber \"quoted\" — ok".into();
         doc.palette = Some(Box::new(palette));

@@ -1,4 +1,7 @@
 //! A hue ring with a saturation/value square inside, like most paint apps.
+//! The ring can be laid out as a painter's **RYB** wheel (red–yellow–blue
+//! primaries, so complements sit opposite as in paint: red–green,
+//! yellow–purple, blue–orange) instead of the screen's RGB hues.
 
 use eframe::egui::{self, Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use eframe::egui::ecolor::rgb_from_hsv;
@@ -10,9 +13,31 @@ enum Grab {
     Square,
 }
 
-/// Show the wheel. `hsv` is (hue, saturation, value), each 0..=1.
+/// Where hues sit on the RYB wheel: (position on the ring, RGB hue), in
+/// degrees. Between these points both scales are linear. Orange takes the
+/// sixth of the ring that RGB gives to yellow-green, and green and blue
+/// spread out less.
+const RYB_STOPS: [(f32, f32); 7] = [(0.0, 0.0), (60.0, 30.0), (120.0, 60.0), (180.0, 120.0), (240.0, 240.0), (300.0, 280.0), (360.0, 360.0)];
+
+/// Map 0..=1 between ring position and hue (`to_hue`) or back.
+fn ryb_map(t: f32, to_hue: bool) -> f32 {
+    let x = t.rem_euclid(1.0) * 360.0;
+    for pair in RYB_STOPS.windows(2) {
+        let ((p0, h0), (p1, h1)) = (pair[0], pair[1]);
+        let (a0, a1, b0, b1) = if to_hue { (p0, p1, h0, h1) } else { (h0, h1, p0, p1) };
+        if x <= a1 {
+            return (b0 + (x - a0) / (a1 - a0) * (b1 - b0)) / 360.0;
+        }
+    }
+    t
+}
+
+/// Show the wheel. `hsv` is (hue, saturation, value), each 0..=1 (the hue
+/// is always the screen's RGB hue; `ryb` only changes where hues sit on the ring).
 /// Returns true if the user changed the color.
-pub fn color_wheel(ui: &mut egui::Ui, hsv: &mut (f32, f32, f32), diameter: f32) -> bool {
+pub fn color_wheel(ui: &mut egui::Ui, hsv: &mut (f32, f32, f32), diameter: f32, ryb: bool) -> bool {
+    let hue_at = |pos: f32| if ryb { ryb_map(pos, true) } else { pos };
+    let pos_of = |hue: f32| if ryb { ryb_map(hue, false) } else { hue };
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::click_and_drag());
     let center = rect.center();
     let outer = diameter / 2.0;
@@ -43,7 +68,7 @@ pub fn color_wheel(ui: &mut egui::Ui, hsv: &mut (f32, f32, f32), diameter: f32) 
                     let d = pos - center;
                     // Hue 0 = red at the top, increasing clockwise.
                     let angle = d.x.atan2(-d.y);
-                    hsv.0 = (angle / std::f32::consts::TAU).rem_euclid(1.0);
+                    hsv.0 = hue_at((angle / std::f32::consts::TAU).rem_euclid(1.0));
                 }
                 Grab::Square => {
                     hsv.1 = ((pos.x - square.left()) / square.width()).clamp(0.0, 1.0);
@@ -62,7 +87,7 @@ pub fn color_wheel(ui: &mut egui::Ui, hsv: &mut (f32, f32, f32), diameter: f32) 
     for i in 0..=SEGMENTS {
         let h = i as f32 / SEGMENTS as f32;
         let dir = angle_dir(h);
-        let color = to_color32(rgb_from_hsv((h, 1.0, 1.0)));
+        let color = to_color32(rgb_from_hsv((hue_at(h), 1.0, 1.0)));
         ring.colored_vertex(center + dir * inner, color);
         ring.colored_vertex(center + dir * outer, color);
         if i > 0 {
@@ -97,7 +122,7 @@ pub fn color_wheel(ui: &mut egui::Ui, hsv: &mut (f32, f32, f32), diameter: f32) 
         painter.circle_stroke(p, r + 1.0, Stroke::new(1.0, Color32::BLACK));
         painter.circle_stroke(p, r, Stroke::new(2.0, Color32::WHITE));
     };
-    marker(center + angle_dir(hsv.0) * (inner + thickness / 2.0), thickness * 0.35);
+    marker(center + angle_dir(pos_of(hsv.0)) * (inner + thickness / 2.0), thickness * 0.35);
     marker(square.min + Vec2::new(hsv.1, 1.0 - hsv.2) * square.size(), 5.0);
 
     changed
@@ -111,4 +136,23 @@ fn angle_dir(h: f32) -> Vec2 {
 
 fn to_color32([r, g, b]: [f32; 3]) -> Color32 {
     Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ryb_map;
+
+    #[test]
+    fn ryb_wheel_puts_paint_complements_opposite() {
+        let deg = |pos: f32| ryb_map(pos / 360.0, true) * 360.0;
+        assert_eq!(deg(0.0), 0.0); // red at the top
+        assert_eq!(deg(180.0), 120.0); // green opposite red
+        assert_eq!(deg(120.0), 60.0); // yellow...
+        assert_eq!(deg(300.0), 280.0); // ...opposite purple
+        assert_eq!(deg(60.0), 30.0); // orange...
+        assert_eq!(deg(240.0), 240.0); // ...opposite blue
+        for h in [0.1f32, 0.37, 0.5, 0.81] {
+            assert!((ryb_map(ryb_map(h, true), false) - h).abs() < 1e-5, "round trip {h}");
+        }
+    }
 }

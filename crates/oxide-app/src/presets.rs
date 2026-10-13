@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
-use oxide_engine::{Brush, Color, DabMode, Document, Rotation, Stroke};
+use oxide_engine::{Bristles, Brush, Color, DabMode, Document, Rotation, Stroke, Tip};
 use serde::{Deserialize, Serialize};
 
 use crate::app::PAPER;
@@ -22,6 +22,10 @@ pub const THUMB_H: usize = 40;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPreset {
     pub name: String,
+    /// Which group it's listed under in the Brushes panel. Empty (older
+    /// files) = "My Brushes" for your presets.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     pub radius: f32,
     pub hardness: f32,
     pub spacing: f32,
@@ -47,6 +51,18 @@ pub struct BrushPreset {
     /// (built-in shapes don't change how a medium feels the paper).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grain: Option<f32>,
+    /// A bristle brush's hairs (None = a stamped tip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bristles: Option<Bristles>,
+    /// Texture tip (missing in older files: round).
+    #[serde(default)]
+    pub tip: Tip,
+    #[serde(default)]
+    pub jitter_angle: f32,
+    #[serde(default)]
+    pub jitter_size: f32,
+    #[serde(default)]
+    pub scatter: f32,
 }
 
 fn one() -> f32 {
@@ -54,9 +70,10 @@ fn one() -> f32 {
 }
 
 impl BrushPreset {
-    pub fn from_shape(name: &str, shape: &BrushShape) -> Self {
+    pub fn from_shape(name: &str, group: &str, shape: &BrushShape) -> Self {
         BrushPreset {
             name: name.to_string(),
+            group: group.to_string(),
             radius: shape.radius,
             hardness: shape.hardness,
             spacing: shape.spacing,
@@ -69,6 +86,11 @@ impl BrushPreset {
             size_pressure: Some(shape.size_pressure),
             opacity_pressure: Some(shape.opacity_pressure),
             grain: Some(shape.grain),
+            bristles: shape.bristles,
+            tip: shape.tip,
+            jitter_angle: shape.jitter_angle,
+            jitter_size: shape.jitter_size,
+            scatter: shape.scatter,
         }
     }
 
@@ -96,6 +118,11 @@ impl BrushPreset {
             size_pressure: self.size_pressure.unwrap_or(0.0),
             opacity_pressure: self.opacity_pressure.unwrap_or(0.0),
             grain: self.grain.unwrap_or(0.0),
+            bristles: self.bristles,
+            tip: self.tip,
+            jitter_angle: self.jitter_angle,
+            jitter_size: self.jitter_size,
+            scatter: self.scatter,
         }
     }
 
@@ -105,7 +132,7 @@ impl BrushPreset {
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {
-    BrushPreset { name: name.to_string(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None }
+    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
 }
 
 /// A built-in preset whose tip turns to follow the stroke (flat brushes, knives).
@@ -118,7 +145,40 @@ fn natural(preset: BrushPreset, roughness: f32, streaks: f32, lift_off: f32) -> 
     BrushPreset { roughness, streaks, lift_off, ..preset }
 }
 
+/// A built-in texture-tip brush, with per-dab jitter (angle, size, scatter).
+fn textured(preset: BrushPreset, tip: Tip, jitter_angle: f32, jitter_size: f32, scatter: f32) -> BrushPreset {
+    BrushPreset { tip, jitter_angle, jitter_size, scatter, ..preset }
+}
+
+/// A built-in bristle brush (separate hairs).
+fn hairs(preset: BrushPreset, count: u32, thickness: f32, spread: f32, stiffness: f32) -> BrushPreset {
+    BrushPreset { bristles: Some(Bristles { count, thickness, spread, stiffness }), ..preset }
+}
+
+/// The group for presets you save, unless you pick another.
+pub const MY_BRUSHES: &str = "My Brushes";
+
+/// Which group a built-in preset belongs to.
+fn builtin_group(preset: &BrushPreset) -> &'static str {
+    match preset.name.as_str() {
+        "Flat" | "Filbert" | "Chisel" | "Nib" => "Flat & Filbert",
+        "Knife" | "Rough Knife" => "Knife",
+        _ if preset.bristles.is_some() => "Bristle",
+        _ if preset.tip != Tip::Round => "Texture",
+        _ if preset.roughness > 0.0 || preset.streaks > 0.0 => "Natural",
+        _ => "Round",
+    }
+}
+
 fn builtin_presets() -> Vec<BrushPreset> {
+    let mut presets = builtin_list();
+    for p in &mut presets {
+        p.group = builtin_group(p).to_string();
+    }
+    presets
+}
+
+fn builtin_list() -> Vec<BrushPreset> {
     vec![
         builtin("Round", 12.0, 0.7, 0.05, 1.0, 0.0),
         builtin("Round Hard", 10.0, 0.95, 0.05, 1.0, 0.0),
@@ -134,11 +194,24 @@ fn builtin_presets() -> Vec<BrushPreset> {
         // Natural brushes: ragged edges, bristle streaks, lift-off.
         natural(builtin("Worn Round", 14.0, 0.6, 0.04, 1.0, 0.0), 0.4, 0.45, 0.6),
         natural(builtin("Rough Round", 14.0, 0.55, 0.04, 1.0, 0.0), 0.75, 0.35, 0.6),
-        follow(natural(builtin("Bristle Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.35, 0.85, 0.7)),
+        follow(natural(builtin("Streaky Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.35, 0.85, 0.7)),
         follow(natural(builtin("Dry Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.55, 1.0, 0.8)),
         follow(natural(builtin("Worn Filbert", 14.0, 0.6, 0.04, 0.6, 0.0), 0.5, 0.55, 0.65)),
         follow(natural(builtin("Scruffy", 20.0, 0.45, 0.04, 0.8, 15.0), 0.95, 0.7, 0.8)),
         follow(natural(builtin("Rough Knife", 18.0, 1.0, 0.03, 0.12, 0.0), 0.6, 0.3, 0.5)),
+        // Bristle brushes: real hairs that each carry paint.
+        hairs(builtin("Bristle Round", 14.0, 0.7, 0.05, 1.0, 0.0), 60, 0.5, 0.5, 0.6),
+        follow(hairs(builtin("Bristle Flat", 18.0, 0.7, 0.05, 0.3, 0.0), 56, 0.5, 0.4, 0.7)),
+        follow(hairs(builtin("Bristle Filbert", 16.0, 0.7, 0.05, 0.6, 0.0), 64, 0.5, 0.5, 0.55)),
+        follow(hairs(builtin("Sparse Flat", 18.0, 0.7, 0.05, 0.3, 0.0), 18, 0.2, 0.6, 0.6)),
+        hairs(builtin("Soft Hair Round", 12.0, 0.7, 0.05, 1.0, 0.0), 90, 0.6, 0.8, 0.25),
+        // Texture tips (images stamped along the stroke, turned at random).
+        textured(builtin("Sponge", 26.0, 0.7, 0.3, 1.0, 0.0), Tip::Sponge, 1.0, 0.3, 0.1),
+        textured(builtin("Chalk", 10.0, 0.7, 0.08, 1.0, 0.0), Tip::Chalk, 1.0, 0.1, 0.0),
+        textured(builtin("Splatter", 34.0, 0.7, 0.7, 1.0, 0.0), Tip::Splatter, 1.0, 0.5, 0.5),
+        follow(textured(builtin("Dry Brush", 18.0, 0.7, 0.04, 0.8, 0.0), Tip::DryBrush, 0.0, 0.0, 0.0)),
+        textured(builtin("Rag", 32.0, 0.7, 0.35, 1.0, 0.0), Tip::Rag, 1.0, 0.2, 0.1),
+        textured(builtin("Speckle", 22.0, 0.7, 0.5, 1.0, 0.0), Tip::Speckle, 1.0, 0.3, 0.3),
     ]
 }
 
@@ -147,6 +220,13 @@ pub struct PresetEntry {
     pub thumbnail: egui::TextureHandle,
     /// Where it's saved, for presets you made (built-ins have none).
     pub file: Option<PathBuf>,
+}
+
+impl PresetEntry {
+    /// The group it's listed under (your older presets: "My Brushes").
+    pub fn group(&self) -> &str {
+        if self.preset.group.is_empty() { MY_BRUSHES } else { &self.preset.group }
+    }
 }
 
 pub struct PresetLibrary {
@@ -196,8 +276,32 @@ impl PresetLibrary {
         Ok(())
     }
 
-    /// Save `shape` as a new preset file (or overwrite one with the same name).
-    pub fn save(&mut self, ctx: &egui::Context, name: &str, shape: &BrushShape) -> Result<(), String> {
+    /// The groups, in the order they first appear (built-ins first).
+    pub fn groups(&self) -> Vec<String> {
+        let mut groups: Vec<String> = Vec::new();
+        for entry in &self.entries {
+            let group = entry.group();
+            if !groups.iter().any(|g| g == group) {
+                groups.push(group.to_string());
+            }
+        }
+        groups
+    }
+
+    /// Move one of your presets to another group (rewrites its file).
+    pub fn set_group(&mut self, index: usize, group: &str) {
+        let entry = &mut self.entries[index];
+        let Some(path) = entry.file.clone() else { return };
+        entry.preset.group = group.trim().to_string();
+        match toml::to_string_pretty(&entry.preset).map_err(|e| e.to_string()).and_then(|t| fs::write(&path, t).map_err(|e| e.to_string())) {
+            Ok(()) => self.error = None,
+            Err(e) => self.error = Some(format!("Couldn't move {}: {e}", entry.preset.name)),
+        }
+    }
+
+    /// Save `shape` as a preset file in `group` (empty = My Brushes),
+    /// overwriting one with the same name.
+    pub fn save_in(&mut self, ctx: &egui::Context, name: &str, group: &str, shape: &BrushShape) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("Give the brush a name first.".into());
@@ -205,7 +309,8 @@ impl PresetLibrary {
         let dir = brushes_dir().ok_or("Couldn't find the Application Support folder.")?;
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.toml", file_stem(name)));
-        let preset = BrushPreset::from_shape(name, shape);
+        let group = if group.trim().is_empty() { MY_BRUSHES } else { group.trim() };
+        let preset = BrushPreset::from_shape(name, group, shape);
         let text = toml::to_string_pretty(&preset).map_err(|e| e.to_string())?;
         fs::write(&path, text).map_err(|e| e.to_string())?;
 
@@ -279,6 +384,28 @@ fn thumbnail(preset: &BrushPreset) -> egui::ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_brushes_are_grouped() {
+        let presets = builtin_presets();
+        let group = |name: &str| presets.iter().find(|p| p.name == name).map(|p| p.group.clone()).unwrap();
+        assert_eq!(group("Round"), "Round");
+        assert_eq!(group("Filbert"), "Flat & Filbert");
+        assert_eq!(group("Worn Round"), "Natural");
+        assert_eq!(group("Bristle Flat"), "Bristle");
+        assert_eq!(group("Knife"), "Knife");
+        assert_eq!(group("Sponge"), "Texture");
+        assert!(presets.iter().all(|p| !p.group.is_empty()));
+    }
+
+    #[test]
+    fn older_preset_files_have_no_group_and_new_ones_keep_theirs() {
+        let old: BrushPreset = toml::from_str("name = \"Mine\"\nradius = 10.0\nhardness = 0.5\nspacing = 0.1\n").unwrap();
+        assert!(old.group.is_empty(), "listed under My Brushes");
+        let saved = BrushPreset::from_shape("Leaf", "Foliage", &BrushShape::default());
+        let back: BrushPreset = toml::from_str(&toml::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back.group, "Foliage");
+    }
 
     #[test]
     fn file_stems_are_safe() {

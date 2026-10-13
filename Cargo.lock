@@ -2148,6 +2148,7 @@ name = "oxide-commands"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "dirs",
  "image",
  "oxide-engine",
  "png",

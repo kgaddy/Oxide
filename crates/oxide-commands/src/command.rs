@@ -19,12 +19,14 @@ pub enum Command {
     Describe(NoArgs),
     ListPigments(NoArgs),
     SetColor(SetColorArgs),
+    SetMulticolor(SetMulticolorArgs),
     SetTool(SetToolArgs),
     SetPaintMode(SetPaintModeArgs),
     SetBrush(SetBrushArgs),
     Stroke(StrokeArgs),
     PickColor(PickColorArgs),
     ImportImage(ImportImageArgs),
+    ImportTip(PathArgs),
     AddLayer(AddLayerArgs),
     SelectLayer(LayerRefArgs),
     SetLayer(SetLayerArgs),
@@ -34,6 +36,9 @@ pub enum Command {
     MergeDown(NoArgs),
     MergeVisible(MergeVisibleArgs),
     ClearLayer(LayerRefArgs),
+    GroupLayer(NoArgs),
+    Ungroup(NoArgs),
+    SetGroup(SetGroupArgs),
     TransformLayer(TransformLayerArgs),
     Dry(DryArgs),
     Rewet(NoArgs),
@@ -100,16 +105,26 @@ pub struct SetColorArgs {
     pub pigment: Option<String>,
 }
 
+/// MultiColored brush: several colors loaded side by side across the brush.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SetMulticolorArgs {
+    /// 2–6 colors, each a hex color ("#C8553D") or a pigment name from
+    /// list_pigments, in order across the brush. Empty = back to one color.
+    pub colors: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SetToolArgs {
-    /// "oils" (oils & acrylics, wet), "ink", "pencil", "marker", "airbrush", "eraser", or "smudge".
+    /// "oils" (oils & acrylics, wet), "ink", "pencil", "marker", "airbrush", "eraser", "smudge",
+    /// or "knife" (palette knife: thick smooth paint; set_paint_mode "scrape" scrapes wet paint off).
     pub tool: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SetPaintModeArgs {
-    /// Oils only: "paint" (pure color), "paint_mix" (firm paints, light mixes), "paint_blend"
+    /// Oils: "paint" (pure color), "paint_mix" (firm paints, light mixes), "paint_blend"
     /// (firm paints, light only blends), "blend" (no paint, moves wet paint), or "erase".
+    /// Knife: "spread" (lay thick paint) or "scrape" (scrape wet paint off).
     pub mode: String,
 }
 
@@ -142,6 +157,30 @@ pub struct SetBrushArgs {
     pub lift_off: Option<f32>,
     /// How much the paper texture shows in the stroke 0–1.
     pub grain: Option<f32>,
+    /// Oils: how thick the paint goes on (impasto), 0 = flat, 1 = very thick. Default 0.5.
+    pub thickness: Option<f32>,
+    /// Distance between dabs as a fraction of the brush width (0.02–1). Texture
+    /// tips need more (0.25–0.7) or their stamps fill each other's holes.
+    pub spacing: Option<f32>,
+    /// Tip: "round" (default), a texture ("sponge", "chalk", "splatter", "dry_brush", "rag", "speckle"),
+    /// or an imported tip: "image:<name>" (see import_tip).
+    pub tip: Option<String>,
+    /// Turn each dab at random, 0–1 (1 = any angle). Use with texture tips.
+    pub jitter_angle: Option<f32>,
+    /// Random dab size, 0–1 (down to 30% at 1).
+    pub jitter_size: Option<f32>,
+    /// Throw dabs off the stroke's path, 0–1 (up to one radius).
+    pub scatter: Option<f32>,
+    /// Bristle brush: number of hairs (4–300), e.g. 60. 0 = back to a stamped tip.
+    /// Each hair carries its own paint, lags a little, runs dry on its own and
+    /// leaves its own ridge: the most realistic oil strokes.
+    pub bristles: Option<u32>,
+    /// Bristle brush: hair thickness 0–1 (0 = scratchy, gaps between hairs; 0.5 = solid with fine streaks; 1 = fat hairs).
+    pub bristle_thickness: Option<f32>,
+    /// Bristle brush: how much the hairs splay under pressure 0–1.
+    pub bristle_spread: Option<f32>,
+    /// Bristle brush: 1 = stiff hairs; low = soft hairs that lag and fan out on curves.
+    pub bristle_stiffness: Option<f32>,
     /// How much pressure changes the size 0–1.
     pub size_pressure: Option<f32>,
     /// How much pressure changes the opacity 0–1.
@@ -209,6 +248,15 @@ pub struct TransformLayerArgs {
     pub flip_vertical: Option<bool>,
 }
 
+/// Settings of the current layer's group; omitted ones stay as they are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SetGroupArgs {
+    pub name: Option<String>,
+    /// 0–1: fades the whole group as one picture.
+    pub opacity: Option<f32>,
+    pub visible: Option<bool>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MergeVisibleArgs {
     /// Put the merged result on a new layer and keep the originals (default false).
@@ -243,6 +291,9 @@ pub struct SetLayerArgs {
     /// Make this the tracing layer (only one; it's locked): strokes on other
     /// layers take their color from it where they start.
     pub tracing: Option<bool>,
+    /// This layer's own impasto depth, 0–10 (e.g. 0 = a flat glaze over thick
+    /// paint). -1 = use the painting's (set_paper impasto_depth).
+    pub impasto_depth: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -274,6 +325,14 @@ pub struct SetPaperArgs {
     pub paper_texture: Option<f32>,
     /// How much texture shows through the paint, 0–10 (default 3).
     pub paint_texture: Option<f32>,
+    /// How strongly thick paint (impasto) is lit, 0–10 (default 5; 0 = flat).
+    pub impasto_depth: Option<f32>,
+    /// How shiny thick paint is, 0–10 (default 3).
+    pub gloss: Option<f32>,
+    /// How dark the shadows thick paint casts are, 0–10 (default 5; 0 = none).
+    pub shadows: Option<f32>,
+    /// Light height in degrees, 10–80 (default 40): low = long, raking shadows.
+    pub light_height: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

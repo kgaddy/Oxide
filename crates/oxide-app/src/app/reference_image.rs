@@ -181,8 +181,8 @@ impl OxideApp {
             });
 
         if let Some(c) = picked {
-            self.set_color(c);
-            self.remember_color(c);
+            self.pick_color(c);
+            self.remember_color(self.color);
         }
         if pick_file {
             self.open_reference_image(ctx);

@@ -230,12 +230,17 @@ impl OxideApp {
     /// Put a PNG/JPEG on a new layer at its own size, centered, then go
     /// straight into Transform to size and place it.
     pub(super) fn import_image(&mut self) {
-        let Some(path) = self.dialog(DialogFolder::Images).add_filter("Images", &["png", "jpg", "jpeg"]).pick_file() else {
+        let Some(path) = self.dialog(DialogFolder::Images).add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"]).pick_file() else {
             return;
         };
         self.remember_folder(DialogFolder::Images, &path);
+        self.import_image_file(&path);
+    }
+
+    /// Put an image file on a new layer and go into Transform.
+    pub(super) fn import_image_file(&mut self, path: &std::path::Path) {
         let (w, h) = (self.document.width(), self.document.height());
-        let pixels = match oxide_commands::import::image_layer_pixels(&path, w, h, false) {
+        let pixels = match oxide_commands::import::image_layer_pixels(path, w, h, false) {
             Ok(pixels) => pixels,
             Err(e) => return self.error(e),
         };
@@ -245,6 +250,30 @@ impl OxideApp {
         self.document.insert_layer(layer);
         self.start_transform();
         self.info(format!("Imported {}. Drag the handles to size and place it, then press Enter.", path.display()));
+    }
+
+    /// Files dropped on the window, or sent by Finder (double-clicking a
+    /// .oxide, "Open With", dragging onto the Dock icon): paintings open,
+    /// images become layers, brush files add tips.
+    pub(super) fn open_files(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
+        let ext = |p: &PathBuf| p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let mut tips = Vec::new();
+        let mut painting = None;
+        for path in paths {
+            match ext(&path).as_str() {
+                "oxide" => painting = painting.or(Some(path)),
+                "abr" | "gbr" | "gih" => tips.push(path),
+                "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp" | "bmp" => self.import_image_file(&path),
+                _ => self.error(format!("Oxide can't open {} (paintings: .oxide; images; brushes: .abr, .gbr, .gih)", path.display())),
+            }
+        }
+        if !tips.is_empty() {
+            self.import_tip_files(&tips, ctx);
+        }
+        // Opening a painting may ask "save changes?" first.
+        if let Some(path) = painting {
+            self.request(PendingAction::OpenPath(path), ctx);
+        }
     }
 
     /// The "Save changes?" dialog, shown while an action is pending.

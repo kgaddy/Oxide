@@ -145,6 +145,17 @@ pub struct OxideApp {
     reference: reference_image::ReferenceImage,
     /// Help → Keyboard Shortcuts window.
     show_shortcuts: bool,
+    /// The Brushes panel's search box.
+    brush_search: String,
+    /// The group name being edited in the Layers panel.
+    renaming_group: Option<String>,
+    /// The secondary color.
+    secondary: Color,
+    /// Mix Color: X is held, so picked colors mix into the current one.
+    mix_key: bool,
+    /// MultiColored brush (⌥M): the colors loaded side by side, and whether it's on.
+    multicolor: Vec<Color>,
+    multicolor_on: bool,
     /// The macOS menu bar (None until installed on the first frame, or if it failed).
     #[cfg(target_os = "macos")]
     native_menu: Option<menus::native::NativeMenu>,
@@ -206,6 +217,13 @@ enum Command {
     ToggleBrushCreator,
     TogglePenSettings,
     ShowShortcuts,
+    MultiColor,
+    SwapColors,
+    GroupLayer,
+    Ungroup,
+    /// File → Open Recent → item n.
+    OpenRecent(u8),
+    ClearRecent,
 }
 
 impl Command {
@@ -215,16 +233,19 @@ impl Command {
         matches!(
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
-                | NaturalColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
+                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
         )
     }
 }
 
 /// Keyboard shortcuts. Order matters: egui ignores *extra* Shift/Alt when
 /// matching, so ⇧⌘S must be checked before ⌘S or it would trigger Save.
-const SHORTCUTS: [(Command, KeyboardShortcut); 29] = [
+const SHORTCUTS: [(Command, KeyboardShortcut); 33] = [
     // View: checked before ⌘0 (Fit), since extra modifiers would otherwise match it.
     (Command::ResetRotation, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::Num0)),
+    // ⇧⌥⌘G before ⌥⌘G.
+    (Command::Ungroup, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT).plus(Modifiers::SHIFT), Key::G)),
+    (Command::GroupLayer, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::G)),
     (Command::RotateLeft, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::ArrowLeft)),
     (Command::RotateRight, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::ArrowRight)),
     (Command::FlipView, KeyboardShortcut::new(Modifiers::SHIFT, Key::F)),
@@ -242,6 +263,8 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 29] = [
     (Command::MergeDown, KeyboardShortcut::new(Modifiers::COMMAND, Key::E)),
     (Command::DuplicateLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::J)),
     (Command::Transform, KeyboardShortcut::new(Modifiers::COMMAND, Key::T)),
+    (Command::MultiColor, KeyboardShortcut::new(Modifiers::ALT, Key::M)),
+    (Command::SwapColors, KeyboardShortcut::new(Modifiers::COMMAND, Key::Backslash)),
     (Command::ClearLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::Backspace)),
     (Command::LockLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::Slash)),
     (Command::TracingLayer, KeyboardShortcut::new(Modifiers::ALT.plus(Modifiers::SHIFT), Key::T)),
@@ -264,6 +287,9 @@ impl OxideApp {
         // seen as tiny drags and ignored. Be more forgiving.
         ctx.options_mut(|o| o.input_options.max_click_dist = 16.0);
         let app_settings = AppSettings::load();
+        crate::open_files::set_wake(ctx);
+        // Brush tips imported earlier (Photoshop, GIMP, images).
+        oxide_commands::tip_import::load_library();
         let new_artwork = new_artwork::NewArtwork::from_settings(&app_settings);
         // Behind the New Artwork dialog: the last-used (or default) canvas,
         // so there's something to paint on if you cancel or turn the dialog off.
@@ -312,6 +338,12 @@ impl OxideApp {
             transform: None,
             stabilizer: Default::default(),
             show_shortcuts: false,
+            brush_search: String::new(),
+            renaming_group: None,
+            multicolor: Vec::new(),
+            multicolor_on: false,
+            secondary: Color::WHITE,
+            mix_key: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
             menu_installed: false,
@@ -332,7 +364,53 @@ impl OxideApp {
     fn current_brush(&self) -> Brush {
         let mut brush = self.state().brush(self.tool, self.color);
         brush.mixing = if self.app_settings.natural_colors { Mixing::Pigment } else { Mixing::Rgb };
+        if self.multicolor_active() {
+            brush.colors = self.multicolor.clone();
+        }
         brush
+    }
+
+    /// The Color panel's MultiColored checkbox (same as ⌥M).
+    fn run_command_multicolor(&mut self) {
+        self.multicolor_on = !self.multicolor_on;
+        if self.multicolor_on && self.multicolor.is_empty() {
+            self.multicolor.push(self.color);
+        }
+    }
+
+    /// Is the MultiColored brush on, with at least two colors loaded?
+    fn multicolor_active(&self) -> bool {
+        self.multicolor_on && self.multicolor.len() >= 2 && self.tool.paints()
+    }
+
+    /// A color picked from a swatch, the canvas, the palette or the reference
+    /// image. Holding X (Mix Color) mixes it into the current color like
+    /// paint instead of replacing it.
+    fn pick_color(&mut self, picked: Color) {
+        if self.mix_key {
+            let mixing = if self.app_settings.natural_colors { Mixing::Pigment } else { Mixing::Rgb };
+            let mixed = oxide_engine::mix_paint(Color { a: 1.0, ..self.color }, Color { a: 1.0, ..picked }, 0.5, mixing);
+            self.set_color(mixed);
+        } else {
+            self.set_color(picked);
+        }
+    }
+
+    /// Swap the primary and secondary colors (⌘\\).
+    fn swap_colors(&mut self) {
+        let primary = self.color;
+        self.set_color(self.secondary);
+        self.secondary = primary;
+    }
+
+    /// Load another color onto the MultiColored brush (up to 6).
+    fn add_multicolor(&mut self, color: Color) {
+        let color = Color { a: 1.0, ..color };
+        if self.multicolor.len() >= 6 {
+            return self.info("The MultiColored brush holds up to 6 colors.");
+        }
+        self.multicolor.push(color);
+        self.multicolor_on = true;
     }
 
     /// Set the brush color from anywhere (swatch, picker, ...) and keep the wheel in sync.
@@ -441,6 +519,32 @@ impl OxideApp {
             Command::ToggleBrushCreator => self.brush_creator.open = !self.brush_creator.open,
             Command::TogglePenSettings => self.show_pen_settings = !self.show_pen_settings,
             Command::ShowShortcuts => self.show_shortcuts = true,
+            Command::SwapColors => self.swap_colors(),
+            Command::GroupLayer => {
+                if self.document.group_active_layer().is_none() {
+                    self.info("This layer is already in a group.");
+                }
+            }
+            Command::Ungroup => {
+                if let Some(id) = self.document.layers()[self.document.active_index()].group {
+                    self.document.ungroup(id);
+                }
+            }
+            Command::OpenRecent(n) => {
+                if let Some(path) = self.app_settings.recent_files.get(n as usize).cloned() {
+                    self.request(PendingAction::OpenPath(path), ctx);
+                }
+            }
+            Command::ClearRecent => {
+                self.app_settings.recent_files.clear();
+                self.save_app_settings();
+            }
+            Command::MultiColor => {
+                self.run_command_multicolor();
+                if self.multicolor_on && self.multicolor.len() < 2 {
+                    self.info("MultiColored brush: add colors with \"Add current color\" or ⌥-click swatches (Color panel).");
+                }
+            }
             Command::DuplicateLayer => self.document.duplicate_active_layer(),
             Command::MergeDown => {
                 if !self.document.merge_down() {
@@ -560,7 +664,7 @@ impl OxideApp {
                     view_keys.push(Command::LockTransparency);
                 }
             }
-            if self.tool.is_wet_medium() && i.modifiers.is_none() {
+            if self.tool == Tool::OilsAcrylics && i.modifiers.is_none() {
                 // Paint modes 1–5.
                 let modes = [(Key::Num1, Some(PaintMode::Paint)), (Key::Num2, Some(PaintMode::PaintMix)),
                     (Key::Num3, Some(PaintMode::PaintBlend)), (Key::Num4, Some(PaintMode::Blend)), (Key::Num5, None)];
@@ -778,6 +882,26 @@ impl eframe::App for OxideApp {
         if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open && !self.export_dialog.open {
             self.handle_shortcuts(&ctx);
         }
+        // Files dropped on the window, or sent by Finder (double-click, Open With).
+        let mut arrived: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        arrived.extend(crate::open_files::take());
+        if !arrived.is_empty() && self.pending.is_none() {
+            self.open_files(arrived, &ctx);
+        }
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let screen = ctx.content_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-hint")));
+            painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop to open a painting, add an image as a layer, or import brush tips",
+                egui::FontId::proportional(20.0),
+                egui::Color32::WHITE,
+            );
+        }
+        // Mix Color: while X is held (and you're not typing), picked colors mix in.
+        self.mix_key = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_down(Key::X) && i.modifiers.is_none());
 
         if !self.native_menu_frame(&ctx) {
             egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));

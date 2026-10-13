@@ -131,6 +131,8 @@ pub struct AppSettings {
     pub tilt_offset: f32,
     /// Flip the direction of barrel rotation.
     pub invert_rotation: bool,
+    /// Show the color wheel as a painter's RYB wheel instead of RGB.
+    pub ryb_wheel: bool,
 }
 
 impl Default for AppSettings {
@@ -153,6 +155,7 @@ impl Default for AppSettings {
             invert_tilt: false,
             tilt_offset: 0.0,
             invert_rotation: false,
+            ryb_wheel: false,
         }
     }
 }
@@ -204,6 +207,8 @@ pub enum DialogFolder {
     Exports,
     /// Import Image as Layer, Open Reference Image.
     Images,
+    /// Import brush tips (.abr, .gbr, .gih, images).
+    Tips,
 }
 
 impl DialogFolder {
@@ -212,6 +217,7 @@ impl DialogFolder {
             DialogFolder::Paintings => "paintings",
             DialogFolder::Exports => "exports",
             DialogFolder::Images => "images",
+            DialogFolder::Tips => "tips",
         }
     }
 
@@ -220,6 +226,7 @@ impl DialogFolder {
         match self {
             DialogFolder::Paintings => dirs::document_dir(),
             DialogFolder::Exports | DialogFolder::Images => dirs::picture_dir(),
+            DialogFolder::Tips => dirs::download_dir(),
         }
         .or_else(dirs::home_dir)
     }

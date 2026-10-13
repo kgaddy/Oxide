@@ -5,6 +5,7 @@ mod app;
 use oxide_commands::{export, tools};
 mod color_wheel;
 mod palette_library;
+mod open_files;
 mod pen;
 mod presets;
 mod settings;
@@ -14,6 +15,8 @@ mod tiles;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    // Before the app finishes launching, so a double-clicked painting that starts Oxide isn't missed.
+    open_files::install();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Oxide")

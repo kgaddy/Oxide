@@ -148,6 +148,12 @@ pub fn resample(src: &[[f32; 4]], width: usize, height: usize, bounds: Region, t
     out
 }
 
+/// [`resample`] for a one-number-per-pixel map (paint thickness).
+pub fn resample_scalar(src: &[f32], width: usize, height: usize, bounds: Region, t: &Transform) -> Vec<f32> {
+    let wide: Vec<[f32; 4]> = src.iter().map(|&v| [v, 0.0, 0.0, 0.0]).collect();
+    resample(&wide, width, height, bounds, t).into_iter().map(|p| p[0]).collect()
+}
+
 /// Bilinear sample at pixel coordinates (pixel centers at integers); outside `bounds` is transparent.
 fn bilinear(src: &[[f32; 4]], width: usize, height: usize, bounds: Region, x: f32, y: f32) -> [f32; 4] {
     let (fx, fy) = (x.floor(), y.floor());

@@ -20,6 +20,18 @@ fn main() {
         std::hint::black_box(doc.composite_rgba8(doc.bounds()));
     });
     println!("composite full A4, 2 layers: best {composite:.1} ms");
+    // Thick paint everywhere (impasto lighting on), the worst case.
+    let (w, h) = (doc.width(), doc.height());
+    let relief = (0..w * h).map(|i| ((i % w) as f32 * 0.3).sin().abs() * 0.8).collect();
+    doc.active_canvas().set_relief(relief, None);
+    let impasto = best(&mut || {
+        std::hint::black_box(doc.composite_rgba8(doc.bounds()));
+    });
+    println!("composite full A4 with impasto everywhere: best {impasto:.1} ms");
+    let dab = best(&mut || {
+        std::hint::black_box(doc.composite_rgba8(oxide_engine::Region::new(800, 1100, 864, 1164)));
+    });
+    println!("composite one 64×64 dab area with impasto: best {dab:.3} ms");
     let mut depth = 0.4;
     let paper = best(&mut || {
         depth += 0.01;

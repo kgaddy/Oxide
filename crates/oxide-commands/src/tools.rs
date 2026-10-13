@@ -5,7 +5,7 @@
 //! the tip looks like. A **medium** (oils & acrylics, ink, pencil, ...) says
 //! how the paint behaves. Any medium can use any brush preset.
 
-use oxide_engine::{Brush, Color, PaintMode, Rotation};
+use oxide_engine::{Bristles, Brush, Color, PaintMode, Rotation, Tip};
 
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -17,11 +17,13 @@ pub enum Tool {
     Airbrush,
     Eraser,
     Smudge,
+    /// Palette knife: spreads thick, smooth paint, or scrapes wet paint off.
+    Knife,
     Picker,
 }
 
 impl Tool {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [Tool; Tool::COUNT] = [
         Tool::OilsAcrylics,
         Tool::Ink,
@@ -30,6 +32,7 @@ impl Tool {
         Tool::Airbrush,
         Tool::Eraser,
         Tool::Smudge,
+        Tool::Knife,
         Tool::Picker,
     ];
 
@@ -47,6 +50,7 @@ impl Tool {
             Tool::Airbrush => "Airbrush",
             Tool::Eraser => "Eraser",
             Tool::Smudge => "Smudge",
+            Tool::Knife => "Knife",
             Tool::Picker => "Picker",
         }
     }
@@ -61,18 +65,19 @@ impl Tool {
             Tool::Airbrush => "U",
             Tool::Eraser => "E",
             Tool::Smudge => "S",
+            Tool::Knife => "K",
             Tool::Picker => "I",
         }
     }
 
     /// Tools that put the current color on the canvas.
     pub fn paints(self) -> bool {
-        matches!(self, Tool::OilsAcrylics | Tool::Ink | Tool::Pencil | Tool::Marker | Tool::Airbrush)
+        matches!(self, Tool::OilsAcrylics | Tool::Ink | Tool::Pencil | Tool::Marker | Tool::Airbrush | Tool::Knife)
     }
 
     /// Tools whose paint is wet (picks up and drags paint, can run dry).
     pub fn is_wet_medium(self) -> bool {
-        self == Tool::OilsAcrylics
+        matches!(self, Tool::OilsAcrylics | Tool::Knife)
     }
 
     /// What each tool starts with.
@@ -92,6 +97,11 @@ impl Tool {
             Tool::Eraser => (shape(16.0, 0.8, 0.08, 0.0), 1.0, 1.0, 0.0),
             // Smudge keeps its strength in `oiliness`.
             Tool::Smudge => (shape(14.0, 0.5, 0.05, 0.0), 1.0, 0.0, 0.8),
+            // A long, thin, hard blade that stays square to the stroke; oily so it drags paint.
+            Tool::Knife => {
+                let blade = BrushShape { roundness: 0.15, rotation: Rotation::FollowStroke, ..shape(22.0, 1.0, 0.03, 0.5) };
+                (blade, 1.0, 0.9, 0.7)
+            }
             Tool::Picker => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
         };
         // How each medium responds to pen pressure (size, opacity), like the
@@ -104,17 +114,28 @@ impl Tool {
             Tool::Airbrush => (0.0, 1.0),
             Tool::Eraser => (0.6, 0.3),
             Tool::Smudge => (0.4, 0.6),
+            Tool::Knife => (0.2, 0.0),
             Tool::Picker => (0.0, 0.0),
         };
         let shape = BrushShape { size_pressure, opacity_pressure, ..shape };
         // Oils hold paint for a while; everything else never runs out.
-        let length = if self == Tool::OilsAcrylics { 0.75 } else { 1.0 };
-        ToolState { shape, opacity, loading, oiliness, length, paint_mode: PaintMode::PaintMix, erase: false }
+        let length = match self {
+            Tool::OilsAcrylics => 0.75,
+            Tool::Knife => 0.6,
+            _ => 1.0,
+        };
+        // Oils go on with some body, knife paint thick; other media are flat.
+        let thickness = match self {
+            Tool::OilsAcrylics => 0.5,
+            Tool::Knife => 0.9,
+            _ => 0.0,
+        };
+        ToolState { shape, opacity, loading, oiliness, length, paint_mode: PaintMode::PaintMix, erase: false, thickness, scrape: false }
     }
 }
 
 /// Tools shown in the panel but not built yet, so the roadmap is visible.
-pub const FUTURE_TOOLS: [&str; 5] = ["Pastel", "Knife", "Blend", "Fill", "Select"];
+pub const FUTURE_TOOLS: [&str; 4] = ["Pastel", "Blend", "Fill", "Select"];
 
 /// What the brush tip looks like. Brush presets are shapes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -143,6 +164,14 @@ pub struct BrushShape {
     pub size_pressure: f32,
     /// How much pen pressure changes the opacity (0 = not at all).
     pub opacity_pressure: f32,
+    /// Some = a bristle brush (separate hairs); None = a stamped tip.
+    pub bristles: Option<Bristles>,
+    /// The stamped tip: a smooth ellipse or a texture (sponge, chalk, ...).
+    pub tip: Tip,
+    /// Per-dab randomness 0..=1: rotation, size, scatter off the path.
+    pub jitter_angle: f32,
+    pub jitter_size: f32,
+    pub scatter: f32,
 }
 
 impl Default for BrushShape {
@@ -160,6 +189,11 @@ impl Default for BrushShape {
             rotation: Rotation::None,
             size_pressure: 0.0,
             opacity_pressure: 0.0,
+            bristles: None,
+            tip: Tip::Round,
+            jitter_angle: 0.0,
+            jitter_size: 0.0,
+            scatter: 0.0,
         }
     }
 }
@@ -180,6 +214,10 @@ pub struct ToolState {
     pub paint_mode: PaintMode,
     /// Wet media: Erase mode (key 5, or A).
     pub erase: bool,
+    /// Wet media: how thick the paint goes on (impasto), 0 = flat.
+    pub thickness: f32,
+    /// Knife: scrape wet paint off instead of spreading paint.
+    pub scrape: bool,
 }
 
 impl ToolState {
@@ -200,6 +238,11 @@ impl ToolState {
             streaks: s.streaks,
             lift_off: s.lift_off,
             grain: s.grain,
+            bristles: s.bristles,
+            tip: s.tip,
+            jitter_angle: s.jitter_angle,
+            jitter_size: s.jitter_size,
+            scatter: s.scatter,
             opacity: self.opacity,
             ..Brush::default()
         };
@@ -209,6 +252,15 @@ impl ToolState {
             brush.length = self.length;
             brush.paint_mode = self.paint_mode;
             brush.wet_medium = true;
+            brush.impasto = self.thickness;
+        }
+        if tool == Tool::Knife {
+            brush.knife = true;
+            if self.scrape {
+                // An empty knife: no paint of its own; it scrapes and drags what's wet.
+                brush.loading = 0.0;
+                brush.paint_mode = PaintMode::Blend;
+            }
         }
         if tool == Tool::Smudge {
             // No paint of its own, just drags what's there (wet or dry).
