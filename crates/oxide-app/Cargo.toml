@@ -4,5 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dirs = "7.0.0"
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 oxide-engine = { version = "0.1.0", path = "../oxide-engine" }
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"

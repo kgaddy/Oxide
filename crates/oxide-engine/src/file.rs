@@ -1,0 +1,268 @@
+//! Oxide's native file format (`.oxide`).
+//!
+//! An `.oxide` file is a zip archive containing:
+//!
+//! ```text
+//! mimetype            "application/x-oxide" (first, uncompressed, like OpenRaster)
+//! document.toml       size, paper color, layer list
+//! layers/0.f32        raw pixels for each layer: little-endian f32
+//! layers/1.f32        premultiplied RGBA, row by row (compressed by zip)
+//! ```
+//!
+//! Keeping full float precision means nothing is lost when you save and
+//! reopen. Later versions will add more per-layer data (wetness, impasto
+//! height) as extra files, which is why it's a zip and not one blob.
+
+use std::io::{Read, Seek, Write};
+
+use serde::{Deserialize, Serialize};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+use crate::{Canvas, Color, Document, Layer, PaperSettings};
+
+const MIMETYPE: &str = "application/x-oxide";
+const FORMAT_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct Manifest {
+    format_version: u32,
+    width: usize,
+    height: usize,
+    paper: [f32; 3],
+    /// The paper texture. Missing in older files: smooth paper.
+    #[serde(default = "PaperSettings::flat")]
+    surface: PaperSettings,
+    /// Print resolution. Missing in older files: the default.
+    #[serde(default = "default_dpi")]
+    dpi: f32,
+    active_layer: usize,
+    /// Bottom layer first.
+    layers: Vec<LayerInfo>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LayerInfo {
+    name: String,
+    visible: bool,
+    opacity: f32,
+    pixels: String,
+    /// The layer's wet paint (same format as `pixels`), only if it has any.
+    #[serde(default)]
+    wet_pixels: Option<String>,
+}
+
+/// Something went wrong reading or writing a file.
+#[derive(Debug)]
+pub enum FileError {
+    Io(std::io::Error),
+    Zip(zip::result::ZipError),
+    /// The file isn't a valid Oxide document (with a reason).
+    Invalid(String),
+}
+
+impl std::fmt::Display for FileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileError::Io(e) => write!(f, "{e}"),
+            FileError::Zip(e) => write!(f, "not a valid Oxide file ({e})"),
+            FileError::Invalid(why) => write!(f, "not a valid Oxide file ({why})"),
+        }
+    }
+}
+
+impl std::error::Error for FileError {}
+
+// These let the `?` operator convert library errors into FileError automatically.
+impl From<std::io::Error> for FileError {
+    fn from(e: std::io::Error) -> Self {
+        FileError::Io(e)
+    }
+}
+
+impl From<zip::result::ZipError> for FileError {
+    fn from(e: zip::result::ZipError) -> Self {
+        FileError::Zip(e)
+    }
+}
+
+impl Document {
+    /// Write the document in `.oxide` format.
+    pub fn save<W: Write + Seek>(&self, writer: W) -> Result<(), FileError> {
+        let mut zip = ZipWriter::new(writer);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("mimetype", stored)?;
+        zip.write_all(MIMETYPE.as_bytes())?;
+
+        let paper = self.paper();
+        let manifest = Manifest {
+            format_version: FORMAT_VERSION,
+            width: self.width(),
+            height: self.height(),
+            paper: [paper.r, paper.g, paper.b],
+            surface: self.surface().settings(),
+            dpi: self.dpi(),
+            active_layer: self.active_index(),
+            layers: self
+                .layers()
+                .iter()
+                .enumerate()
+                .map(|(i, layer)| LayerInfo {
+                    name: layer.name.clone(),
+                    visible: layer.visible,
+                    opacity: layer.opacity,
+                    pixels: format!("layers/{i}.f32"),
+                    // Only store wetness for layers that have wet paint.
+                    wet_pixels: layer.canvas.has_wet_paint().then(|| format!("layers/{i}.wet.f32")),
+                })
+                .collect(),
+        };
+        let toml = toml::to_string_pretty(&manifest).map_err(|e| FileError::Invalid(e.to_string()))?;
+        zip.start_file("document.toml", deflated)?;
+        zip.write_all(toml.as_bytes())?;
+
+        for (info, layer) in manifest.layers.iter().zip(self.layers()) {
+            zip.start_file(info.pixels.as_str(), deflated)?;
+            zip.write_all(&pixels_to_bytes(layer.canvas.dry_pixels()))?;
+            if let Some(path) = &info.wet_pixels {
+                zip.start_file(path.as_str(), deflated)?;
+                zip.write_all(&pixels_to_bytes(layer.canvas.wet_pixels()))?;
+            }
+        }
+
+        zip.finish()?;
+        Ok(())
+    }
+
+    /// Read a document saved with [`Document::save`].
+    pub fn load<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
+        let mut zip = ZipArchive::new(reader)?;
+
+        let mut mimetype = String::new();
+        zip.by_name("mimetype")?.read_to_string(&mut mimetype)?;
+        if mimetype != MIMETYPE {
+            return Err(FileError::Invalid(format!("unexpected type \"{mimetype}\"")));
+        }
+
+        let mut text = String::new();
+        zip.by_name("document.toml")?.read_to_string(&mut text)?;
+        let manifest: Manifest = toml::from_str(&text).map_err(|e| FileError::Invalid(e.to_string()))?;
+        if manifest.format_version > FORMAT_VERSION {
+            return Err(FileError::Invalid(format!(
+                "made by a newer Oxide (format {}); please update",
+                manifest.format_version
+            )));
+        }
+        if manifest.layers.is_empty() || manifest.width == 0 || manifest.height == 0 {
+            return Err(FileError::Invalid("no layers or zero size".into()));
+        }
+
+        let pixel_count = manifest.width * manifest.height;
+        let mut layers = Vec::with_capacity(manifest.layers.len());
+        for info in &manifest.layers {
+            let dry = read_pixels(&mut zip, &info.pixels, pixel_count, &info.name)?;
+            let wet = match &info.wet_pixels {
+                Some(path) => Some(read_pixels(&mut zip, path, pixel_count, &info.name)?),
+                None => None,
+            };
+            let mut canvas = Canvas::new(manifest.width, manifest.height, Color::TRANSPARENT);
+            canvas.set_pixels(dry, wet);
+            canvas.take_changed();
+            layers.push(Layer { name: info.name.clone(), canvas, visible: info.visible, opacity: info.opacity });
+        }
+
+        let [r, g, b] = manifest.paper;
+        let mut doc = Document::from_layers(
+            manifest.width,
+            manifest.height,
+            Color::rgb(r, g, b),
+            manifest.surface,
+            layers,
+            manifest.active_layer,
+        );
+        doc.set_dpi(manifest.dpi);
+        Ok(doc)
+    }
+}
+
+fn default_dpi() -> f32 {
+    crate::document::DEFAULT_DPI
+}
+
+fn pixels_to_bytes(pixels: &[[f32; 4]]) -> Vec<u8> {
+    pixels.iter().flatten().flat_map(|channel| channel.to_le_bytes()).collect()
+}
+
+fn read_pixels<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    path: &str,
+    pixel_count: usize,
+    layer_name: &str,
+) -> Result<Vec<[f32; 4]>, FileError> {
+    let mut bytes = Vec::with_capacity(pixel_count * 16);
+    zip.by_name(path)?.read_to_end(&mut bytes)?;
+    if bytes.len() != pixel_count * 16 {
+        return Err(FileError::Invalid(format!("layer \"{layer_name}\" has the wrong size")));
+    }
+    Ok(bytes
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|px| {
+            let channel = |i: usize| f32::from_le_bytes([px[i], px[i + 1], px[i + 2], px[i + 3]]);
+            [channel(0), channel(4), channel(8), channel(12)]
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Brush, DabMode, DabStyle, Wetness};
+    use std::io::Cursor;
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let paper = Color::rgb(0.9, 0.85, 0.8);
+        let mut doc = Document::new(30, 20, paper);
+        doc.begin_stroke();
+        let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
+        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
+        doc.end_stroke();
+        doc.add_layer();
+        doc.rename_layer(1, "Ink".into());
+        doc.set_opacity(1, 0.5);
+        doc.toggle_visible(1);
+        let linen = PaperSettings { kind: crate::PaperKind::Linen, scale: 1.5, depth: 0.7, light_angle: 200.0 };
+        doc.set_surface(linen);
+        doc.set_dpi(300.0);
+
+        let mut file = Cursor::new(Vec::new());
+        doc.save(&mut file).unwrap();
+        file.set_position(0);
+        let loaded = Document::load(file).unwrap();
+
+        assert_eq!((loaded.width(), loaded.height()), (30, 20));
+        assert_eq!(loaded.paper(), paper);
+        assert_eq!(loaded.surface().settings(), linen);
+        assert_eq!(loaded.dpi(), 300.0);
+        assert_eq!(loaded.layers().len(), 2);
+        assert_eq!(loaded.active_index(), 1);
+        let ink = &loaded.layers()[1];
+        assert_eq!((ink.name.as_str(), ink.visible, ink.opacity), ("Ink", false, 0.5));
+        // Pixels survive exactly, float precision included.
+        assert_eq!(loaded.layers()[0].canvas.dry_pixels(), doc.layers()[0].canvas.dry_pixels());
+        // Wet paint stays wet.
+        assert!(loaded.layers()[0].canvas.has_wet_paint());
+        assert_eq!(loaded.layers()[0].canvas.wet_pixels(), doc.layers()[0].canvas.wet_pixels());
+    }
+
+    #[test]
+    fn rejects_files_that_are_not_oxide() {
+        let result = Document::load(Cursor::new(b"definitely not a zip".to_vec()));
+        assert!(result.is_err());
+    }
+}

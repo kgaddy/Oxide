@@ -2,6 +2,9 @@
 
 mod app;
 mod color_wheel;
+mod presets;
+mod settings;
+mod tiles;
 mod tools;
 
 use eframe::egui;

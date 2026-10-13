@@ -1,73 +1,187 @@
-//! Tools, brush presets, and the starter color swatches.
+//! Tools (each painting tool is a *medium*), the brush shape each tool
+//! uses, and the starter color swatches.
+//!
+//! A **brush shape** (size, hardness, roundness, angle, spacing) says what
+//! the tip looks like. A **medium** (oils & acrylics, ink, pencil, ...) says
+//! how the paint behaves. Any medium can use any brush preset.
 
 use oxide_engine::{Brush, Color};
 
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
-    Brush,
+    OilsAcrylics,
+    Ink,
+    Pencil,
+    Marker,
+    Airbrush,
     Eraser,
+    Smudge,
     Picker,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 3] = [Tool::Brush, Tool::Eraser, Tool::Picker];
+    pub const COUNT: usize = 8;
+    pub const ALL: [Tool; Tool::COUNT] = [
+        Tool::OilsAcrylics,
+        Tool::Ink,
+        Tool::Pencil,
+        Tool::Marker,
+        Tool::Airbrush,
+        Tool::Eraser,
+        Tool::Smudge,
+        Tool::Picker,
+    ];
+
+    /// Position in [`Tool::ALL`], used to index per-tool settings.
+    pub fn index(self) -> usize {
+        self as usize
+    }
 
     pub fn label(self) -> &'static str {
         match self {
-            Tool::Brush => "Brush",
+            Tool::OilsAcrylics => "Oils & Acrylics",
+            Tool::Ink => "Ink",
+            Tool::Pencil => "Pencil",
+            Tool::Marker => "Marker",
+            Tool::Airbrush => "Airbrush",
             Tool::Eraser => "Eraser",
+            Tool::Smudge => "Smudge",
             Tool::Picker => "Picker",
         }
     }
 
     pub fn shortcut(self) -> &'static str {
         match self {
-            Tool::Brush => "B",
+            Tool::OilsAcrylics => "B",
+            Tool::Ink => "N",
+            Tool::Pencil => "P",
+            Tool::Marker => "M",
+            Tool::Airbrush => "A",
             Tool::Eraser => "E",
+            Tool::Smudge => "S",
             Tool::Picker => "I",
         }
+    }
+
+    /// Tools that put the current color on the canvas.
+    pub fn paints(self) -> bool {
+        matches!(self, Tool::OilsAcrylics | Tool::Ink | Tool::Pencil | Tool::Marker | Tool::Airbrush)
+    }
+
+    /// Tools whose paint is wet (picks up and drags paint, can run dry).
+    pub fn is_wet_medium(self) -> bool {
+        self == Tool::OilsAcrylics
+    }
+
+    /// What each tool starts with.
+    pub fn default_state(self) -> ToolState {
+        // `grain` = how much the medium feels the paper texture.
+        let shape = |radius, hardness, spacing, grain| BrushShape { radius, hardness, spacing, grain, ..BrushShape::default() };
+        let (shape, opacity, loading, oiliness) = match self {
+            // Oils start with a natural, slightly worn brush.
+            Tool::OilsAcrylics => {
+                let natural = BrushShape { roughness: 0.35, streaks: 0.45, lift_off: 0.6, ..shape(14.0, 0.6, 0.04, 0.6) };
+                (natural, 1.0, 0.75, 0.4)
+            }
+            Tool::Ink => (shape(3.0, 0.95, 0.05, 0.2), 1.0, 1.0, 0.0),
+            Tool::Pencil => (shape(1.5, 0.5, 0.1, 0.9), 0.6, 1.0, 0.0),
+            Tool::Marker => (shape(12.0, 0.85, 0.05, 0.3), 0.35, 1.0, 0.0),
+            Tool::Airbrush => (shape(40.0, 0.0, 0.05, 0.1), 0.06, 1.0, 0.0),
+            Tool::Eraser => (shape(16.0, 0.8, 0.08, 0.0), 1.0, 1.0, 0.0),
+            // Smudge keeps its strength in `oiliness`.
+            Tool::Smudge => (shape(14.0, 0.5, 0.05, 0.0), 1.0, 0.0, 0.8),
+            Tool::Picker => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
+        };
+        ToolState { shape, opacity, loading, oiliness }
     }
 }
 
 /// Tools shown in the panel but not built yet, so the roadmap is visible.
-pub const FUTURE_TOOLS: [&str; 5] = ["Knife", "Blend", "Smudge", "Fill", "Select"];
+pub const FUTURE_TOOLS: [&str; 5] = ["Pastel", "Knife", "Blend", "Fill", "Select"];
 
-/// The shape of a brush, without its color (presets keep your current color).
-pub struct BrushPreset {
-    pub name: &'static str,
+/// What the brush tip looks like. Brush presets are shapes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrushShape {
+    /// Radius in canvas pixels.
     pub radius: f32,
+    /// 0 = soft, fuzzy edge; 1 = crisp edge.
     pub hardness: f32,
-    pub opacity: f32,
+    /// Distance between dabs, as a fraction of the brush width.
     pub spacing: f32,
+    /// 1 = round; lower = flat, like a chisel or calligraphy nib.
+    pub roundness: f32,
+    /// Rotation of the tip in degrees.
+    pub angle: f32,
+    /// Ragged, grainy edges (0 = perfect outline).
+    pub roughness: f32,
+    /// Bristle streaks along the stroke (0 = smooth).
+    pub streaks: f32,
+    /// How much the stroke end thins and breaks up as the brush lifts (0 = off).
+    pub lift_off: f32,
+    /// How much the paper texture shows in the stroke (0 = ignores the paper).
+    pub grain: f32,
 }
 
-impl BrushPreset {
-    pub fn apply(&self, brush: &mut Brush) {
-        brush.radius = self.radius;
-        brush.hardness = self.hardness;
-        brush.opacity = self.opacity;
-        brush.spacing = self.spacing;
-    }
-
-    pub fn matches(&self, brush: &Brush) -> bool {
-        self.radius == brush.radius
-            && self.hardness == brush.hardness
-            && self.opacity == brush.opacity
-            && self.spacing == brush.spacing
+impl Default for BrushShape {
+    fn default() -> Self {
+        BrushShape {
+            radius: 12.0,
+            hardness: 0.7,
+            spacing: 0.05,
+            roundness: 1.0,
+            angle: 0.0,
+            roughness: 0.0,
+            streaks: 0.0,
+            lift_off: 0.0,
+            grain: 0.0,
+        }
     }
 }
 
-pub const PRESETS: [BrushPreset; 8] = [
-    BrushPreset { name: "Round Hard", radius: 10.0, hardness: 0.95, opacity: 1.0, spacing: 0.1 },
-    BrushPreset { name: "Round Soft", radius: 18.0, hardness: 0.2, opacity: 0.8, spacing: 0.08 },
-    BrushPreset { name: "Ink Fine", radius: 2.0, hardness: 0.95, opacity: 1.0, spacing: 0.05 },
-    BrushPreset { name: "Ink Bold", radius: 5.0, hardness: 0.9, opacity: 1.0, spacing: 0.05 },
-    BrushPreset { name: "Pencil", radius: 1.5, hardness: 0.5, opacity: 0.6, spacing: 0.1 },
-    BrushPreset { name: "Marker", radius: 12.0, hardness: 0.85, opacity: 0.35, spacing: 0.05 },
-    BrushPreset { name: "Airbrush", radius: 40.0, hardness: 0.0, opacity: 0.06, spacing: 0.05 },
-    BrushPreset { name: "Dotted", radius: 4.0, hardness: 0.9, opacity: 1.0, spacing: 1.0 },
-];
+/// Everything a tool remembers: its brush shape and medium settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToolState {
+    pub shape: BrushShape,
+    pub opacity: f32,
+    /// Wet media only: how much paint the brush holds.
+    pub loading: f32,
+    /// Wet media: how much paint gets picked up and dragged.
+    /// Smudge: how strongly it drags.
+    pub oiliness: f32,
+}
+
+impl ToolState {
+    /// Combine this tool's settings with a color into an engine brush.
+    pub fn brush(&self, tool: Tool, color: Color) -> Brush {
+        let s = self.shape;
+        let mut brush = Brush {
+            color,
+            radius: s.radius,
+            hardness: s.hardness,
+            spacing: s.spacing,
+            roundness: s.roundness,
+            angle: s.angle,
+            roughness: s.roughness,
+            streaks: s.streaks,
+            lift_off: s.lift_off,
+            grain: s.grain,
+            opacity: self.opacity,
+            ..Brush::default()
+        };
+        if tool.is_wet_medium() {
+            brush.loading = self.loading;
+            brush.oiliness = self.oiliness;
+        }
+        if tool == Tool::Smudge {
+            // No paint of its own, just drags what's there (wet or dry).
+            brush.loading = 0.0;
+            brush.oiliness = self.oiliness;
+            brush.pickup_dry = true;
+        }
+        brush
+    }
+}
 
 /// A starter palette of classic artist pigments (approximate screen colors).
 pub const SWATCHES: [(&str, Color); 18] = [
@@ -90,3 +204,27 @@ pub const SWATCHES: [(&str, Color); 18] = [
     ("Sap Green", Color::rgb(0.31, 0.45, 0.16)),
     ("Viridian", Color::rgb(0.25, 0.51, 0.43)),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_indexes_match_all() {
+        for (i, tool) in Tool::ALL.iter().enumerate() {
+            assert_eq!(tool.index(), i);
+        }
+    }
+
+    #[test]
+    fn only_oils_are_wet_and_smudge_adds_no_paint() {
+        let red = Color::rgb(1.0, 0.0, 0.0);
+        let oils = Tool::OilsAcrylics.default_state().brush(Tool::OilsAcrylics, red);
+        assert!(oils.is_wet());
+        // Same settings on Ink stay dry: wetness comes from the medium.
+        let ink = Tool::OilsAcrylics.default_state().brush(Tool::Ink, red);
+        assert!(!ink.is_wet());
+        let smudge = Tool::Smudge.default_state().brush(Tool::Smudge, red);
+        assert_eq!(smudge.loading, 0.0);
+    }
+}

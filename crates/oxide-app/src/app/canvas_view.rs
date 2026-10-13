@@ -2,9 +2,9 @@
 //! into painting, picking, panning, and zooming.
 
 use eframe::egui::{self, Color32, PointerButton, Rect, Sense, Stroke as LineStroke, Vec2};
-use oxide_engine::Stroke;
+use oxide_engine::{Brush, DabMode, Stroke};
 
-use super::{OxideApp, PAPER, View, to_image};
+use super::{OxideApp, View};
 use crate::tools::Tool;
 
 impl OxideApp {
@@ -12,7 +12,7 @@ impl OxideApp {
         const MARGIN: f32 = 24.0;
         let workspace = ui.max_rect();
         self.last_workspace = workspace;
-        let canvas_size = Vec2::new(self.canvas.width() as f32, self.canvas.height() as f32);
+        let canvas_size = Vec2::new(self.document.width() as f32, self.document.height() as f32);
 
         // The whole workspace reacts to input, so strokes can start off the canvas edge.
         let response = ui.allocate_rect(workspace, Sense::click_and_drag());
@@ -39,66 +39,77 @@ impl OxideApp {
 
         // --- Painting and picking ---
         let primary_down = ui.input(|i| i.pointer.primary_down());
+        let layer_hidden = !self.document.layers()[self.document.active_index()].visible;
+        let blocked = layer_hidden && self.tool != Tool::Picker;
         let pointer = response.interact_pointer_pos().filter(|_| primary_down && !space_down);
         match pointer {
             Some(pos) => {
                 // Screen position -> canvas pixel position.
                 let p = (pos - rect.min) / scale;
                 match self.tool {
-                    Tool::Brush | Tool::Eraser => {
-                        let mut brush = self.brush.clone();
-                        if self.tool == Tool::Eraser {
-                            brush.color = PAPER;
-                        }
-                        match &mut self.stroke {
-                            None => {
-                                self.stroke = Some(Stroke::begin(&mut self.canvas, &brush, p.x, p.y));
-                                if self.tool == Tool::Brush {
-                                    self.remember_color(self.brush.color);
-                                }
-                            }
-                            Some(stroke) => stroke.line_to(&mut self.canvas, &brush, p.x, p.y),
-                        }
-                        self.dirty = true;
-                    }
                     Tool::Picker => {
                         if p.x >= 0.0
                             && p.y >= 0.0
-                            && let Some(c) = self.canvas.pixel(p.x as usize, p.y as usize)
+                            && let Some(c) = self.document.composite_pixel(p.x as usize, p.y as usize)
                         {
                             self.set_color(c);
                         }
                     }
+                    _ if !blocked => {
+                        let mode = if self.tool == Tool::Eraser { DabMode::Erase } else { DabMode::Paint };
+                        let brush = self.stroke_brush();
+                        match &mut self.stroke {
+                            None => {
+                                self.document.begin_stroke();
+                                let tip = self.dirty_tip();
+                                let canvas = self.document.active_canvas();
+                                self.stroke = Some(Stroke::begin_with_tip(canvas, &brush, mode, p.x, p.y, tip));
+                                if self.tool.paints() {
+                                    self.remember_color(self.color);
+                                }
+                            }
+                            Some(stroke) => stroke.line_to(self.document.active_canvas(), &brush, p.x, p.y),
+                        }
+                    }
+                    _ => {}
                 }
             }
             None => {
-                if self.stroke.take().is_none() && self.tool == Tool::Picker && response.drag_stopped() {
-                    self.remember_color(self.brush.color);
+                if let Some(mut stroke) = self.stroke.take() {
+                    // Paint the lift-off at the end of the stroke.
+                    let brush = self.stroke_brush();
+                    stroke.finish(self.document.active_canvas(), &brush);
+                    // A dirty brush keeps the paint it picked up for the next stroke.
+                    if self.tool.is_wet_medium() && self.dirty_brush {
+                        self.carried_color = stroke.carried_color();
+                    }
+                    // Pen up: record the whole stroke as one undo step.
+                    self.document.end_stroke();
+                } else if self.tool == Tool::Picker && response.drag_stopped() {
+                    self.remember_color(self.color);
                 }
             }
         }
 
-        if self.dirty {
-            self.texture.set(to_image(&self.canvas), egui::TextureOptions::LINEAR);
-            self.dirty = false;
-        }
+        self.upload_changes();
 
         // --- Draw ---
         let painter = ui.painter_at(workspace);
         // Soft drop shadow under the paper.
         painter.rect_filled(rect.translate(Vec2::new(0.0, 4.0)).expand(2.0), 2.0, Color32::from_black_alpha(80));
-        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        painter.image(self.texture.id(), rect, uv, Color32::WHITE);
+        self.texture.paint(&painter, rect);
 
         // Brush outline under the cursor, so you can see the size before painting.
         if let Some(hover) = response.hover_pos() {
             if self.tool != Tool::Picker && !space_down {
-                let r = (self.brush.radius * scale).max(1.5);
+                let r = (self.state().shape.radius * scale).max(1.5);
                 painter.circle_stroke(hover, r, LineStroke::new(1.5, Color32::from_black_alpha(140)));
                 painter.circle_stroke(hover, r, LineStroke::new(0.75, Color32::from_white_alpha(200)));
             }
             let cursor = if space_down {
                 egui::CursorIcon::Grab
+            } else if blocked {
+                egui::CursorIcon::NotAllowed
             } else if self.tool == Tool::Picker {
                 egui::CursorIcon::Crosshair
             } else {
@@ -106,6 +117,16 @@ impl OxideApp {
             };
             ui.ctx().set_cursor_icon(cursor);
         }
+    }
+
+    /// The brush the current tool actually paints with.
+    fn stroke_brush(&self) -> Brush {
+        self.current_brush()
+    }
+
+    /// Paint left on a dirty brush from the last stroke, if it should be used.
+    fn dirty_tip(&self) -> Option<oxide_engine::Color> {
+        self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush)
     }
 
     /// Zoom by `factor`, keeping the canvas point under `anchor` fixed on screen.
