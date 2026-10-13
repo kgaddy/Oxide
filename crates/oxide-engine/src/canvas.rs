@@ -75,6 +75,10 @@ pub struct Canvas {
     height: usize,
     dry: Vec<[f32; 4]>,
     wet: Vec<[f32; 4]>,
+    /// How many pixels have any wet paint. Kept up to date as we paint, so
+    /// asking "is anything wet?" is instant instead of scanning millions of
+    /// pixels (the UI asks every frame).
+    wet_count: usize,
     /// The area changed since the last [`Canvas::take_dirty`] (for the screen).
     dirty: Option<Region>,
     /// The area changed since the last [`Canvas::take_changed`] (for undo).
@@ -90,6 +94,7 @@ impl Canvas {
             height,
             dry: vec![[0.0; 4]; width * height],
             wet: vec![[0.0; 4]; width * height],
+            wet_count: 0,
             dirty: None,
             changed: None,
             surface: None,
@@ -146,12 +151,18 @@ impl Canvas {
 
     /// Is there any wet paint on this layer?
     pub fn has_wet_paint(&self) -> bool {
-        self.wet.iter().any(|p| p[3] > 0.0)
+        self.wet_count > 0
+    }
+
+    /// Recount wet pixels after the wet buffer was replaced wholesale.
+    fn recount_wet(&mut self) {
+        self.wet_count = self.wet.iter().filter(|p| p[3] > 0.0).count();
     }
 
     pub fn clear(&mut self, color: Color) {
         self.dry.fill(premultiply(color));
         self.wet.fill([0.0; 4]);
+        self.wet_count = 0;
         self.mark_changed(self.bounds());
     }
 
@@ -183,6 +194,10 @@ impl Canvas {
 
     /// Put pixels (as returned by [`Canvas::read_region`]) back into `region`.
     pub fn write_region(&mut self, region: Region, dry: &[[f32; 4]], wet: &[[f32; 4]]) {
+        // Adjust the wet count for just the pixels being replaced.
+        let before = read_rows(&self.wet, self.width, region).iter().filter(|p| p[3] > 0.0).count();
+        let after = wet.iter().filter(|p| p[3] > 0.0).count();
+        self.wet_count = self.wet_count - before + after;
         write_rows(&mut self.dry, self.width, region, dry);
         write_rows(&mut self.wet, self.width, region, wet);
         self.mark_changed(region);
@@ -195,6 +210,7 @@ impl Canvas {
         self.dry = dry;
         self.wet = wet.unwrap_or_else(|| vec![[0.0; 4]; n]);
         assert_eq!(self.wet.len(), n, "wet pixel count must match canvas size");
+        self.recount_wet();
         self.mark_changed(self.bounds());
     }
 
@@ -204,6 +220,7 @@ impl Canvas {
         assert_eq!(wet.len(), self.wet.len());
         std::mem::swap(&mut self.dry, dry);
         std::mem::swap(&mut self.wet, wet);
+        self.recount_wet();
         self.mark_dirty(self.bounds());
     }
 
@@ -252,6 +269,7 @@ impl Canvas {
                 }
                 let i = y * self.width + x;
                 let paint = scale(src, strength);
+                let was_wet = self.wet[i][3] > 0.0;
                 match style.mode {
                     DabMode::Paint => match style.wetness {
                         // Wet paint goes into the wet buffer, on top.
@@ -278,6 +296,11 @@ impl Canvas {
                         self.dry[i] = scale(self.dry[i], 1.0 - strength);
                         self.wet[i] = scale(self.wet[i], 1.0 - strength);
                     }
+                }
+                match (was_wet, self.wet[i][3] > 0.0) {
+                    (false, true) => self.wet_count += 1,
+                    (true, false) => self.wet_count -= 1,
+                    _ => {}
                 }
             }
         }
@@ -447,6 +470,27 @@ mod tests {
         // ...the Smudge tool sees both.
         let all = unpremultiply(canvas.sample_under(10.0, 10.0, &brush, true));
         assert!(all.r > 0.3 && all.b > 0.3, "{all:?}");
+    }
+
+    #[test]
+    fn wet_count_stays_exact() {
+        let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
+        let brush = Brush { radius: 6.0, ..Brush::default() };
+        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let exact = |c: &Canvas| c.wet_pixels().iter().filter(|p| p[3] > 0.0).count();
+        canvas.dab_with(10.0, 10.0, &brush, &wet);
+        canvas.dab_with(14.0, 12.0, &brush, &wet);
+        assert_eq!(canvas.wet_count, exact(&canvas));
+        canvas.dab(12.0, 11.0, &brush, DabMode::Paint); // dry paint dries what it covers
+        assert_eq!(canvas.wet_count, exact(&canvas));
+        canvas.dab(12.0, 11.0, &Brush { radius: 3.0, ..brush.clone() }, DabMode::Erase);
+        assert_eq!(canvas.wet_count, exact(&canvas));
+        let saved = canvas.read_region(canvas.bounds());
+        canvas.clear(Color::TRANSPARENT);
+        assert!(!canvas.has_wet_paint());
+        canvas.write_region(canvas.bounds(), &saved.0, &saved.1);
+        assert_eq!(canvas.wet_count, exact(&canvas));
+        assert!(canvas.has_wet_paint());
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::canvas::{over, premultiply, scale};
 use crate::paper::{Paper, PaperSettings};
 use crate::history::{Edit, History};
@@ -524,9 +526,15 @@ impl Document {
     /// Flatten `region` into 8-bit RGBA bytes (row by row, region-sized),
     /// ready to show on screen or export.
     pub fn composite_rgba8(&self, region: Region) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(region.width() * region.height() * 4);
-        for y in region.y0..region.y1 {
-            for x in region.x0..region.x1 {
+        let row_bytes = region.width() * 4;
+        let mut bytes = vec![0u8; row_bytes * region.height()];
+        if row_bytes == 0 {
+            return bytes;
+        }
+        let fill_row = |(row, out): (usize, &mut [u8])| {
+            let y = region.y0 + row;
+            for (col, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let x = region.x0 + col;
                 let i = y * self.width + x;
                 let mut p = self.composite_at(i);
                 // Light the surface relief: paper and thin paint follow its texture.
@@ -538,8 +546,15 @@ impl Document {
                     p = self.tint_wet(p, i);
                 }
                 // Paper is opaque, so the result is opaque: no unpremultiply needed.
-                bytes.extend([to_u8(p[0]), to_u8(p[1]), to_u8(p[2]), 255]);
+                *px = [to_u8(p[0]), to_u8(p[1]), to_u8(p[2]), 255];
             }
+        };
+        // Big areas (whole-canvas redraws) are split across all CPU cores;
+        // small ones (a brush dab) aren't worth the overhead.
+        if region.width() * region.height() > 64 * 1024 {
+            bytes.par_chunks_mut(row_bytes).enumerate().for_each(fill_row);
+        } else {
+            bytes.chunks_mut(row_bytes).enumerate().for_each(fill_row);
         }
         bytes
     }

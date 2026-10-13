@@ -74,10 +74,27 @@ impl OxideApp {
                 ui.add(egui::Slider::new(&mut shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
                 ui.add(egui::Slider::new(&mut shape.spacing, 0.02..=1.0).text("Spacing"))
                     .on_hover_text("Distance between dabs, as a fraction of the brush width");
+                ui.horizontal(|ui| {
+                    ui.label("Rotation");
+                    egui::ComboBox::from_id_salt("rotation").selected_text(shape.rotation.label()).show_ui(ui, |ui| {
+                        for mode in oxide_engine::Rotation::ALL {
+                            let item = ui.add(egui::Button::selectable(shape.rotation == mode, mode.label()));
+                            let item = if mode.needs_pen() { item.on_hover_text("Uses the pen; with a mouse the tip stays fixed") } else { item };
+                            if item.clicked() {
+                                shape.rotation = mode;
+                            }
+                        }
+                    });
+                })
+                .response
+                .on_hover_text("None: the tip keeps its angle.\nFollow stroke: turns with the stroke direction (flat brushes, knives).\nPen tilt: turns toward where the pen leans.\nPen rotation: turns with the pen barrel (falls back to tilt).");
                 ui.add(egui::Slider::new(&mut shape.lift_off, 0.0..=1.0).text("Lift-off"))
                     .on_hover_text("How much the end of a stroke thins, fades, and breaks up as the brush lifts off");
-                disabled_slider(ui, "Smoothing", "Coming with pen support (milestone 2)");
-                disabled_slider(ui, "Size from pressure", "Coming with pen support (milestone 2)");
+                ui.add(egui::Slider::new(&mut shape.size_pressure, 0.0..=1.0).text("Size ← pressure"))
+                    .on_hover_text("How much pen pressure changes the size: 0 = none, 1 = light touch is very thin");
+                ui.add(egui::Slider::new(&mut shape.opacity_pressure, 0.0..=1.0).text("Opacity ← pressure"))
+                    .on_hover_text("How much pen pressure changes the opacity: 0 = none, 1 = light touch is very faint");
+                disabled_slider(ui, "Smoothing", "Stroke stabilizer: coming later");
             }
             Tab::Shape => {
                 ui.add(egui::Slider::new(&mut shape.hardness, 0.0..=1.0).text("Hardness"));

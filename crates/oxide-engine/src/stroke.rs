@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use crate::canvas::unpremultiply;
 use crate::paint::mix_paint;
 use crate::tip::{DabTexture, hash2};
+use crate::brush::Rotation;
 use crate::{Brush, Canvas, Color, DabMode, DabStyle, Wetness};
 
 /// One continuous brush stroke, from pen-down to pen-up.
@@ -18,9 +19,45 @@ use crate::{Brush, Canvas, Color, DabMode, DabStyle, Wetness};
 /// With **lift-off**, the last few dabs are held back until the stroke is
 /// [finished](Stroke::finish), then painted thinner, fainter, and broken up,
 /// like a brush lifting off the canvas.
+/// One input point: position plus what the pen reports there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokePoint {
+    pub x: f32,
+    pub y: f32,
+    /// 0..=1 (a mouse is always 1).
+    pub pressure: f32,
+    /// Which way the pen leans, as an (x, y) vector (length = how far), if known.
+    pub tilt: Option<(f32, f32)>,
+    /// Barrel rotation in degrees, if the pen reports it.
+    pub rotation: Option<f32>,
+}
+
+impl StrokePoint {
+    /// A mouse point: full pressure, no tilt or rotation.
+    pub fn mouse(x: f32, y: f32) -> Self {
+        StrokePoint { x, y, pressure: 1.0, tilt: None, rotation: None }
+    }
+
+    /// The tip angle (degrees, before the brush's own angle) the pen asks for
+    /// in the given rotation mode, if any.
+    fn pen_angle(&self, mode: Rotation) -> Option<f32> {
+        let tilt_angle = || {
+            self.tilt.filter(|(x, y)| x * x + y * y > 0.01).map(|(x, y)| y.atan2(x).to_degrees())
+        };
+        match mode {
+            Rotation::PenTilt => tilt_angle(),
+            // Pens without barrel rotation fall back to tilt.
+            Rotation::PenRotation => self.rotation.filter(|r| *r != 0.0).or_else(tilt_angle),
+            _ => None,
+        }
+    }
+}
+
 pub struct Stroke {
     mode: DabMode,
     last: (f32, f32),
+    /// The previous input point (pressure is blended between points).
+    last_point: StrokePoint,
     /// Distance travelled since the last dab, carried between segments so
     /// spacing stays even no matter how the input points are spread out.
     since_last_dab: f32,
@@ -54,7 +91,12 @@ struct WetPaint {
 struct PendingDab {
     x: f32,
     y: f32,
+    pressure: f32,
+    /// Tip angle from the pen (tilt/rotation modes), if any.
+    pen_angle: Option<f32>,
     dir: (f32, f32),
+    /// False for dabs placed before the brush moved (direction unknown).
+    has_direction: bool,
 }
 
 impl Stroke {
@@ -67,6 +109,12 @@ impl Stroke {
     /// (a "dirty brush" left over from the last stroke). The brush's own
     /// color is still what it's loaded with, so the tip cleans up as it paints.
     pub fn begin_with_tip(canvas: &mut Canvas, brush: &Brush, mode: DabMode, x: f32, y: f32, tip: Option<Color>) -> Self {
+        Self::begin_at(canvas, brush, mode, StrokePoint::mouse(x, y), tip)
+    }
+
+    /// Start a stroke from a pen (or mouse) point, optionally with a dirty tip.
+    pub fn begin_at(canvas: &mut Canvas, brush: &Brush, mode: DabMode, point: StrokePoint, tip: Option<Color>) -> Self {
+        let StrokePoint { x, y, .. } = point;
         let loaded = Color { a: 1.0, ..brush.color };
         let wet = (mode == DabMode::Paint && brush.is_wet()).then_some(WetPaint {
             color: tip.map_or(loaded, |c| Color { a: 1.0, ..c }),
@@ -80,6 +128,7 @@ impl Stroke {
         let mut stroke = Stroke {
             mode,
             last: (x, y),
+            last_point: point,
             since_last_dab: 0.0,
             wet,
             seed: hash2(x.to_bits(), y.to_bits()),
@@ -88,12 +137,21 @@ impl Stroke {
             has_direction: false,
             tail: VecDeque::new(),
         };
-        stroke.place(canvas, brush, x, y);
+        stroke.place(canvas, brush, x, y, point.pressure, point.pen_angle(brush.rotation));
         stroke
     }
 
-    /// Continue the stroke to (x, y), dabbing along the way.
+    /// Continue the stroke to (x, y), dabbing along the way (mouse: full pressure).
     pub fn line_to(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32) {
+        self.line_to_point(canvas, brush, StrokePoint::mouse(x, y));
+    }
+
+    /// Continue the stroke to a pen point. Pressure is blended smoothly from
+    /// the previous point so size and opacity don't jump between samples.
+    pub fn line_to_point(&mut self, canvas: &mut Canvas, brush: &Brush, point: StrokePoint) {
+        let StrokePoint { x, y, .. } = point;
+        let from_pressure = self.last_point.pressure;
+        let pen_angle = point.pen_angle(brush.rotation);
         let (lx, ly) = self.last;
         let (dx, dy) = (x - lx, y - ly);
         let len = (dx * dx + dy * dy).sqrt();
@@ -107,11 +165,13 @@ impl Stroke {
         let mut d = step - self.since_last_dab;
         while d <= len {
             let t = d / len;
-            self.place(canvas, brush, lx + dx * t, ly + dy * t);
+            let pressure = from_pressure + (point.pressure - from_pressure) * t;
+            self.place(canvas, brush, lx + dx * t, ly + dy * t, pressure, pen_angle);
             d += step;
         }
         self.since_last_dab = len - (d - step);
         self.last = (x, y);
+        self.last_point = point;
     }
 
     /// Pen up: paint the held-back dabs, fading out as the brush lifts.
@@ -150,8 +210,8 @@ impl Stroke {
 
     /// Queue a dab; paint the oldest queued dabs once the queue is longer
     /// than the lift-off length.
-    fn place(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32) {
-        self.tail.push_back(PendingDab { x, y, dir: self.dir });
+    fn place(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32, pressure: f32, pen_angle: Option<f32>) {
+        self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction });
         let keep = lift_off_dabs(brush);
         while self.tail.len() > keep {
             let dab = self.tail.pop_front().expect("longer than keep");
@@ -161,7 +221,19 @@ impl Stroke {
 
     /// Actually put paint down. `fade` is 1.0 normally, less while lifting off.
     fn paint(&mut self, canvas: &mut Canvas, brush: &Brush, dab: PendingDab, fade: f32) {
-        let PendingDab { x, y, dir } = dab;
+        let PendingDab { x, y, pressure, pen_angle, dir, has_direction } = dab;
+
+        // This dab's brush: turned (follow stroke / pen tilt / pen rotation)
+        // and sized and faded by pen pressure.
+        let mut adjusted = brush.clone();
+        if brush.rotation == Rotation::FollowStroke && has_direction {
+            adjusted.angle = brush.tip_angle(Some(dir));
+        } else if let Some(angle) = pen_angle {
+            adjusted.angle = brush.angle + angle;
+        }
+        adjusted.radius = (brush.radius * brush.pressure_size(pressure)).max(0.5);
+        adjusted.opacity = brush.opacity * brush.pressure_opacity(pressure);
+        let brush = &adjusted;
         let dab_seed = hash2(self.seed, self.dab_count);
         self.dab_count += 1;
 
@@ -406,6 +478,54 @@ mod tests {
         let stroke = line(&mut canvas, &oily_blue, (20.0, 10.0), (180.0, 10.0));
         let carried = stroke.carried_color().unwrap();
         assert!(carried.r < 0.02, "dry paint must not be picked up: {carried:?}");
+    }
+
+    #[test]
+    fn flat_brush_following_the_stroke_stays_broad_in_any_direction() {
+        // A flat tip (wide along its x axis), with and without following the stroke.
+        let flat = Brush { radius: 12.0, roundness: 0.25, hardness: 1.0, spacing: 0.05, ..Brush::default() };
+        let following = Brush { rotation: Rotation::FollowStroke, ..flat.clone() };
+
+        // Width of the mark across a horizontal and a vertical stroke.
+        let widths = |brush: &Brush| {
+            let mut c = Canvas::new(100, 100, Color::TRANSPARENT);
+            line(&mut c, brush, (10.0, 50.0), (90.0, 50.0));
+            let across_h = (0..100).filter(|&y| c.pixel(50, y).unwrap().a > 0.5).count();
+            let mut c = Canvas::new(100, 100, Color::TRANSPARENT);
+            line(&mut c, brush, (50.0, 10.0), (50.0, 90.0));
+            let across_v = (0..100).filter(|&x| c.pixel(x, 50).unwrap().a > 0.5).count();
+            (across_h, across_v)
+        };
+        // Fixed: thin one way, broad the other.
+        let (h, v) = widths(&flat);
+        assert!(v > h * 2, "fixed flat tip: horizontal {h}, vertical {v}");
+        // Following: broad both ways.
+        let (h, v) = widths(&following);
+        assert!(h >= 18 && v >= 18 && (h as i32 - v as i32).abs() <= 2, "following: horizontal {h}, vertical {v}");
+    }
+
+    #[test]
+    fn light_pressure_makes_a_thinner_mark() {
+        let brush = Brush { radius: 10.0, hardness: 1.0, spacing: 0.05, size_pressure: 1.0, ..Brush::default() };
+        let mut c = Canvas::new(200, 40, Color::TRANSPARENT);
+        let p = |x, pressure| StrokePoint { x, y: 20.0, pressure, tilt: None, rotation: None };
+        let mut stroke = Stroke::begin_at(&mut c, &brush, DabMode::Paint, p(10.0, 0.2), None);
+        stroke.line_to_point(&mut c, &brush, p(100.0, 0.2));
+        stroke.line_to_point(&mut c, &brush, p(190.0, 1.0));
+        stroke.finish(&mut c, &brush);
+        let width = |x: usize| (0..40).filter(|&y| c.pixel(x, y).unwrap().a > 0.5).count();
+        assert!(width(50) < width(185) / 2, "light {} vs firm {}", width(50), width(185));
+        assert!(width(50) >= 1, "a light touch still leaves a mark");
+    }
+
+    #[test]
+    fn pen_tilt_turns_the_tip_and_rotation_falls_back_to_tilt() {
+        let tilted = StrokePoint { x: 0.0, y: 0.0, pressure: 1.0, tilt: Some((0.0, 0.5)), rotation: None };
+        assert_eq!(tilted.pen_angle(Rotation::PenTilt), Some(90.0));
+        assert_eq!(tilted.pen_angle(Rotation::PenRotation), Some(90.0), "no barrel rotation: use tilt");
+        let twisted = StrokePoint { rotation: Some(30.0), ..tilted };
+        assert_eq!(twisted.pen_angle(Rotation::PenRotation), Some(30.0));
+        assert_eq!(StrokePoint::mouse(0.0, 0.0).pen_angle(Rotation::PenTilt), None);
     }
 
     #[test]

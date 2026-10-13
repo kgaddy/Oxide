@@ -109,6 +109,9 @@ pub struct AppSettings {
     pub last_new_artwork: Option<NewArtworkChoice>,
     /// Paper colors you added in Select Canvas.
     pub custom_paper_colors: Vec<[f32; 3]>,
+    /// Pen pressure curve: below 1 = soft (light touches count for more),
+    /// above 1 = firm.
+    pub pressure_curve: f32,
 }
 
 impl Default for AppSettings {
@@ -120,6 +123,7 @@ impl Default for AppSettings {
             custom_sizes: Vec::new(),
             last_new_artwork: None,
             custom_paper_colors: Vec::new(),
+            pressure_curve: 0.6,
         }
     }
 }

@@ -2,6 +2,7 @@
 
 mod app;
 mod color_wheel;
+mod pen;
 mod presets;
 mod settings;
 mod tiles;

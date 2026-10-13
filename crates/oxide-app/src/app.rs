@@ -15,6 +15,7 @@ use eframe::egui::ecolor::{hsv_from_rgb, rgb_from_hsv};
 use oxide_engine::{Brush, Color, Document, PaperKind, PaperSettings, Stroke};
 
 use crate::presets::PresetLibrary;
+use crate::pen::{PenInput, apply_curve};
 use crate::settings::AppSettings;
 use crate::tiles::TiledTexture;
 use files::{PendingAction, Status};
@@ -92,6 +93,10 @@ pub struct OxideApp {
     brush_creator: brush_creator::BrushCreator,
     /// Workspace and canvas rectangles from the last frame (for the navigator).
     last_workspace: egui::Rect,
+    /// Where the pointer was last frame and which way it's moving (smoothed),
+    /// so the cursor can show which way a rotating tip is facing.
+    last_hover: Option<egui::Pos2>,
+    cursor_dir: Option<(f32, f32)>,
     show_left: bool,
     show_right: bool,
     /// The layer name being typed in the Layers panel (committed on Enter).
@@ -112,6 +117,12 @@ pub struct OxideApp {
     app_settings: AppSettings,
     new_artwork: new_artwork::NewArtwork,
     select_canvas: select_canvas::SelectCanvas,
+    /// The drawing tablet: pressure, tilt, rotation.
+    pen: PenInput,
+    show_pen_settings: bool,
+    /// How long our code took to build the last frames (ms, smoothed), shown
+    /// in the status bar so slowdowns are easy to spot.
+    frame_ms: f32,
 }
 
 /// Everything you can do from a menu or keyboard shortcut.
@@ -160,6 +171,10 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 17] = [
 impl OxideApp {
     pub fn new(ctx: &egui::Context) -> Self {
         apply_theme(ctx);
+        // A pen tip wobbles a little when you tap. egui only counts a press as a
+        // click if it moves less than 6 points, so pen taps on buttons were often
+        // seen as tiny drags and ignored. Be more forgiving.
+        ctx.options_mut(|o| o.input_options.max_click_dist = 16.0);
         let app_settings = AppSettings::load();
         let new_artwork = new_artwork::NewArtwork::from_settings(&app_settings);
         // Behind the New Artwork dialog: the last-used (or default) canvas,
@@ -184,6 +199,8 @@ impl OxideApp {
             presets: PresetLibrary::load(ctx),
             brush_creator: brush_creator::BrushCreator::default(),
             last_workspace: egui::Rect::NOTHING,
+            last_hover: None,
+            cursor_dir: None,
             show_left: true,
             show_right: true,
             renaming: None,
@@ -195,6 +212,9 @@ impl OxideApp {
             app_settings,
             new_artwork,
             select_canvas: select_canvas::SelectCanvas::default(),
+            frame_ms: 0.0,
+            pen: PenInput::new(ctx),
+            show_pen_settings: false,
         }
     }
 
@@ -337,6 +357,7 @@ impl OxideApp {
             });
             ui.menu_button("Window", |ui| {
                 ui.checkbox(&mut self.brush_creator.open, "Brush creator");
+                ui.checkbox(&mut self.show_pen_settings, "Pen settings");
                 ui.checkbox(&mut self.show_left, "Tools & brushes (left)");
                 ui.checkbox(&mut self.show_right, "Navigator, color & layers (right)");
             });
@@ -395,6 +416,61 @@ impl OxideApp {
         });
     }
 
+    /// Pressure curve and a live meter, to tune how light touches feel.
+    fn pen_settings_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_pen_settings;
+        let mut changed = false;
+        egui::Window::new("Pen Settings").open(&mut open).resizable(false).default_width(320.0).show(ctx, |ui| {
+            let pen = self.pen.read();
+            if !self.pen.available() {
+                ui.colored_label(ui.visuals().error_fg_color, "Couldn't listen to the tablet.");
+            } else if pen.in_proximity {
+                ui.label("✔ Pen detected");
+            } else {
+                ui.weak("Bring the pen near the tablet…");
+            }
+            ui.add_space(6.0);
+
+            let raw = pen.pressure;
+            let curve = self.app_settings.pressure_curve;
+            ui.label(format!("Pressure from the pen: {:.0}%", raw * 100.0));
+            ui.add(egui::ProgressBar::new(raw).desired_width(280.0));
+            ui.label(format!("After the curve (what brushes get): {:.0}%", apply_curve(raw, curve) * 100.0));
+            ui.add(egui::ProgressBar::new(apply_curve(raw, curve)).desired_width(280.0));
+            ui.add_space(6.0);
+
+            // Shown as Soft (left) .. Firm (right); stored as an exponent.
+            let mut firmness = curve.log2();
+            ui.horizontal(|ui| {
+                ui.label("Soft");
+                if ui.add(egui::Slider::new(&mut firmness, -1.5..=1.0).show_value(false)).changed() {
+                    self.app_settings.pressure_curve = 2f32.powf(firmness);
+                    changed = true;
+                }
+                ui.label("Firm");
+            });
+            ui.weak("Softer = light touches give bigger, darker marks.");
+            ui.add_space(6.0);
+            ui.label(format!("Tilt: {:+.2}, {:+.2}   Rotation: {:.0}°", pen.tilt.0, pen.tilt.1, pen.rotation));
+            ui.add_space(6.0);
+            ui.separator();
+            ui.weak("Diagnostics");
+            ui.monospace(format!("events seen:      {}", pen.events_seen));
+            ui.monospace(format!("with pen data:    {}", pen.pen_events_seen));
+            ui.monospace(format!("last event:       {}", pen.last_description));
+            ui.monospace(format!("last raw pressure: {:.3}", pen.last_raw_pressure));
+            ui.monospace(format!("pen touching:     {}", pen.touching()));
+            ui.add_space(6.0);
+            ui.weak("If very light touches don't register at all, also lower the click/activation pressure in the XP-Pen driver settings.");
+            // Keep the meter moving while this window is open.
+            ui.ctx().request_repaint();
+        });
+        self.show_pen_settings = open;
+        if changed {
+            self.save_app_settings();
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(format!(
@@ -404,6 +480,20 @@ impl OxideApp {
                 self.view.last_scale * 100.0,
                 self.document.layers()[self.document.active_index()].name,
             ));
+            let pen = self.pen.read();
+            if pen.in_proximity {
+                ui.separator();
+                let pressure = apply_curve(pen.pressure, self.app_settings.pressure_curve);
+                ui.weak(format!("Pen {:.0}%", pressure * 100.0)).on_hover_text("Pen pressure after the pressure curve (Window → Pen settings)");
+            }
+            ui.separator();
+            let frame = format!("{:.0} ms/frame", self.frame_ms);
+            if self.frame_ms > 30.0 {
+                ui.colored_label(egui::Color32::from_rgb(230, 170, 60), frame)
+                    .on_hover_text("Over ~30 ms per frame feels laggy. Try a release build: cargo run --release -p oxide-app");
+            } else {
+                ui.weak(frame).on_hover_text("Time Oxide spends building each frame (lower is smoother)");
+            }
             if let Some(status) = &self.status {
                 ui.separator();
                 if status.is_error {
@@ -418,6 +508,7 @@ impl OxideApp {
 
 impl eframe::App for OxideApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         self.handle_close_request(&ctx);
         if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open {
@@ -445,6 +536,7 @@ impl eframe::App for OxideApp {
             .show(ui, |ui| self.canvas_view(ui));
 
         self.brush_creator_window(&ctx);
+        self.pen_settings_window(&ctx);
         self.new_artwork_dialog(&ctx);
         // Drawn after New Artwork so it sits on top when opened from there.
         self.select_canvas_dialog(&ctx);
@@ -458,6 +550,9 @@ impl eframe::App for OxideApp {
         // Undo/redo/opening change pixels outside of painting: show them.
         self.upload_changes();
         self.update_title(&ctx);
+
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        self.frame_ms = if self.frame_ms == 0.0 { ms } else { self.frame_ms * 0.9 + ms * 0.1 };
     }
 }
 

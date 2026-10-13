@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
-use oxide_engine::{Brush, Color, DabMode, Document, Stroke};
+use oxide_engine::{Brush, Color, DabMode, Document, Rotation, Stroke};
 use serde::{Deserialize, Serialize};
 
 use crate::app::PAPER;
@@ -35,6 +35,14 @@ pub struct BrushPreset {
     pub streaks: f32,
     #[serde(default)]
     pub lift_off: f32,
+    /// How the tip turns while painting. Missing in older files: fixed.
+    #[serde(default)]
+    pub rotation: Rotation,
+    /// Pressure response. `None` = keep the tool's own setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_pressure: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity_pressure: Option<f32>,
     /// Paper-texture sensitivity. `None` = keep the tool's own setting
     /// (built-in shapes don't change how a medium feels the paper).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,13 +65,21 @@ impl BrushPreset {
             roughness: shape.roughness,
             streaks: shape.streaks,
             lift_off: shape.lift_off,
+            rotation: shape.rotation,
+            size_pressure: Some(shape.size_pressure),
+            opacity_pressure: Some(shape.opacity_pressure),
             grain: Some(shape.grain),
         }
     }
 
     /// This preset's shape, keeping `current`'s grain unless the preset has its own.
     pub fn apply_to(&self, current: &BrushShape) -> BrushShape {
-        BrushShape { grain: self.grain.unwrap_or(current.grain), ..self.shape() }
+        BrushShape {
+            grain: self.grain.unwrap_or(current.grain),
+            size_pressure: self.size_pressure.unwrap_or(current.size_pressure),
+            opacity_pressure: self.opacity_pressure.unwrap_or(current.opacity_pressure),
+            ..self.shape()
+        }
     }
 
     pub fn shape(&self) -> BrushShape {
@@ -76,6 +92,9 @@ impl BrushPreset {
             roughness: self.roughness,
             streaks: self.streaks,
             lift_off: self.lift_off,
+            rotation: self.rotation,
+            size_pressure: self.size_pressure.unwrap_or(0.0),
+            opacity_pressure: self.opacity_pressure.unwrap_or(0.0),
             grain: self.grain.unwrap_or(0.0),
         }
     }
@@ -86,7 +105,12 @@ impl BrushPreset {
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {
-    BrushPreset { name: name.to_string(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, grain: None }
+    BrushPreset { name: name.to_string(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None }
+}
+
+/// A built-in preset whose tip turns to follow the stroke (flat brushes, knives).
+fn follow(preset: BrushPreset) -> BrushPreset {
+    BrushPreset { rotation: Rotation::FollowStroke, ..preset }
 }
 
 /// A built-in preset with a natural, imperfect tip.
@@ -100,21 +124,21 @@ fn builtin_presets() -> Vec<BrushPreset> {
         builtin("Round Hard", 10.0, 0.95, 0.05, 1.0, 0.0),
         builtin("Round Soft", 18.0, 0.2, 0.06, 1.0, 0.0),
         builtin("Fine", 2.5, 0.95, 0.05, 1.0, 0.0),
-        builtin("Flat", 16.0, 0.7, 0.04, 0.35, 0.0),
-        builtin("Filbert", 14.0, 0.6, 0.04, 0.6, 0.0),
+        follow(builtin("Flat", 16.0, 0.7, 0.04, 0.35, 0.0)),
+        follow(builtin("Filbert", 14.0, 0.6, 0.04, 0.6, 0.0)),
         builtin("Chisel", 12.0, 0.9, 0.04, 0.3, 30.0),
         builtin("Nib", 7.0, 0.95, 0.04, 0.2, 45.0),
-        builtin("Knife", 18.0, 1.0, 0.03, 0.12, 0.0),
+        follow(builtin("Knife", 18.0, 1.0, 0.03, 0.12, 0.0)),
         builtin("Broad Soft", 40.0, 0.0, 0.05, 1.0, 0.0),
         builtin("Dotted", 4.0, 0.9, 1.0, 1.0, 0.0),
         // Natural brushes: ragged edges, bristle streaks, lift-off.
         natural(builtin("Worn Round", 14.0, 0.6, 0.04, 1.0, 0.0), 0.4, 0.45, 0.6),
         natural(builtin("Rough Round", 14.0, 0.55, 0.04, 1.0, 0.0), 0.75, 0.35, 0.6),
-        natural(builtin("Bristle Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.35, 0.85, 0.7),
-        natural(builtin("Dry Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.55, 1.0, 0.8),
-        natural(builtin("Worn Filbert", 14.0, 0.6, 0.04, 0.6, 0.0), 0.5, 0.55, 0.65),
-        natural(builtin("Scruffy", 20.0, 0.45, 0.04, 0.8, 15.0), 0.95, 0.7, 0.8),
-        natural(builtin("Rough Knife", 18.0, 1.0, 0.03, 0.12, 0.0), 0.6, 0.3, 0.5),
+        follow(natural(builtin("Bristle Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.35, 0.85, 0.7)),
+        follow(natural(builtin("Dry Flat", 16.0, 0.75, 0.04, 0.35, 0.0), 0.55, 1.0, 0.8)),
+        follow(natural(builtin("Worn Filbert", 14.0, 0.6, 0.04, 0.6, 0.0), 0.5, 0.55, 0.65)),
+        follow(natural(builtin("Scruffy", 20.0, 0.45, 0.04, 0.8, 15.0), 0.95, 0.7, 0.8)),
+        follow(natural(builtin("Rough Knife", 18.0, 1.0, 0.03, 0.12, 0.0), 0.6, 0.3, 0.5)),
     ]
 }
 

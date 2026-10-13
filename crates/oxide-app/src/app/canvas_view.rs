@@ -2,7 +2,7 @@
 //! into painting, picking, panning, and zooming.
 
 use eframe::egui::{self, Color32, PointerButton, Rect, Sense, Stroke as LineStroke, Vec2};
-use oxide_engine::{Brush, DabMode, Stroke};
+use oxide_engine::{Brush, DabMode, Stroke, StrokePoint};
 
 use super::{OxideApp, View};
 use crate::tools::Tool;
@@ -38,14 +38,36 @@ impl OxideApp {
         let (rect, scale) = canvas_rect(&mut self.view, workspace, canvas_size, MARGIN);
 
         // --- Painting and picking ---
-        let primary_down = ui.input(|i| i.pointer.primary_down());
+        // The pen counts as "down" as soon as it reports pressure, even if the
+        // tablet driver hasn't decided it's a mouse click yet (light touches).
+        let pen = self.pen.read();
+        let pen_down = pen.touching();
+        let primary_down = ui.input(|i| i.pointer.primary_down()) || pen_down;
         let layer_hidden = !self.document.layers()[self.document.active_index()].visible;
         let blocked = layer_hidden && self.tool != Tool::Picker;
-        let pointer = response.interact_pointer_pos().filter(|_| primary_down && !space_down);
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| response.hover_pos().filter(|_| pen_down))
+            .filter(|_| primary_down && !space_down);
         match pointer {
             Some(pos) => {
                 // Screen position -> canvas pixel position.
                 let p = (pos - rect.min) / scale;
+                // Safety net: if the button is down but the driver reports no
+                // pressure on its mouse events, don't paint with "zero pressure".
+                let button_down = ui.input(|i| i.pointer.primary_down());
+                let raw = if button_down && pen.pressure <= 0.0 { 1.0 } else { pen.pressure };
+                let point = if pen.is_pen {
+                    StrokePoint {
+                        x: p.x,
+                        y: p.y,
+                        pressure: crate::pen::apply_curve(raw, self.app_settings.pressure_curve),
+                        tilt: Some(pen.tilt),
+                        rotation: Some(pen.rotation),
+                    }
+                } else {
+                    StrokePoint::mouse(p.x, p.y)
+                };
                 match self.tool {
                     Tool::Picker => {
                         if p.x >= 0.0
@@ -63,12 +85,12 @@ impl OxideApp {
                                 self.document.begin_stroke();
                                 let tip = self.dirty_tip();
                                 let canvas = self.document.active_canvas();
-                                self.stroke = Some(Stroke::begin_with_tip(canvas, &brush, mode, p.x, p.y, tip));
+                                self.stroke = Some(Stroke::begin_at(canvas, &brush, mode, point, tip));
                                 if self.tool.paints() {
                                     self.remember_color(self.color);
                                 }
                             }
-                            Some(stroke) => stroke.line_to(self.document.active_canvas(), &brush, p.x, p.y),
+                            Some(stroke) => stroke.line_to_point(self.document.active_canvas(), &brush, point),
                         }
                     }
                     _ => {}
@@ -102,9 +124,8 @@ impl OxideApp {
         // Brush outline under the cursor, so you can see the size before painting.
         if let Some(hover) = response.hover_pos() {
             if self.tool != Tool::Picker && !space_down {
-                let r = (self.state().shape.radius * scale).max(1.5);
-                painter.circle_stroke(hover, r, LineStroke::new(1.5, Color32::from_black_alpha(140)));
-                painter.circle_stroke(hover, r, LineStroke::new(0.75, Color32::from_white_alpha(200)));
+                self.track_cursor_direction(hover);
+                self.draw_tip_outline(&painter, hover, scale);
             }
             let cursor = if space_down {
                 egui::CursorIcon::Grab
@@ -127,6 +148,48 @@ impl OxideApp {
     /// Paint left on a dirty brush from the last stroke, if it should be used.
     fn dirty_tip(&self) -> Option<oxide_engine::Color> {
         self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush)
+    }
+
+    /// Follow which way the pointer is moving (smoothed), for the cursor.
+    fn track_cursor_direction(&mut self, hover: egui::Pos2) {
+        if let Some(last) = self.last_hover {
+            let d = hover - last;
+            if d.length() > 0.75 {
+                let d = d.normalized();
+                let (ox, oy) = self.cursor_dir.unwrap_or((d.x, d.y));
+                let blended = Vec2::new(ox * 0.6 + d.x * 0.4, oy * 0.6 + d.y * 0.4).normalized();
+                self.cursor_dir = Some((blended.x, blended.y));
+            }
+        }
+        self.last_hover = Some(hover);
+    }
+
+    /// The brush cursor: the tip's real shape at its current angle, plus a
+    /// direction line when the tip rotates.
+    fn draw_tip_outline(&self, painter: &egui::Painter, center: egui::Pos2, scale: f32) {
+        let brush = self.current_brush();
+        let r = (brush.radius * scale).max(1.5);
+        let roundness = brush.roundness.clamp(0.05, 1.0);
+        let angle = brush.tip_angle(self.cursor_dir).to_radians();
+        let (sin, cos) = angle.sin_cos();
+
+        let outline: Vec<egui::Pos2> = (0..=48)
+            .map(|i| {
+                let t = i as f32 / 48.0 * std::f32::consts::TAU;
+                let (u, v) = (t.cos() * r, t.sin() * r * roundness);
+                center + Vec2::new(u * cos - v * sin, u * sin + v * cos)
+            })
+            .collect();
+        painter.add(egui::Shape::line(outline.clone(), LineStroke::new(1.5, Color32::from_black_alpha(140))));
+        painter.add(egui::Shape::line(outline, LineStroke::new(0.75, Color32::from_white_alpha(200))));
+
+        if brush.rotation != oxide_engine::Rotation::None {
+            // A line from the center toward where the tip is heading.
+            let (dx, dy) = self.cursor_dir.unwrap_or((1.0, 0.0));
+            let tip = center + Vec2::new(dx, dy) * (r + 10.0);
+            painter.line_segment([center, tip], LineStroke::new(2.0, Color32::from_black_alpha(140)));
+            painter.line_segment([center, tip], LineStroke::new(1.0, Color32::from_white_alpha(220)));
+        }
     }
 
     /// Zoom by `factor`, keeping the canvas point under `anchor` fixed on screen.

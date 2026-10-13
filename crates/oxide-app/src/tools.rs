@@ -5,7 +5,7 @@
 //! the tip looks like. A **medium** (oils & acrylics, ink, pencil, ...) says
 //! how the paint behaves. Any medium can use any brush preset.
 
-use oxide_engine::{Brush, Color};
+use oxide_engine::{Brush, Color, Rotation};
 
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,6 +93,19 @@ impl Tool {
             Tool::Smudge => (shape(14.0, 0.5, 0.05, 0.0), 1.0, 0.0, 0.8),
             Tool::Picker => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
         };
+        // How each medium responds to pen pressure (size, opacity), like the
+        // real thing: ink and oils thicken, pencil and airbrush darken.
+        let (size_pressure, opacity_pressure) = match self {
+            Tool::OilsAcrylics => (0.6, 0.3),
+            Tool::Ink => (0.85, 0.0),
+            Tool::Pencil => (0.3, 0.8),
+            Tool::Marker => (0.2, 0.4),
+            Tool::Airbrush => (0.0, 1.0),
+            Tool::Eraser => (0.6, 0.3),
+            Tool::Smudge => (0.4, 0.6),
+            Tool::Picker => (0.0, 0.0),
+        };
+        let shape = BrushShape { size_pressure, opacity_pressure, ..shape };
         ToolState { shape, opacity, loading, oiliness }
     }
 }
@@ -121,6 +134,12 @@ pub struct BrushShape {
     pub lift_off: f32,
     /// How much the paper texture shows in the stroke (0 = ignores the paper).
     pub grain: f32,
+    /// How the tip turns while painting (fixed, follow the stroke, pen...).
+    pub rotation: Rotation,
+    /// How much pen pressure changes the size (0 = not at all).
+    pub size_pressure: f32,
+    /// How much pen pressure changes the opacity (0 = not at all).
+    pub opacity_pressure: f32,
 }
 
 impl Default for BrushShape {
@@ -135,6 +154,9 @@ impl Default for BrushShape {
             streaks: 0.0,
             lift_off: 0.0,
             grain: 0.0,
+            rotation: Rotation::None,
+            size_pressure: 0.0,
+            opacity_pressure: 0.0,
         }
     }
 }
@@ -162,6 +184,9 @@ impl ToolState {
             spacing: s.spacing,
             roundness: s.roundness,
             angle: s.angle,
+            rotation: s.rotation,
+            size_pressure: s.size_pressure,
+            opacity_pressure: s.opacity_pressure,
             roughness: s.roughness,
             streaks: s.streaks,
             lift_off: s.lift_off,

@@ -9,6 +9,7 @@
 //! Every surface is generated procedurally (our own math, no scanned
 //! textures) as a seamless tile that repeats across the canvas.
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::tip::{hash, hash2};
@@ -149,10 +150,11 @@ pub fn surface_acceptance(height: f32, grain: f32, reach: f32) -> f32 {
 fn generate_height(s: &PaperSettings) -> Vec<f32> {
     let scale = s.scale.clamp(0.25, 4.0);
     let mut out = vec![0.0; TILE * TILE];
-    for y in 0..TILE {
-        for x in 0..TILE {
+    // Each row is independent, so rows are generated on all CPU cores at once.
+    out.par_chunks_mut(TILE).enumerate().for_each(|(y, row)| {
+        for (x, value) in row.iter_mut().enumerate() {
             let (fx, fy) = (x as f32, y as f32);
-            out[y * TILE + x] = match s.kind {
+            *value = match s.kind {
                 PaperKind::Smooth => 0.5 + 0.5 * fbm(fx, fy, 4.0 * scale, 3, 11),
                 PaperKind::ColdPress => {
                     let bumps = fbm(fx, fy, 14.0 * scale, 4, 21);
@@ -193,7 +195,7 @@ fn generate_height(s: &PaperSettings) -> Vec<f32> {
                 }
             };
         }
-    }
+    });
     normalize(&mut out);
     out
 }
@@ -277,16 +279,16 @@ fn light(height: &[f32], depth: f32, light_angle: f32) -> Vec<f32> {
     let relief = 6.0 * depth;
     let at = |x: usize, y: usize| height[(y % TILE) * TILE + (x % TILE)];
     let mut shade = vec![1.0; TILE * TILE];
-    for y in 0..TILE {
-        for x in 0..TILE {
+    shade.par_chunks_mut(TILE).enumerate().for_each(|(y, row)| {
+        for (x, value) in row.iter_mut().enumerate() {
             // Slope from neighbors (wrapping at the tile edge).
             let dx = at(x + 1, y) - at(x + TILE - 1, y);
             let dy = at(x, y + 1) - at(x, y + TILE - 1);
             // Surfaces sloping *toward* the light get brighter.
             let facing = -(dx * lx + dy * ly) * relief;
-            shade[y * TILE + x] = (1.0 + facing * 0.5).clamp(0.6, 1.25);
+            *value = (1.0 + facing * 0.5).clamp(0.6, 1.25);
         }
-    }
+    });
     shade
 }
 
