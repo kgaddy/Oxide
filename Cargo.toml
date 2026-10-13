@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/oxide-engine", "crates/oxide-app"]
+
+# Painting loops over every pixel, so unoptimized debug builds feel laggy.
+# Light optimization for our code, full for dependencies; still fast to compile.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
