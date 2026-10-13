@@ -2,6 +2,8 @@
 
 mod app;
 mod color_wheel;
+mod export;
+mod palette_library;
 mod pen;
 mod presets;
 mod settings;

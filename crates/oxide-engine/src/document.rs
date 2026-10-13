@@ -39,6 +39,11 @@ pub struct Document {
     surface: Arc<Paper>,
     /// Print resolution in dots per inch (sets the physical size when printing).
     dpi: f32,
+    /// The mixing palette that goes with this painting (a small document of
+    /// its own, with its own undo). Saved inside the `.oxide` file.
+    pub palette: Option<Box<Document>>,
+    /// Free-text notes (e.g. the paints used on a mixing palette). Saved in the file.
+    pub notes: String,
 }
 
 /// Default print resolution for new paintings.
@@ -71,6 +76,8 @@ impl Document {
             show_wet: false,
             surface: Arc::new(Paper::new(surface)),
             dpi: DEFAULT_DPI,
+            palette: None,
+            notes: String::new(),
         };
         // Two steps: `doc.layers.push(doc.blank_layer())` would borrow `doc`
         // mutably twice in one expression, which Rust doesn't allow.
@@ -109,6 +116,8 @@ impl Document {
             show_wet: false,
             surface,
             dpi: DEFAULT_DPI,
+            palette: None,
+            notes: String::new(),
         }
     }
 
@@ -523,6 +532,59 @@ impl Document {
         [p[0] + (tint[0] - p[0]) * t, p[1] + (tint[1] - p[1]) * t, p[2] + (tint[2] - p[2]) * t, p[3]]
     }
 
+    /// Flatten `region` for export: straight (not premultiplied) RGBA floats,
+    /// row by row. With `include_paper` the result is opaque and shows the
+    /// paper and its lit texture; without it, the background is transparent.
+    pub fn composite_rgba_f32(&self, region: Region, include_paper: bool) -> Vec<[f32; 4]> {
+        let mut out = vec![[0.0f32; 4]; region.width() * region.height()];
+        let width = region.width();
+        if width == 0 {
+            return out;
+        }
+        out.par_chunks_mut(width).enumerate().for_each(|(row, line)| {
+            let y = region.y0 + row;
+            for (col, px) in line.iter_mut().enumerate() {
+                let x = region.x0 + col;
+                let i = y * self.width + x;
+                let p = if include_paper {
+                    let p = self.composite_at(i);
+                    let s = self.surface.shade_at(x, y);
+                    [p[0] * s, p[1] * s, p[2] * s, 1.0]
+                } else {
+                    // Layers only, over nothing.
+                    let mut p = [0.0f32; 4];
+                    for layer in &self.layers {
+                        if layer.visible && layer.opacity > 0.0 {
+                            p = over(scale(layer.canvas.combined(i), layer.opacity), p);
+                        }
+                    }
+                    p
+                };
+                *px = straight(p);
+            }
+        });
+        out
+    }
+
+    /// One layer's pixels (wet over dry) as straight RGBA floats, ignoring
+    /// its opacity and visibility (used for layered PSD export).
+    pub fn layer_rgba_f32(&self, index: usize) -> Vec<[f32; 4]> {
+        let canvas = &self.layers[index].canvas;
+        (0..self.width * self.height).into_par_iter().map(|i| straight(canvas.combined(i))).collect()
+    }
+
+    /// The lit paper alone (opaque), for a "Paper" layer in PSD export.
+    pub fn paper_rgba_f32(&self) -> Vec<[f32; 4]> {
+        let paper = self.paper;
+        (0..self.width * self.height)
+            .into_par_iter()
+            .map(|i| {
+                let s = self.surface.shade_at(i % self.width, i / self.width);
+                [paper.r * s, paper.g * s, paper.b * s, 1.0]
+            })
+            .collect()
+    }
+
     /// Flatten `region` into 8-bit RGBA bytes (row by row, region-sized),
     /// ready to show on screen or export.
     pub fn composite_rgba8(&self, region: Region) -> Vec<u8> {
@@ -558,6 +620,15 @@ impl Document {
         }
         bytes
     }
+}
+
+/// Premultiplied -> straight alpha, clamped to 0..=1.
+fn straight(p: [f32; 4]) -> [f32; 4] {
+    let a = p[3].clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return [0.0; 4];
+    }
+    [(p[0] / a).clamp(0.0, 1.0), (p[1] / a).clamp(0.0, 1.0), (p[2] / a).clamp(0.0, 1.0), a]
 }
 
 fn to_u8(v: f32) -> u8 {
@@ -779,7 +850,7 @@ mod tests {
         let mut doc = Document::with_surface(128, 128, Color::WHITE, rough);
         let pencil = Brush { radius: 60.0, hardness: 1.0, grain: 1.0, ..Brush::default() };
         let light_touch =
-            DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4 };
+            DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None };
         doc.active_canvas().dab_with(64.0, 64.0, &pencil, &light_touch);
         let covered = (0..128 * 128)
             .filter(|&i| doc.layers()[0].canvas.dry_pixels()[i][3] > 0.5)
@@ -787,6 +858,17 @@ mod tests {
         // Some of the area gets paint (peaks), some doesn't (valleys).
         let disc = (std::f32::consts::PI * 60.0 * 60.0) as usize;
         assert!(covered > disc / 10 && covered < disc * 9 / 10, "covered {covered} of ~{disc}");
+    }
+
+    #[test]
+    fn export_without_paper_is_transparent_where_unpainted() {
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, Color::rgb(1.0, 0.0, 0.0));
+        let with_paper = doc.composite_rgba_f32(doc.bounds(), true);
+        let without = doc.composite_rgba_f32(doc.bounds(), false);
+        assert_eq!(with_paper[0], [1.0, 1.0, 1.0, 1.0], "corner shows the paper");
+        assert_eq!(without[0][3], 0.0, "corner is transparent without paper");
+        assert_eq!(without[10 * 20 + 10], [1.0, 0.0, 0.0, 1.0], "paint stays");
     }
 
     #[test]

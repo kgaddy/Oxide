@@ -2,8 +2,10 @@
 
 mod brush_creator;
 mod canvas_view;
+mod export_dialog;
 mod files;
 mod layers;
+mod mixing_palette;
 mod new_artwork;
 mod select_canvas;
 mod panels;
@@ -12,7 +14,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use eframe::egui::ecolor::{hsv_from_rgb, rgb_from_hsv};
-use oxide_engine::{Brush, Color, Document, PaperKind, PaperSettings, Stroke};
+use oxide_engine::{Brush, Color, Document, Mixing, PaperKind, PaperSettings, Stroke};
 
 use crate::presets::PresetLibrary;
 use crate::pen::{PenInput, apply_curve};
@@ -117,6 +119,8 @@ pub struct OxideApp {
     app_settings: AppSettings,
     new_artwork: new_artwork::NewArtwork,
     select_canvas: select_canvas::SelectCanvas,
+    export_dialog: export_dialog::ExportDialog,
+    mixing_palette: mixing_palette::MixingPalette,
     /// The drawing tablet: pressure, tilt, rotation.
     pen: PenInput,
     show_pen_settings: bool,
@@ -134,7 +138,7 @@ enum Command {
     SaveAs,
     SaveIteration,
     ImportImage,
-    ExportPng,
+    Export,
     Quit,
     Undo,
     Redo,
@@ -144,11 +148,13 @@ enum Command {
     ZoomOut,
     DryLayer,
     DryAll,
+    MixingPalette,
 }
 
 /// Keyboard shortcuts. Order matters: egui ignores *extra* Shift/Alt when
 /// matching, so ⇧⌘S must be checked before ⌘S or it would trigger Save.
-const SHORTCUTS: [(Command, KeyboardShortcut); 17] = [
+const SHORTCUTS: [(Command, KeyboardShortcut); 18] = [
+    (Command::MixingPalette, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::M)),
     (Command::DryAll, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::D)),
     (Command::DryLayer, KeyboardShortcut::new(Modifiers::COMMAND, Key::D)),
     (Command::SaveAs, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S)),
@@ -156,7 +162,7 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 17] = [
     (Command::Save, KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
     (Command::Redo, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z)),
     (Command::Undo, KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)),
-    (Command::ExportPng, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::E)),
+    (Command::Export, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::E)),
     (Command::New, KeyboardShortcut::new(Modifiers::COMMAND, Key::N)),
     (Command::Open, KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
     (Command::ImportImage, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::I)),
@@ -212,6 +218,8 @@ impl OxideApp {
             app_settings,
             new_artwork,
             select_canvas: select_canvas::SelectCanvas::default(),
+            export_dialog: export_dialog::ExportDialog::default(),
+            mixing_palette: mixing_palette::MixingPalette::default(),
             frame_ms: 0.0,
             pen: PenInput::new(ctx),
             show_pen_settings: false,
@@ -229,7 +237,9 @@ impl OxideApp {
 
     /// The engine brush for the current tool, color, and settings.
     fn current_brush(&self) -> Brush {
-        self.state().brush(self.tool, self.color)
+        let mut brush = self.state().brush(self.tool, self.color);
+        brush.mixing = if self.app_settings.natural_colors { Mixing::Pigment } else { Mixing::Rgb };
+        brush
     }
 
     /// Set the brush color from anywhere (swatch, picker, ...) and keep the wheel in sync.
@@ -283,7 +293,7 @@ impl OxideApp {
                 self.save_iteration();
             }
             Command::ImportImage => self.import_image(),
-            Command::ExportPng => self.export_png(),
+            Command::Export => self.export_dialog.open = true,
             Command::Undo => self.document.undo(),
             Command::Redo => self.document.redo(),
             Command::Fit => self.view.fit = true,
@@ -292,11 +302,13 @@ impl OxideApp {
             Command::ZoomOut => self.view.zoom_by(0.8),
             Command::DryLayer => self.document.dry_layer(),
             Command::DryAll => self.document.dry_all(),
+            Command::MixingPalette => self.mixing_palette.open = !self.mixing_palette.open,
         }
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let mut clicked = None;
+        let mut natural_changed = false;
         // A menu item that shows its keyboard shortcut and records the click.
         let mut item = |ui: &mut egui::Ui, label: &str, command: Command, enabled: bool| {
             let mut button = egui::Button::new(label);
@@ -318,7 +330,7 @@ impl OxideApp {
                 item(ui, "Save Iteration", Command::SaveIteration, true);
                 ui.separator();
                 item(ui, "Import Image as Layer…", Command::ImportImage, true);
-                item(ui, "Export PNG…", Command::ExportPng, true);
+                item(ui, "Export…", Command::Export, true);
                 ui.separator();
                 item(ui, "Quit", Command::Quit, true);
             });
@@ -327,6 +339,14 @@ impl OxideApp {
                 let redo = self.document.redo_description();
                 item(ui, &undo.map_or("Undo".into(), |d| format!("Undo {d}")), Command::Undo, undo.is_some());
                 item(ui, &redo.map_or("Redo".into(), |d| format!("Redo {d}")), Command::Redo, redo.is_some());
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.app_settings.natural_colors, "Natural Colors")
+                    .on_hover_text("On: colors mix like real paint (blue + yellow = green).\nOff: they mix like light on a screen (blue + yellow = gray).")
+                    .changed()
+                {
+                    natural_changed = true;
+                }
             });
             ui.menu_button("View", |ui| {
                 item(ui, "Fit to window", Command::Fit, true);
@@ -358,6 +378,11 @@ impl OxideApp {
             ui.menu_button("Window", |ui| {
                 ui.checkbox(&mut self.brush_creator.open, "Brush creator");
                 ui.checkbox(&mut self.show_pen_settings, "Pen settings");
+                let mut palette_open = self.mixing_palette.open;
+                let shortcut = SHORTCUTS.iter().find(|(c, _)| *c == Command::MixingPalette).map(|(_, s)| ui.ctx().format_shortcut(s));
+                if ui.checkbox(&mut palette_open, format!("Mixing palette   {}", shortcut.unwrap_or_default())).changed() {
+                    self.mixing_palette.open = palette_open;
+                }
                 ui.checkbox(&mut self.show_left, "Tools & brushes (left)");
                 ui.checkbox(&mut self.show_right, "Navigator, color & layers (right)");
             });
@@ -376,6 +401,11 @@ impl OxideApp {
 
         if let Some(command) = clicked {
             self.run(command, &ui.ctx().clone());
+        }
+        if natural_changed {
+            self.save_app_settings();
+            let mode = if self.app_settings.natural_colors { "paint (pigment)" } else { "light (RGB)" };
+            self.info(format!("Colors now mix like {mode}"));
         }
     }
 
@@ -511,7 +541,7 @@ impl eframe::App for OxideApp {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         self.handle_close_request(&ctx);
-        if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open {
+        if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open && !self.export_dialog.open {
             self.handle_shortcuts(&ctx);
         }
 
@@ -537,9 +567,11 @@ impl eframe::App for OxideApp {
 
         self.brush_creator_window(&ctx);
         self.pen_settings_window(&ctx);
+        self.mixing_palette_window(&ctx);
         self.new_artwork_dialog(&ctx);
         // Drawn after New Artwork so it sits on top when opened from there.
         self.select_canvas_dialog(&ctx);
+        self.export_dialog(&ctx);
         self.pending_dialog(&ctx);
 
         // Slider drags (opacity, paper color) become one undo step: close the

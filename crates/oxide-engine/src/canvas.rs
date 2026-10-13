@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::paper::{Paper, surface_acceptance};
+use crate::spectral::{Pigment, mix_pigments};
 use crate::tip::DabTexture;
 use crate::{Brush, Region};
 
@@ -55,6 +56,10 @@ pub struct DabStyle<'a> {
     /// How deep into the paper's valleys the paint reaches (0..=1).
     /// 1 = everywhere (loaded brush); low = only the peaks (dry, light touch).
     pub reach: f32,
+    /// The paint color prepared for pigment mixing. When set, wet paint landing
+    /// on *different* wet paint mixes like real pigment instead of blending
+    /// like light (ultramarine + burnt umber → near-black, not purple).
+    pub pigment: Option<&'a Pigment>,
 }
 
 /// A grid of pixels we paint into: one layer of a painting.
@@ -240,7 +245,7 @@ impl Canvas {
     /// Strokes are made of many overlapping dabs; see [`crate::Stroke`].
     pub fn dab(&mut self, cx: f32, cy: f32, brush: &Brush, mode: DabMode) {
         let style =
-            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0 };
+            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0, pigment: None };
         self.dab_with(cx, cy, brush, &style);
     }
 
@@ -272,8 +277,9 @@ impl Canvas {
                 let was_wet = self.wet[i][3] > 0.0;
                 match style.mode {
                     DabMode::Paint => match style.wetness {
-                        // Wet paint goes into the wet buffer, on top.
-                        Wetness::Wet => self.wet[i] = over(paint, self.wet[i]),
+                        // Wet paint goes into the wet buffer, on top, mixing
+                        // with the wet paint already there.
+                        Wetness::Wet => self.wet[i] = deposit_wet(paint, self.wet[i], style),
                         // Dry paint on top of wet paint: whatever wet paint is
                         // here dries underneath it, then the dry paint covers it.
                         Wetness::Dry => {
@@ -286,7 +292,7 @@ impl Canvas {
                         // Smudging: moved paint stays wet where it's wet, dry where it's dry.
                         Wetness::Keep => {
                             if self.wet[i][3] > 0.01 {
-                                self.wet[i] = over(paint, self.wet[i]);
+                                self.wet[i] = deposit_wet(paint, self.wet[i], style);
                             } else {
                                 self.dry[i] = over(paint, self.dry[i]);
                             }
@@ -333,6 +339,42 @@ impl Canvas {
     }
 }
 
+impl Canvas {
+    /// Like [`Canvas::sample_under`], but the colors under the brush are
+    /// averaged **like paint** (pigment mixing) instead of like light, so
+    /// blending blue against brown gives a dark neutral, not purple.
+    /// Uses a grid of up to ~25 sample points to stay fast.
+    /// Returns (straight color, average alpha).
+    pub fn sample_under_pigment(&self, cx: f32, cy: f32, brush: &Brush, include_dry: bool) -> ([f32; 3], f32) {
+        let Some(Region { x0, y0, x1, y1 }) = self.dab_bounds(cx, cy, brush) else { return ([0.0; 3], 0.0) };
+        let step = ((x1 - x0).max(y1 - y0) / 5).max(1);
+        let mut samples: Vec<(Pigment, f32)> = Vec::with_capacity(36);
+        let (mut alpha_sum, mut weight_sum) = (0.0f32, 0.0f32);
+        for y in (y0..y1).step_by(step) {
+            for x in (x0..x1).step_by(step) {
+                let w = brush.coverage(x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                if w <= 0.0 {
+                    continue;
+                }
+                let i = y * self.width + x;
+                let p = if include_dry { self.combined(i) } else { self.wet[i] };
+                weight_sum += w;
+                alpha_sum += p[3] * w;
+                if p[3] > 0.01 {
+                    let color = [p[0] / p[3], p[1] / p[3], p[2] / p[3]];
+                    samples.push((Pigment::from_srgb(color), w * p[3]));
+                }
+            }
+        }
+        if weight_sum <= 0.0 {
+            return ([0.0; 3], 0.0);
+        }
+        let alpha = alpha_sum / weight_sum;
+        let color = crate::spectral::mix_many(&samples).unwrap_or([0.0; 3]);
+        (color, alpha)
+    }
+}
+
 fn read_rows<T: Copy>(buffer: &[T], width: usize, region: Region) -> Vec<T> {
     let mut out = Vec::with_capacity(region.width() * region.height());
     for y in region.y0..region.y1 {
@@ -348,6 +390,33 @@ fn write_rows<T: Copy>(buffer: &mut [T], width: usize, region: Region, data: &[T
         let row = y * width;
         buffer[row + region.x0..row + region.x1].copy_from_slice(&data[i * w..(i + 1) * w]);
     }
+}
+
+/// Put `paint` (premultiplied) onto wet paint `dst`. With a pigment, where the
+/// two colors really differ, the colors mix like paint (Kubelka-Munk);
+/// otherwise (or where they're the same color) it's a plain "over".
+#[inline]
+fn deposit_wet(paint: [f32; 4], dst: [f32; 4], style: &DabStyle) -> [f32; 4] {
+    let (a_new, a_old) = (paint[3], dst[3]);
+    let plain = over(paint, dst);
+    let Some(pigment) = style.pigment else { return plain };
+    // Nothing (much) underneath, or the new paint fully covers it: no mixing needed.
+    if a_old < 0.01 || a_new >= 0.98 || a_new <= 0.0 {
+        return plain;
+    }
+    // Same color underneath (the usual case inside a stroke): mixing would
+    // give the same color, so skip the expensive part.
+    let old = [dst[0] / a_old, dst[1] / a_old, dst[2] / a_old];
+    let src = style.color;
+    let diff = (old[0] - src.r).abs() + (old[1] - src.g).abs() + (old[2] - src.b).abs();
+    if diff < 0.02 {
+        return plain;
+    }
+    // How much of the paint in this pixel is the new paint.
+    let alpha = plain[3];
+    let t = a_new / alpha;
+    let mixed = mix_pigments(&Pigment::from_srgb(old), pigment, t);
+    [mixed[0] * alpha, mixed[1] * alpha, mixed[2] * alpha, alpha]
 }
 
 fn union(existing: Option<Region>, region: Region) -> Region {
@@ -460,7 +529,7 @@ mod tests {
         let brush = Brush { radius: 5.0, ..Brush::default() };
         // Dry red underneath, wet blue on top.
         canvas.dab(10.0, 10.0, &Brush { color: Color::rgb(1.0, 0.0, 0.0), ..brush.clone() }, DabMode::Paint);
-        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet_blue);
         assert!(canvas.has_wet_paint());
 
@@ -476,7 +545,7 @@ mod tests {
     fn wet_count_stays_exact() {
         let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
         let brush = Brush { radius: 6.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         let exact = |c: &Canvas| c.wet_pixels().iter().filter(|p| p[3] > 0.0).count();
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab_with(14.0, 12.0, &brush, &wet);
@@ -497,7 +566,7 @@ mod tests {
     fn dry_media_dries_the_wet_paint_it_covers() {
         let mut canvas = Canvas::new(20, 20, Color::TRANSPARENT);
         let brush = Brush { radius: 5.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab(10.0, 10.0, &Brush { color: Color::WHITE, ..brush }, DabMode::Paint);
         assert_eq!(canvas.wetness_at(10, 10), 0.0);

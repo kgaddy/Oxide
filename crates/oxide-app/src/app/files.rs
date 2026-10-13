@@ -51,6 +51,17 @@ pub struct Status {
 impl OxideApp {
     pub(super) fn is_modified(&self) -> bool {
         self.document.state_id() != self.saved_state
+            || self.palette_state() != self.mixing_palette.saved_state
+            || self.palette_notes() != self.mixing_palette.saved_notes
+    }
+
+    fn palette_notes(&self) -> String {
+        self.document.palette.as_ref().map_or_else(String::new, |p| p.notes.clone())
+    }
+
+    /// Identifies the mixing palette's contents (0 = no palette).
+    fn palette_state(&self) -> u64 {
+        self.document.palette.as_ref().map_or(0, |p| p.state_id())
     }
 
     fn display_name(&self) -> String {
@@ -104,6 +115,9 @@ impl OxideApp {
         self.document = document;
         self.stroke = None;
         self.saved_state = self.document.state_id();
+        self.mixing_palette.reset_view();
+        self.mixing_palette.saved_state = self.palette_state();
+        self.mixing_palette.saved_notes = self.palette_notes();
         self.file_path = path;
         self.view.fit = true;
         // Re-upload everything (a different size rebuilds the tile grid).
@@ -171,6 +185,8 @@ impl OxideApp {
             Ok(()) => {
                 self.file_path = Some(path.to_path_buf());
                 self.saved_state = self.document.state_id();
+                self.mixing_palette.saved_state = self.palette_state();
+                self.mixing_palette.saved_notes = self.palette_notes();
                 self.info(format!("Saved {}", path.display()));
                 self.app_settings.add_recent(path.to_path_buf());
                 self.save_app_settings();
@@ -183,29 +199,13 @@ impl OxideApp {
         }
     }
 
-    fn file_stem(&self) -> String {
+    pub(super) fn file_stem(&self) -> String {
         self.file_path
             .as_ref()
             .and_then(|p| p.file_stem())
             .map_or("Untitled".into(), |s| s.to_string_lossy().into_owned())
     }
 
-    pub(super) fn export_png(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("PNG image", &["png"])
-            .set_file_name(format!("{}.png", self.file_stem()))
-            .save_file()
-        else {
-            return;
-        };
-        let path = path.with_extension("png");
-        let doc = &self.document;
-        let bytes = doc.composite_rgba8(doc.bounds());
-        match image::save_buffer(&path, &bytes, doc.width() as u32, doc.height() as u32, image::ColorType::Rgba8) {
-            Ok(()) => self.info(format!("Exported {}", path.display())),
-            Err(e) => self.error(format!("Couldn't export {}: {e}", path.display())),
-        }
-    }
 
     /// Put a PNG/JPEG on a new layer, centered (cropped if it's bigger than the canvas).
     pub(super) fn import_image(&mut self) {

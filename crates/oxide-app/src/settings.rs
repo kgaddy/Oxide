@@ -112,6 +112,10 @@ pub struct AppSettings {
     /// Pen pressure curve: below 1 = soft (light touches count for more),
     /// above 1 = firm.
     pub pressure_curve: f32,
+    /// Last-used export format and options.
+    pub export: crate::export::ExportOptions,
+    /// Mix colors like real paint (blue + yellow = green) instead of like light.
+    pub natural_colors: bool,
 }
 
 impl Default for AppSettings {
@@ -124,6 +128,8 @@ impl Default for AppSettings {
             last_new_artwork: None,
             custom_paper_colors: Vec::new(),
             pressure_curve: 0.6,
+            export: crate::export::ExportOptions::default(),
+            natural_colors: true,
         }
     }
 }

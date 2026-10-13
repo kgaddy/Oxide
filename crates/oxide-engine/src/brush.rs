@@ -1,4 +1,5 @@
 use crate::Color;
+use crate::paint::Mixing;
 
 /// How the brush tip turns while you paint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,6 +75,8 @@ pub struct Brush {
     pub size_pressure: f32,
     /// How much pen pressure controls the opacity.
     pub opacity_pressure: f32,
+    /// How picked-up paint mixes into the brush: like real pigment or like light.
+    pub mixing: Mixing,
     /// How strongly the paper texture affects this brush (0..=1): high =
     /// catches the tooth and skips valleys (pencil, dry brush); 0 = ignores it.
     pub grain: f32,
@@ -98,6 +101,7 @@ impl Default for Brush {
             pickup_dry: false,
             size_pressure: 0.0,
             opacity_pressure: 0.0,
+            mixing: Mixing::Pigment,
             grain: 0.0,
         }
     }

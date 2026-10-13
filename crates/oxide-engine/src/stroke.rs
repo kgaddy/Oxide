@@ -4,6 +4,8 @@ use crate::canvas::unpremultiply;
 use crate::paint::mix_paint;
 use crate::tip::{DabTexture, hash2};
 use crate::brush::Rotation;
+use crate::paint::Mixing;
+use crate::spectral::Pigment;
 use crate::{Brush, Canvas, Color, DabMode, DabStyle, Wetness};
 
 /// One continuous brush stroke, from pen-down to pen-up.
@@ -260,15 +262,24 @@ impl Stroke {
                 wetness: Wetness::Dry,
                 texture: texture.as_ref(),
                 reach,
+                pigment: None,
             };
             canvas.dab_with(x, y, brush, &style);
             return;
         };
 
-        // What's on the canvas under the brush right now.
-        let under = canvas.sample_under(x, y, brush, brush.pickup_dry);
-        let under_alpha = under[3];
-        let under_color = unpremultiply(under);
+        // What's on the canvas under the brush right now (averaged like paint
+        // when pigment mixing is on, so the pickup itself isn't an RGB blend).
+        let (under_color, under_alpha) = match brush.mixing {
+            Mixing::Pigment => {
+                let ([r, g, b], a) = canvas.sample_under_pigment(x, y, brush, brush.pickup_dry);
+                (Color { r, g, b, a: 1.0 }, a)
+            }
+            Mixing::Rgb => {
+                let under = canvas.sample_under(x, y, brush, brush.pickup_dry);
+                (unpremultiply(under), under[3])
+            }
+        };
 
         // Rates below are "per dab", scaled by how far the brush moved so the
         // look doesn't change when you change spacing. `travel` is the
@@ -281,11 +292,11 @@ impl Stroke {
                 // Touching down in wet paint. An empty brush (smudge) becomes
                 // whatever it lands in; a loaded brush barely changes.
                 let touch = if wet.amount <= 0.0 { 1.0 } else { (1.0 - wet.amount) * oiliness };
-                wet.color = mix_paint(wet.color, under_color, touch * under_alpha);
+                wet.color = mix_paint(wet.color, under_color, touch * under_alpha, brush.mixing);
             } else {
                 // Pick up some of the paint underneath.
                 let pickup = 1.0 - (1.0 - oiliness * 0.95).powf(travel);
-                wet.color = mix_paint(wet.color, under_color, pickup * under_alpha);
+                wet.color = mix_paint(wet.color, under_color, pickup * under_alpha, brush.mixing);
             }
         }
         wet.started = true;
@@ -294,7 +305,7 @@ impl Stroke {
         // and the brush gets dirtier; oily paint also holds onto what it
         // picked up longer (it blends), while lean paint stays clean.
         let refresh = (wet.amount * 0.6 * travel * (1.0 - oiliness * 0.7)).min(1.0);
-        wet.color = mix_paint(wet.color, wet.loaded, refresh);
+        wet.color = mix_paint(wet.color, wet.loaded, refresh, brush.mixing);
 
         // Lay down paint: fresh paint from the brush, plus smeared paint that
         // oily brushes drag along even when they're out of fresh paint.
@@ -306,6 +317,8 @@ impl Stroke {
         let left = if wet.initial > 0.0 { wet.amount / wet.initial } else { 0.0 };
         let dryness = (1.0 - (left + (1.0 - left) * smear)).max(lift_dryness);
         let texture = DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness };
+        // Prepare the brush color for pigment mixing on the canvas (once per dab).
+        let pigment = (brush.mixing == Mixing::Pigment).then(|| Pigment::from_srgb([wet.color.r, wet.color.g, wet.color.b]));
         let style = DabStyle {
             color: wet.color,
             opacity: brush.opacity * deposit * fade_opacity,
@@ -316,6 +329,7 @@ impl Stroke {
             // A loaded brush fills the paper's valleys; as it dries it only
             // catches the peaks (dry-brush scumbling).
             reach: (0.5 + 0.5 * left) * (1.0 - 0.7 * dryness),
+            pigment: pigment.as_ref(),
         };
         canvas.dab_with(x, y, brush, &style);
 
@@ -403,10 +417,12 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         // Wet red paint (a block painted with the wet medium).
         let red_block = Brush { color: RED, radius: 20.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         canvas.dab_with(60.0, 10.0, &red_block, &wet);
 
-        let oily_blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.9, spacing: 0.05, ..Brush::default() };
+        // RGB mixing here: this test is about the pickup *mechanics*.
+        let oily_blue =
+            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.9, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let stroke = line(&mut canvas, &oily_blue, (20.0, 10.0), (90.0, 10.0));
 
         // Just after passing through red, the blue paint is tinted red.
@@ -430,7 +446,7 @@ mod tests {
     fn loaded_brush_stays_mostly_its_own_color_over_wet_paint() {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         canvas.dab_with(100.0, 10.0, &red_block, &wet);
 
         // A freshly loaded brush with moderate oiliness (like the default oils).
@@ -444,7 +460,7 @@ mod tests {
     fn brush_cleans_up_after_leaving_wet_paint() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 15.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         canvas.dab_with(40.0, 10.0, &red_block, &wet);
 
         let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.6, loading: 0.9, spacing: 0.05, ..Brush::default() };
@@ -457,7 +473,8 @@ mod tests {
     fn dirty_tip_starts_dirty_then_cleans() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         // Loading 1 so the brush never runs dry (dry streaks would leave gaps to measure).
-        let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.4, loading: 1.0, spacing: 0.05, ..Brush::default() };
+        let blue =
+            Brush { color: BLUE, radius: 5.0, oiliness: 0.4, loading: 1.0, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let mut stroke = Stroke::begin_with_tip(&mut canvas, &blue, DabMode::Paint, 10.0, 10.0, Some(RED));
         stroke.line_to(&mut canvas, &blue, 290.0, 10.0);
         stroke.finish(&mut canvas, &blue);
@@ -465,6 +482,58 @@ mod tests {
         let end = canvas.pixel(250, 10).unwrap();
         assert!(start.r > 0.3, "starts with the leftover red: {start:?}");
         assert!(end.b > 0.9 && end.r < 0.1, "cleans up to blue: {end:?}");
+    }
+
+    #[test]
+    fn blue_dragged_through_wet_yellow_turns_green() {
+        let mut canvas = Canvas::new(200, 20, Color::WHITE);
+        let yellow = Color::rgb(0.988, 0.827, 0.0);
+        let block = Brush { color: yellow, radius: 40.0, hardness: 1.0, ..Brush::default() };
+        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        canvas.dab_with(100.0, 10.0, &block, &wet);
+
+        let blue = Color::rgb(0.0, 0.129, 0.522);
+        let oily = Brush { color: blue, radius: 5.0, oiliness: 0.8, loading: 0.6, spacing: 0.05, ..Brush::default() };
+        let stroke = line(&mut canvas, &oily, (70.0, 10.0), (130.0, 10.0));
+        let c = stroke.carried_color().unwrap();
+        assert!(c.g > c.r && c.g > c.b, "pigment mixing: the brush should carry green, got {c:?}");
+    }
+
+    /// Kevin's palette test: ultramarine blue + burnt umber should make a
+    /// near-black, not a dirty purple. Two wet patches side by side, then the
+    /// Blend tool worked back and forth across them.
+    fn ultramarine_umber_mix(mixing: Mixing) -> Color {
+        let ultramarine = Color::rgb(0.16, 0.20, 0.62);
+        let umber = Color::rgb(0.34, 0.22, 0.15);
+        let mut canvas = Canvas::new(200, 60, Color::TRANSPARENT);
+        let paint = |canvas: &mut Canvas, color, x0: f32, x1: f32| {
+            let b = Brush { color, radius: 14.0, loading: 1.0, oiliness: 0.0001, spacing: 0.04, mixing, ..Brush::default() };
+            for y in [18.0, 30.0, 42.0] {
+                line(canvas, &b, (x0, y), (x1, y));
+            }
+        };
+        paint(&mut canvas, ultramarine, 30.0, 95.0);
+        paint(&mut canvas, umber, 105.0, 170.0);
+        // Blend: no paint of its own, very oily, works wet paint around.
+        let blend = Brush { radius: 14.0, loading: 0.0, oiliness: 0.85, spacing: 0.04, mixing, ..Brush::default() };
+        for pass in 0..12 {
+            let y = 22.0 + (pass % 4) as f32 * 5.0;
+            line(&mut canvas, &blend, (50.0, y), (150.0, y));
+            line(&mut canvas, &blend, (150.0, y + 2.0), (50.0, y + 2.0));
+        }
+        canvas.pixel(100, 30).unwrap()
+    }
+
+    #[test]
+    fn ultramarine_and_burnt_umber_make_a_dark_neutral() {
+        let pigment = ultramarine_umber_mix(Mixing::Pigment);
+        let rgb = ultramarine_umber_mix(Mixing::Rgb);
+        let purpleness = |c: Color| c.b - (c.r + c.g) / 2.0; // blue/violet excess over a neutral
+        let lightness = |c: Color| (c.r + c.g + c.b) / 3.0;
+        println!("pigment {pigment:?}  rgb {rgb:?}");
+        assert!(purpleness(pigment) < 0.08, "pigment mix should be near neutral, got {pigment:?}");
+        assert!(lightness(pigment) < 0.25, "pigment mix should be dark, got {pigment:?}");
+        assert!(purpleness(pigment) < purpleness(rgb), "pigment {pigment:?} should be less purple than rgb {rgb:?}");
     }
 
     #[test]

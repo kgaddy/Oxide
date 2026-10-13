@@ -36,6 +36,9 @@ struct Manifest {
     /// Print resolution. Missing in older files: the default.
     #[serde(default = "default_dpi")]
     dpi: f32,
+    /// Free-text notes. Missing in older files: none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    notes: String,
     active_layer: usize,
     /// Bottom layer first.
     layers: Vec<LayerInfo>,
@@ -104,6 +107,7 @@ impl Document {
             paper: [paper.r, paper.g, paper.b],
             surface: self.surface().settings(),
             dpi: self.dpi(),
+            notes: self.notes.clone(),
             active_layer: self.active_index(),
             layers: self
                 .layers()
@@ -130,6 +134,14 @@ impl Document {
                 zip.start_file(path.as_str(), deflated)?;
                 zip.write_all(&pixels_to_bytes(layer.canvas.wet_pixels()))?;
             }
+        }
+
+        // The mixing palette, as a small .oxide inside the .oxide.
+        if let Some(palette) = &self.palette {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            palette.save(&mut bytes)?;
+            zip.start_file("palette.oxide", stored)?;
+            zip.write_all(bytes.get_ref())?;
         }
 
         zip.finish()?;
@@ -183,6 +195,14 @@ impl Document {
             manifest.active_layer,
         );
         doc.set_dpi(manifest.dpi);
+        doc.notes = manifest.notes;
+
+        // Optional mixing palette (older files don't have one).
+        if let Ok(mut entry) = zip.by_name("palette.oxide") {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            doc.palette = Document::load(std::io::Cursor::new(bytes)).ok().map(Box::new);
+        }
         Ok(doc)
     }
 }
@@ -229,7 +249,7 @@ mod tests {
         let mut doc = Document::new(30, 20, paper);
         doc.begin_stroke();
         let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
-        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0 };
+        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
         doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
         doc.end_stroke();
         doc.add_layer();
@@ -249,6 +269,7 @@ mod tests {
         assert_eq!(loaded.paper(), paper);
         assert_eq!(loaded.surface().settings(), linen);
         assert_eq!(loaded.dpi(), 300.0);
+        assert!(loaded.palette.is_none(), "no palette saved, none loaded");
         assert_eq!(loaded.layers().len(), 2);
         assert_eq!(loaded.active_index(), 1);
         let ink = &loaded.layers()[1];
@@ -258,6 +279,25 @@ mod tests {
         // Wet paint stays wet.
         assert!(loaded.layers()[0].canvas.has_wet_paint());
         assert_eq!(loaded.layers()[0].canvas.wet_pixels(), doc.layers()[0].canvas.wet_pixels());
+    }
+
+    #[test]
+    fn mixing_palette_is_saved_inside_the_painting() {
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        let mut palette = Document::new(16, 8, Color::rgb(0.9, 0.9, 0.9));
+        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None };
+        palette.active_canvas().dab_with(8.0, 4.0, &Brush { radius: 3.0, ..Brush::default() }, &wet);
+        palette.notes = "Paints:\n• Ultramarine Blue (#1C2A6B)\n• Burnt Umber \"quoted\" — ok".into();
+        doc.palette = Some(Box::new(palette));
+
+        let mut file = Cursor::new(Vec::new());
+        doc.save(&mut file).unwrap();
+        file.set_position(0);
+        let loaded = Document::load(file).unwrap();
+        let palette = loaded.palette.expect("palette comes back");
+        assert_eq!((palette.width(), palette.height()), (16, 8));
+        assert!(palette.layers()[0].canvas.has_wet_paint(), "palette paint stays wet");
+        assert!(palette.notes.contains("Ultramarine Blue (#1C2A6B)") && palette.notes.contains("\"quoted\" — ok"), "notes survive");
     }
 
     #[test]
