@@ -19,11 +19,13 @@ pub enum Tool {
     Smudge,
     /// Palette knife: spreads thick, smooth paint, or scrapes wet paint off.
     Knife,
+    /// Make selections (rectangle, ellipse, lasso); painting stays inside them.
+    Select,
     Picker,
 }
 
 impl Tool {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 10;
     pub const ALL: [Tool; Tool::COUNT] = [
         Tool::OilsAcrylics,
         Tool::Ink,
@@ -33,6 +35,7 @@ impl Tool {
         Tool::Eraser,
         Tool::Smudge,
         Tool::Knife,
+        Tool::Select,
         Tool::Picker,
     ];
 
@@ -51,6 +54,7 @@ impl Tool {
             Tool::Eraser => "Eraser",
             Tool::Smudge => "Smudge",
             Tool::Knife => "Knife",
+            Tool::Select => "Select",
             Tool::Picker => "Picker",
         }
     }
@@ -66,6 +70,7 @@ impl Tool {
             Tool::Eraser => "E",
             Tool::Smudge => "S",
             Tool::Knife => "K",
+            Tool::Select => "L",
             Tool::Picker => "I",
         }
     }
@@ -102,7 +107,7 @@ impl Tool {
                 let blade = BrushShape { roundness: 0.15, rotation: Rotation::FollowStroke, ..shape(22.0, 1.0, 0.03, 0.5) };
                 (blade, 1.0, 0.9, 0.7)
             }
-            Tool::Picker => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
+            Tool::Picker | Tool::Select => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
         };
         // How each medium responds to pen pressure (size, opacity), like the
         // real thing: ink and oils thicken, pencil and airbrush darken.
@@ -115,7 +120,7 @@ impl Tool {
             Tool::Eraser => (0.6, 0.3),
             Tool::Smudge => (0.4, 0.6),
             Tool::Knife => (0.2, 0.0),
-            Tool::Picker => (0.0, 0.0),
+            Tool::Picker | Tool::Select => (0.0, 0.0),
         };
         let shape = BrushShape { size_pressure, opacity_pressure, ..shape };
         // Oils hold paint for a while; everything else never runs out.
@@ -135,7 +140,7 @@ impl Tool {
 }
 
 /// Tools shown in the panel but not built yet, so the roadmap is visible.
-pub const FUTURE_TOOLS: [&str; 4] = ["Pastel", "Blend", "Fill", "Select"];
+pub const FUTURE_TOOLS: [&str; 3] = ["Pastel", "Blend", "Fill"];
 
 /// What the brush tip looks like. Brush presets are shapes.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -148,6 +148,12 @@ impl OxideApp {
                 if layer.lock_transparency() {
                     label.push_str("  α");
                 }
+                if let Some(m) = &layer.mask {
+                    label.push_str(if m.enabled { "  ◐" } else { "  ◌" });
+                }
+                if layer.blend != oxide_engine::BlendMode::Normal {
+                    label.push_str(&format!("  · {}", layer.blend.label()));
+                }
                 let name = if layer.visible {
                     egui::RichText::new(label)
                 } else {
@@ -252,6 +258,25 @@ impl OxideApp {
         if ui.add(egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%").max_decimals(0).text("Opacity")).changed() {
             self.document.set_opacity(active, opacity / 100.0);
         }
+        // Blend mode: how this layer's colors combine with what's below.
+        let current = self.document.layers()[active].blend;
+        let mut chosen = current;
+        ui.horizontal(|ui| {
+            ui.label("Blend");
+            egui::ComboBox::from_id_salt("layer-blend").selected_text(current.label()).width(140.0).show_ui(ui, |ui| {
+                use oxide_engine::BlendMode::*;
+                for (i, mode) in oxide_engine::BlendMode::ALL.into_iter().enumerate() {
+                    // Separators between the families (darken, lighten, contrast, compare, color).
+                    if matches!(mode, Multiply | Screen | Overlay | Difference | Hue) && i > 0 {
+                        ui.separator();
+                    }
+                    ui.selectable_value(&mut chosen, mode, mode.label()).on_hover_text(mode.hint());
+                }
+            });
+        });
+        if chosen != current {
+            self.document.set_layer_blend(active, chosen);
+        }
         // Per-layer impasto depth: a flat glaze over a thick underpainting.
         let own = self.document.layers()[active].impasto;
         ui.horizontal(|ui| {
@@ -272,6 +297,38 @@ impl OxideApp {
                 }
             }
         });
+        // The layer mask: hide parts of the layer without erasing them.
+        ui.add_space(4.0);
+        match self.document.layers()[active].mask.as_ref().map(|m| m.enabled) {
+            None => {
+                let label = if self.document.selection().is_some() { "Add mask from selection" } else { "Add mask" };
+                if ui.button(format!("◐ {label}")).on_hover_text("Hide parts of this layer without erasing them: paint on the mask with dark to hide, light to reveal").clicked()
+                    && self.document.add_mask()
+                {
+                    self.editing_mask = true;
+                }
+            }
+            Some(enabled) => {
+                ui.horizontal(|ui| {
+                    ui.label("◐ Mask");
+                    let mut on = enabled;
+                    if ui.checkbox(&mut on, "On").on_hover_text("Switch the mask's effect on or off").changed() {
+                        self.document.set_mask_enabled(on);
+                    }
+                    ui.checkbox(&mut self.editing_mask, "Paint on mask")
+                        .on_hover_text("Strokes go to the mask: dark colors hide, light colors reveal, the eraser reveals");
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").on_hover_text("Erase the hidden paint for good and remove the mask").clicked() {
+                        self.document.apply_mask();
+                    }
+                    if ui.button("Delete").on_hover_text("Remove the mask (nothing is erased)").clicked() {
+                        self.document.delete_mask();
+                    }
+                });
+            }
+        }
+
         // The current layer's group: name, opacity, ungroup.
         if let Some(group) = self.document.layers()[active].group.and_then(|id| self.document.group(id)).cloned() {
             ui.add_space(4.0);

@@ -84,6 +84,26 @@ struct LayerInfo {
     /// The id of the group it's in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     group: Option<u32>,
+    /// Blend mode ("multiply", ...; missing = normal).
+    #[serde(default, skip_serializing_if = "is_normal")]
+    blend: crate::BlendMode,
+    /// The layer mask (one f32 per pixel, 1 = shown), if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mask: Option<String>,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    mask_enabled: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn is_normal(mode: &crate::BlendMode) -> bool {
+    *mode == crate::BlendMode::Normal
 }
 
 /// Something went wrong reading or writing a file.
@@ -165,6 +185,9 @@ impl Document {
                     tracing: layer.tracing,
                     impasto: layer.impasto,
                     group: layer.group,
+                    blend: layer.blend,
+                    mask: layer.mask.as_ref().map(|_| format!("layers/{i}.mask.f32")),
+                    mask_enabled: layer.mask.as_ref().is_none_or(|m| m.enabled),
                 })
                 .collect(),
         };
@@ -179,7 +202,8 @@ impl Document {
                 zip.start_file(path.as_str(), deflated)?;
                 zip.write_all(&pixels_to_bytes(layer.canvas.wet_pixels()))?;
             }
-            for (path, values) in [(&info.relief, layer.canvas.relief()), (&info.wet_relief, layer.canvas.wet_relief())] {
+            let mask: &[f32] = layer.mask.as_ref().map_or(&[], |m| m.data.as_slice());
+            for (path, values) in [(&info.relief, layer.canvas.relief()), (&info.wet_relief, layer.canvas.wet_relief()), (&info.mask, mask)] {
                 if let Some(path) = path {
                     zip.start_file(path.as_str(), deflated)?;
                     zip.write_all(&values.iter().flat_map(|h| h.to_le_bytes()).collect::<Vec<u8>>())?;
@@ -251,6 +275,11 @@ impl Document {
                 tracing: info.tracing,
                 impasto: info.impasto,
                 group: info.group,
+                blend: info.blend,
+                mask: match &info.mask {
+                    Some(path) => Some(crate::LayerMask { data: read_floats(&mut zip, path, pixel_count, &info.name)?, enabled: info.mask_enabled }),
+                    None => None,
+                },
             });
         }
 

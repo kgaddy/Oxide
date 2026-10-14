@@ -138,6 +138,36 @@ impl OxideServer {
         run(&self.session, Command::ImportTip(a))
     }
 
+    #[tool(description = "Copy the selected part of the current layer (or all of it).")]
+    async fn copy(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Copy(NoArgs {}))
+    }
+
+    #[tool(description = "Copy, then erase, the selected part of the current layer (or all of it).")]
+    async fn cut(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Cut(NoArgs {}))
+    }
+
+    #[tool(description = "Paste the last copy on a new layer, at the same place.")]
+    async fn paste(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Paste(NoArgs {}))
+    }
+
+    #[tool(description = "Select a rectangle, ellipse (box) or lasso (points); painting, fill and clear then stay inside it. Mode: replace / add / subtract / intersect.")]
+    async fn select(&self, Parameters(a): Parameters<SelectArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Select(a))
+    }
+
+    #[tool(description = "Selection actions: all, none, invert, feather (radius), fill (current color), clear (erase what's selected).")]
+    async fn selection(&self, Parameters(a): Parameters<SelectionArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Selection(a))
+    }
+
+    #[tool(description = "Layer mask of the current layer: add (from the selection), on, off, apply, delete. Paint on it with stroke target \"mask\".")]
+    async fn mask(&self, Parameters(a): Parameters<MaskArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Mask(a))
+    }
+
     #[tool(description = "Put the current layer in a new layer group. Moving a layer (move_layer) against a group's edge moves it in or out of the group.")]
     async fn group_layer(&self) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::GroupLayer(NoArgs {}))
@@ -183,7 +213,7 @@ impl OxideServer {
         run(&self.session, Command::SelectLayer(a))
     }
 
-    #[tool(description = "Rename a layer, change its opacity or visibility, lock it, lock its transparency, or make it the tracing layer.")]
+    #[tool(description = "Rename a layer, change its opacity, visibility, blend mode or impasto depth, lock it, lock its transparency, or make it the tracing layer.")]
     async fn set_layer(&self, Parameters(a): Parameters<SetLayerArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetLayer(a))
     }

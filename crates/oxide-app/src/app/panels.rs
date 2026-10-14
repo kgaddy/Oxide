@@ -62,6 +62,10 @@ impl OxideApp {
             ui.weak("Click the canvas to pick a color.");
             return;
         }
+        if tool == Tool::Select {
+            self.select_properties(ui);
+            return;
+        }
         ui.add_space(4.0);
 
         let state = &mut self.tool_states[tool.index()];

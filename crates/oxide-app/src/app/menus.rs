@@ -32,13 +32,14 @@ fn check(label: impl Into<String>, command: Command, checked: bool, enabled: boo
 
 /// The keyboard shortcuts that aren't in a menu (single keys and gestures).
 pub const OTHER_SHORTCUTS: &[(&str, &str)] = &[
-    ("Tools", "B oils & acrylics · N ink · P pencil · M marker · U airbrush · E eraser · S smudge · K palette knife · I picker"),
+    ("Tools", "B oils & acrylics · N ink · P pencil · M marker · U airbrush · E eraser · S smudge · K palette knife · L select · I picker"),
     ("Oils paint modes", "1 Paint · 2 Paint & Mix · 3 Paint & Blend · 4 Blend · 5 Erase"),
     ("Blend / Erase", "V Blend · A Erase (tap = switch, hold = only while held)"),
     ("Brush size", "[ smaller · ] bigger · ⌘-drag on the canvas: size (←→) and loading (↑↓)"),
     ("View", "R-drag rotate · Shift+F flip · G greyscale · 0 = 100% · . = fit"),
     ("Pan and zoom", "Space+drag or middle-drag to pan · pinch or ⌘+scroll to zoom"),
     ("Layers", "/ lock transparency"),
+    ("Select tool (L)", "drag: rectangle / ellipse / lasso · Shift add · ⌥ subtract · Shift+⌥ overlap · click to deselect · ⌫ clears what's selected"),
     ("Mix Color", "hold X and pick a color (swatch, canvas with the Picker, palette, reference image): it mixes into the current color like paint"),
     ("Transform (⌘T)", "drag inside = move · handles = scale (Shift = free) · outside = rotate (Shift = 15°) · arrows nudge · Enter apply · Esc cancel"),
     ("Reference image", "scroll = zoom · drag = pan · double-click = fit · ⌥-click (or Picker) = pick a color"),
@@ -79,6 +80,10 @@ impl OxideApp {
                     item_if(undo.map_or("Undo".into(), |d| format!("Undo {d}")), Undo, undo.is_some() || !free),
                     item_if(redo.map_or("Redo".into(), |d| format!("Redo {d}")), Redo, redo.is_some()),
                     Entry::Separator,
+                    item_if("Cut", Cut, free),
+                    item_if("Copy", Copy, free),
+                    item_if("Paste", Paste, free),
+                    Entry::Separator,
                     check("Natural Colors (mix like paint)", NaturalColors, self.app_settings.natural_colors, true),
                     check("MultiColored Brush", MultiColor, self.multicolor_on, true),
                     item("Swap Primary/Secondary Color", SwapColors),
@@ -110,6 +115,12 @@ impl OxideApp {
                     item_if("Delete Layer", DeleteLayer, free && count > 1),
                     item_if("Clear Layer", ClearLayer, free),
                     Entry::Separator,
+                    item_if(if doc.selection().is_some() { "Add Mask from Selection" } else { "Add Mask" }, AddMask, free && layer.mask.is_none()),
+                    check("Paint on Mask", ToggleMaskPainting, self.editing_mask && layer.mask.is_some(), free && layer.mask.is_some()),
+                    check("Mask On", ToggleMask, layer.mask.as_ref().is_some_and(|m| m.enabled), free && layer.mask.is_some()),
+                    item_if("Apply Mask", ApplyMask, free && layer.mask.is_some()),
+                    item_if("Delete Mask", DeleteMask, free && layer.mask.is_some()),
+                    Entry::Separator,
                     item_if("Group Layer", GroupLayer, free && layer.group.is_none()),
                     item_if("Ungroup", Ungroup, free && layer.group.is_some()),
                     Entry::Separator,
@@ -128,6 +139,25 @@ impl OxideApp {
                     item_if("Dry All Layers", DryAll, free),
                     item_if("Rewet Layer", RewetLayer, free),
                 ],
+            },
+            Menu {
+                title: "Select",
+                entries: {
+                    let has = doc.selection().is_some();
+                    vec![
+                        item("All", SelectAll),
+                        item_if("Deselect", Deselect, has),
+                        item_if("Invert", InvertSelection, has),
+                        Entry::Separator,
+                        item_if("Feather 2 px", Feather(2), has),
+                        item_if("Feather 5 px", Feather(5), has),
+                        item_if("Feather 10 px", Feather(10), has),
+                        item_if("Feather 25 px", Feather(25), has),
+                        Entry::Separator,
+                        item_if("Fill with Current Color", FillSelection, has && free),
+                        item_if("Clear (⌫)", ClearSelection, has && free),
+                    ]
+                },
             },
             Menu {
                 title: "Window",

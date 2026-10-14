@@ -36,6 +36,12 @@ pub enum Command {
     MergeDown(NoArgs),
     MergeVisible(MergeVisibleArgs),
     ClearLayer(LayerRefArgs),
+    Copy(NoArgs),
+    Cut(NoArgs),
+    Paste(NoArgs),
+    Select(SelectArgs),
+    Selection(SelectionArgs),
+    Mask(MaskArgs),
     GroupLayer(NoArgs),
     Ungroup(NoArgs),
     SetGroup(SetGroupArgs),
@@ -195,7 +201,9 @@ pub struct StrokeArgs {
     pub pressure: Option<f32>,
     /// Draw a smooth curve through the points instead of straight segments (default false).
     pub smooth: Option<bool>,
-    /// "canvas" (default) or "palette" (the mixing palette, 640×400).
+    /// "canvas" (default), "palette" (the mixing palette, 640×400), or
+    /// "mask" (the current layer's mask: the color's lightness is the value,
+    /// black hides, white reveals; the eraser reveals).
     pub target: Option<String>,
 }
 
@@ -248,6 +256,38 @@ pub struct TransformLayerArgs {
     pub flip_vertical: Option<bool>,
 }
 
+/// Select a shape (canvas pixels). Painting, fill and clear then only work inside the selection.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SelectArgs {
+    /// "rect" (default), "ellipse" (in the box x0,y0–x1,y1), or "lasso" (`points`).
+    pub shape: Option<String>,
+    pub x0: Option<f32>,
+    pub y0: Option<f32>,
+    pub x1: Option<f32>,
+    pub y1: Option<f32>,
+    /// For "lasso": the outline, [[x, y], ...], at least 3 points.
+    pub points: Option<Vec<[f32; 2]>>,
+    /// "replace" (default), "add", "subtract", or "intersect".
+    pub mode: Option<String>,
+}
+
+/// Selection actions.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SelectionArgs {
+    /// "all", "none" (deselect), "invert", "feather" (soften the edge by `radius`),
+    /// "fill" (with the current color, on the current layer), or "clear" (erase what's selected).
+    pub action: String,
+    /// Feather radius in pixels (default 8).
+    pub radius: Option<f32>,
+}
+
+/// Layer mask actions (the current layer).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MaskArgs {
+    /// "add" (from the selection, or reveal-all), "on", "off", "apply" (erase hidden paint, remove the mask), or "delete".
+    pub action: String,
+}
+
 /// Settings of the current layer's group; omitted ones stay as they are.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SetGroupArgs {
@@ -294,6 +334,10 @@ pub struct SetLayerArgs {
     /// This layer's own impasto depth, 0–10 (e.g. 0 = a flat glaze over thick
     /// paint). -1 = use the painting's (set_paper impasto_depth).
     pub impasto_depth: Option<f32>,
+    /// Blend mode: normal, multiply, darken, color_burn, screen, lighten,
+    /// color_dodge, overlay, soft_light, hard_light, difference, exclusion,
+    /// hue, saturation, color, luminosity.
+    pub blend: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

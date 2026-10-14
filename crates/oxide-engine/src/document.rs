@@ -2,16 +2,21 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::blend::{BlendMode, blend};
+use crate::selection::{self, SelectMode, SelectShape};
 use crate::canvas::{Buffers, MAX_RELIEF, over, premultiply, scale};
 use crate::paper::{Paper, PaperSettings};
 use crate::history::{Edit, History, LayerFlagSet};
 use crate::transform::{self, Transform};
-use crate::{Canvas, Color, Region};
+use crate::{Brush, Canvas, Color, Region};
 
 /// The layer being transformed, as it was before (see `begin_transform`).
 struct TransformSource {
     layer: usize,
     original: Buffers,
+    /// With a selection: the selected paint (what moves), the rest (what
+    /// stays), and the selection (it moves with the paint).
+    lifted: Option<(Buffers, Buffers, Arc<Vec<f32>>)>,
     has_wet: bool,
     has_relief: bool,
     /// The box around the paint: what the handles frame.
@@ -38,6 +43,45 @@ pub struct Layer {
     pub impasto: Option<f32>,
     /// The group it's in (layers of a group sit together in the list).
     pub group: Option<u32>,
+    /// How its colors combine with what's below (Multiply, Screen, ...).
+    pub blend: BlendMode,
+    /// A layer mask: hides parts of the layer without erasing them.
+    pub mask: Option<LayerMask>,
+}
+
+/// Copied paint: where it came from (x, y), its size, and everything on it
+/// (colors, wetness, thickness), region-sized.
+#[derive(Clone, Debug)]
+pub struct Clip {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub buffers: Buffers,
+}
+
+impl Clip {
+    /// As a straight 8-bit RGBA image (for the system clipboard).
+    pub fn rgba8(&self) -> Vec<u8> {
+        let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        self.buffers
+            .dry
+            .iter()
+            .zip(&self.buffers.wet)
+            .flat_map(|(d, w)| {
+                let p = over(*w, *d);
+                let a = p[3];
+                if a <= 0.0 { [0, 0, 0, 0] } else { [to8(p[0] / a), to8(p[1] / a), to8(p[2] / a), to8(a)] }
+            })
+            .collect()
+    }
+}
+
+/// A layer mask: 0..=1 per pixel (1 = shown, 0 = hidden), and whether it's on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerMask {
+    pub data: Vec<f32>,
+    pub enabled: bool,
 }
 
 /// A layer group (one level, another app's Ctrl/Cmd+Alt+G): its layers are
@@ -62,11 +106,28 @@ pub(crate) struct GroupState {
 /// One step of compositing: a layer (with its opacity), or a group whose
 /// layers are composited together and then faded by the group's opacity.
 enum Step {
-    Layer(usize, f32),
-    Group(Vec<(usize, f32)>, f32),
+    Layer(usize, f32, BlendMode),
+    Group(Vec<(usize, f32, BlendMode)>, f32),
 }
 
 impl Layer {
+    /// Pixel `i` as shown: its paint with the mask applied (premultiplied).
+    pub fn shown_pixel(&self, i: usize) -> [f32; 4] {
+        let p = self.canvas.combined(i);
+        match &self.mask {
+            Some(m) if m.enabled => scale(p, m.data[i]),
+            _ => p,
+        }
+    }
+
+    /// How much of pixel `i` the mask lets through (1 without a mask).
+    pub fn mask_at(&self, i: usize) -> f32 {
+        match &self.mask {
+            Some(m) if m.enabled => m.data[i],
+            _ => 1.0,
+        }
+    }
+
     /// Lock transparency: paint only where there's already paint.
     pub fn lock_transparency(&self) -> bool {
         self.canvas.preserve_alpha()
@@ -117,6 +178,12 @@ pub struct Document {
     /// Layer groups (see [`LayerGroup`]); layers point to them by id.
     groups: Vec<LayerGroup>,
     next_group_id: u32,
+    /// Painting on a mask: (layer, the mask before the stroke, the area changed so far).
+    mask_stroke: Option<(usize, Vec<f32>, Option<Region>)>,
+    /// What's selected (0..=1 per pixel), or None = no selection (tools work everywhere).
+    selection: Option<Arc<Vec<f32>>>,
+    /// Bumped whenever the selection changes (so the outline is redrawn).
+    selection_version: u64,
 }
 
 /// Default print resolution for new paintings.
@@ -156,6 +223,9 @@ impl Document {
             notes: String::new(),
             groups: Vec::new(),
             next_group_id: 1,
+            selection: None,
+            mask_stroke: None,
+            selection_version: 0,
         };
         // Two steps: `doc.layers.push(doc.blank_layer())` would borrow `doc`
         // mutably twice in one expression, which Rust doesn't allow.
@@ -199,6 +269,9 @@ impl Document {
             notes: String::new(),
             groups: Vec::new(),
             next_group_id: 1,
+            selection: None,
+            mask_stroke: None,
+            selection_version: 0,
         }
     }
 
@@ -223,6 +296,8 @@ impl Document {
             tracing: false,
             impasto: None,
             group: None,
+            blend: BlendMode::Normal,
+            mask: None,
         };
         self.next_layer_number += 1;
         layer
@@ -272,6 +347,8 @@ impl Document {
             .take()
             .unwrap_or(StrokeSnapshot { layer, dry: Vec::new(), wet: Vec::new(), relief: Vec::new(), wet_relief: Vec::new() });
         snapshot.layer = layer;
+        // Paint only inside the selection.
+        canvas.set_clip(self.selection.clone());
         snapshot.dry.clear();
         snapshot.dry.extend_from_slice(canvas.dry_pixels());
         snapshot.wet.clear();
@@ -290,6 +367,10 @@ impl Document {
 
     /// Call when the stroke is finished. Records what changed as one undo step.
     pub fn end_stroke(&mut self) {
+        if let Some(snapshot) = &self.stroke_snapshot {
+            let layer = snapshot.layer;
+            self.layers[layer].canvas.set_clip(None);
+        }
         let Some(snapshot) = self.stroke_snapshot.as_ref() else { return };
         let layer = snapshot.layer;
         let canvas = &mut self.layers[layer].canvas;
@@ -404,6 +485,18 @@ impl Document {
         self.history.record(Edit::Opacity { layer: index, before, after: opacity });
     }
 
+    /// Set how a layer's colors combine with what's below it.
+    pub fn set_layer_blend(&mut self, index: usize, mode: BlendMode) {
+        let before = self.layers[index].blend;
+        if before != mode {
+            self.layers[index].blend = mode;
+            self.all_dirty = true;
+            self.history.seal();
+            self.history.record(Edit::LayerBlend { layer: index, before, after: mode });
+            self.history.seal();
+        }
+    }
+
     /// Give a layer its own impasto depth (0..=1), or None for the painting's.
     /// Slider drags merge into one undo step.
     pub fn set_layer_impasto(&mut self, index: usize, depth: Option<f32>) {
@@ -474,18 +567,24 @@ impl Document {
             if in_other_group { self.layer_weight(upper) } else if u.visible { u.opacity } else { 0.0 },
             if b.visible { b.opacity } else { 0.0 },
         );
-        let dry: Vec<[f32; 4]> = (0..n).map(|i| over(scale(u.canvas.combined(i), uo), scale(b.canvas.combined(i), bo))).collect();
+        // The upper layer's blend mode is baked in; the merged layer keeps the lower one's.
+        let mode = u.blend;
+        // Both layers' masks are baked in (the merged layer has no mask).
+        let dry: Vec<[f32; 4]> = (0..n).map(|i| blend(scale(u.shown_pixel(i), uo), scale(b.shown_pixel(i), bo), mode)).collect();
         // Thick paint stacks: the merged layer is as thick as both were.
         // Thick paint keeps its look: each layer's relief is scaled by its
         // impasto depth relative to the depth the merged layer is shown with.
         let (du, db) = (self.layer_impasto(upper), self.layer_impasto(below));
         let (ku, kb) = if db > 0.0 { (uo * du / db, bo) } else { (uo, bo) };
-        let relief = (0..n).map(|i| (u.canvas.relief()[i] * ku + b.canvas.relief()[i] * kb).min(MAX_RELIEF)).collect();
+        let relief = (0..n).map(|i| (u.canvas.relief()[i] * ku * u.mask_at(i) + b.canvas.relief()[i] * kb * b.mask_at(i)).min(MAX_RELIEF)).collect();
         // (Merging dries the paint, so all of its thickness is dry.)
         let mut merged = Buffers { dry, wet: vec![[0.0; 4]; n], relief, wet_relief: vec![0.0; n] };
         // Put the merged pixels into the lower layer (keeping its old ones for undo).
         self.layers[below].canvas.swap_buffers(&mut merged);
         let mut edits = vec![Edit::Wetness { layers: vec![(below, merged)], label: "Merge" }];
+        if let Some(old) = self.layers[below].mask.take() {
+            edits.push(Edit::LayerMask { layer: below, other: Some(old), label: "Merge" });
+        }
         let before = self.layers[below].opacity;
         self.layers[below].opacity = 1.0;
         let was_visible = self.layers[below].visible;
@@ -634,6 +733,293 @@ impl Document {
         self.history.seal();
     }
 
+    // ----- Selection -----
+
+    /// What's selected (0..=1 per pixel, row by row), or None.
+    pub fn selection(&self) -> Option<&[f32]> {
+        self.selection.as_deref().map(|v| v.as_slice())
+    }
+
+    /// Changes whenever the selection does.
+    pub fn selection_version(&self) -> u64 {
+        self.selection_version
+    }
+
+    /// Select a shape, combined with the current selection by `mode`.
+    pub fn select(&mut self, shape: &SelectShape, mode: SelectMode) {
+        let new = selection::rasterize(shape, self.width, self.height);
+        let combined = selection::combine(self.selection(), new, mode);
+        self.set_selection(Some(combined), "Select");
+    }
+
+    pub fn select_all(&mut self) {
+        self.set_selection(Some(vec![1.0; self.width * self.height]), "Select all");
+    }
+
+    pub fn deselect(&mut self) {
+        if self.selection.is_some() {
+            self.set_selection(None, "Deselect");
+        }
+    }
+
+    /// Select everything that wasn't, and nothing that was.
+    pub fn invert_selection(&mut self) {
+        if let Some(sel) = self.selection() {
+            let inverted = sel.iter().map(|v| 1.0 - v).collect();
+            self.set_selection(Some(inverted), "Invert selection");
+        }
+    }
+
+    /// Soften the selection's edge by about `radius` pixels.
+    pub fn feather_selection(&mut self, radius: f32) {
+        if let Some(sel) = self.selection() {
+            let mut soft = sel.to_vec();
+            selection::feather(&mut soft, self.width, self.height, radius);
+            self.set_selection(Some(soft), "Feather selection");
+        }
+    }
+
+    fn set_selection(&mut self, selection: Option<Vec<f32>>, _label: &'static str) {
+        // An empty selection is no selection.
+        let selection = selection.filter(|s| s.iter().any(|&v| v > 0.0)).map(Arc::new);
+        let before = std::mem::replace(&mut self.selection, selection);
+        self.selection_version += 1;
+        self.history.seal();
+        self.history.record(Edit::Selection { other: before });
+        self.history.seal();
+    }
+
+    /// The box around what's selected (None without a selection).
+    pub fn selection_bounds(&self) -> Option<Region> {
+        let sel = self.selection()?;
+        crate::transform::content_bounds(&sel.iter().map(|&v| [0.0, 0.0, 0.0, v]).collect::<Vec<_>>(), self.width)
+    }
+
+    /// Erase what's selected on the current layer (Delete). False without a selection.
+    pub fn clear_selected(&mut self) -> bool {
+        self.apply_to_selection(None)
+    }
+
+    /// Fill the selection on the current layer with a color (dry paint).
+    pub fn fill_selection(&mut self, color: Color) -> bool {
+        self.apply_to_selection(Some(color))
+    }
+
+    fn apply_to_selection(&mut self, color: Option<Color>) -> bool {
+        let (Some(sel), Some(region)) = (self.selection.clone(), self.selection_bounds()) else { return false };
+        if !self.can_paint_active() {
+            return false;
+        }
+        self.begin_stroke();
+        self.layers[self.active].canvas.apply_amount(&sel, region, color);
+        self.end_stroke();
+        self.history.relabel_last(if color.is_some() { "Fill selection" } else { "Clear selection" });
+        true
+    }
+
+    // ----- Copy / cut / paste -----
+
+    /// Copy the selected part of the current layer (or all of it without a
+    /// selection), as shown (its mask applied), with wetness and thickness.
+    pub fn copy_selected(&self) -> Option<Clip> {
+        let layer = &self.layers[self.active];
+        let full = Region::new(0, 0, self.width, self.height);
+        let region = self.selection_bounds().unwrap_or(full);
+        let sel = self.selection.as_deref();
+        let k = |i: usize| sel.map_or(1.0, |s| s[i]) * layer.mask_at(i);
+        let w = region.width();
+        let mut b = Buffers {
+            dry: Vec::with_capacity(w * region.height()),
+            wet: Vec::with_capacity(w * region.height()),
+            relief: Vec::with_capacity(w * region.height()),
+            wet_relief: Vec::with_capacity(w * region.height()),
+        };
+        let all = layer.canvas.read_region(region);
+        for (n, ((d, wt), (r, wr))) in all.dry.iter().zip(&all.wet).zip(all.relief.iter().zip(&all.wet_relief)).enumerate() {
+            let i = (region.y0 + n / w) * self.width + region.x0 + n % w;
+            let k = k(i);
+            b.dry.push(scale(*d, k));
+            b.wet.push(scale(*wt, k));
+            b.relief.push(r * k);
+            b.wet_relief.push(wr * k);
+        }
+        // Nothing painted there? Nothing to copy.
+        b.dry.iter().chain(&b.wet).any(|p| p[3] > 0.0).then_some(Clip { x: region.x0, y: region.y0, w, h: region.height(), buffers: b })
+    }
+
+    /// Copy, then erase what was copied (one undo step for the erase).
+    pub fn cut_selected(&mut self) -> Option<Clip> {
+        let clip = self.copy_selected()?;
+        if self.selection.is_some() {
+            self.clear_selected();
+        } else {
+            self.clear_active_layer();
+        }
+        Some(clip)
+    }
+
+    /// Paste on a new layer above the current one, at the same place (or
+    /// centered if it came from elsewhere and wouldn't fit).
+    pub fn paste(&mut self, clip: &Clip) {
+        let (w, h) = (clip.w.min(self.width), clip.h.min(self.height));
+        let (x, y) = if clip.x + w <= self.width && clip.y + h <= self.height {
+            (clip.x, clip.y)
+        } else {
+            ((self.width - w) / 2, (self.height - h) / 2)
+        };
+        let mut layer = self.new_layer("Pasted");
+        // Crop to the canvas if the clip is bigger.
+        let rows = |v: &[[f32; 4]]| (0..h).flat_map(|r| v[r * clip.w..r * clip.w + w].iter().copied()).collect::<Vec<_>>();
+        let rows1 = |v: &[f32]| (0..h).flat_map(|r| v[r * clip.w..r * clip.w + w].iter().copied()).collect::<Vec<_>>();
+        let b = Buffers { dry: rows(&clip.buffers.dry), wet: rows(&clip.buffers.wet), relief: rows1(&clip.buffers.relief), wet_relief: rows1(&clip.buffers.wet_relief) };
+        layer.canvas.write_region(Region::new(x, y, x + w, y + h), &b);
+        layer.canvas.take_changed();
+        self.insert_layer(layer);
+        self.history.relabel_last("Paste");
+    }
+
+    /// Paste an image (straight RGBA, 8-bit, row by row) on a new layer, centered (cropped if bigger).
+    pub fn paste_image(&mut self, w: usize, h: usize, rgba: &[u8]) {
+        let pixels: Vec<[f32; 4]> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| {
+                let a = p[3] as f32 / 255.0;
+                [p[0] as f32 / 255.0 * a, p[1] as f32 / 255.0 * a, p[2] as f32 / 255.0 * a, a]
+            })
+            .collect();
+        let n = w * h;
+        let clip = Clip {
+            x: usize::MAX / 2, // "from elsewhere": centered
+            y: 0,
+            w,
+            h,
+            buffers: Buffers { dry: pixels, wet: vec![[0.0; 4]; n], relief: vec![0.0; n], wet_relief: vec![0.0; n] },
+        };
+        self.paste(&clip);
+    }
+
+    // ----- Layer masks -----
+
+    /// Give the current layer a mask: what's selected stays shown (or
+    /// everything, without a selection). False if it already has one.
+    pub fn add_mask(&mut self) -> bool {
+        let i = self.active;
+        if self.layers[i].mask.is_some() {
+            return false;
+        }
+        let data = self.selection().map_or_else(|| vec![1.0; self.width * self.height], |s| s.to_vec());
+        self.layers[i].mask = Some(LayerMask { data, enabled: true });
+        self.all_dirty = true;
+        self.record_alone(Edit::LayerMask { layer: i, other: None, label: "Add mask" });
+        true
+    }
+
+    pub fn delete_mask(&mut self) {
+        let i = self.active;
+        if let Some(old) = self.layers[i].mask.take() {
+            self.all_dirty = true;
+            self.record_alone(Edit::LayerMask { layer: i, other: Some(old), label: "Delete mask" });
+        }
+    }
+
+    pub fn set_mask_enabled(&mut self, on: bool) {
+        let i = self.active;
+        if let Some(m) = &mut self.layers[i].mask
+            && m.enabled != on
+        {
+            m.enabled = on;
+            self.all_dirty = true;
+            self.record_alone(Edit::MaskEnabled { layer: i });
+        }
+    }
+
+    /// Bake the mask into the paint (hidden paint is erased) and remove it.
+    pub fn apply_mask(&mut self) {
+        let i = self.active;
+        let Some(mask) = self.layers[i].mask.take() else { return };
+        let canvas = &mut self.layers[i].canvas;
+        let mut b = canvas.buffers();
+        if mask.enabled {
+            for (n, &m) in mask.data.iter().enumerate() {
+                b.dry[n] = scale(b.dry[n], m);
+                b.wet[n] = scale(b.wet[n], m);
+                b.relief[n] *= m;
+                b.wet_relief[n] *= m;
+            }
+        }
+        canvas.swap_buffers(&mut b);
+        self.all_dirty = true;
+        self.record_batch(
+            vec![Edit::Wetness { layers: vec![(i, b)], label: "Apply mask" }, Edit::LayerMask { layer: i, other: Some(mask), label: "Apply mask" }],
+            "Apply mask",
+        );
+    }
+
+    /// Start painting on the current layer's mask. False if it has none.
+    pub fn begin_mask_stroke(&mut self) -> bool {
+        let i = self.active;
+        let Some(mask) = &self.layers[i].mask else { return false };
+        self.mask_stroke = Some((i, mask.data.clone(), None));
+        true
+    }
+
+    /// One dab on the mask at (x, y): it moves toward `value` (0 hides,
+    /// 1 shows) by the brush's coverage and opacity, inside the selection.
+    pub fn mask_dab(&mut self, x: f32, y: f32, brush: &Brush, value: f32) {
+        let Some((layer, _, changed)) = &mut self.mask_stroke else { return };
+        let (w, h) = (self.width, self.height);
+        let r = brush.radius.max(0.5);
+        let (x0, y0) = (((x - r).floor().max(0.0)) as usize, ((y - r).floor().max(0.0)) as usize);
+        let (x1, y1) = (((x + r).ceil().max(0.0) as usize).min(w), ((y + r).ceil().max(0.0) as usize).min(h));
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let Some(mask) = &mut self.layers[*layer].mask else { return };
+        let clip = self.selection.as_deref();
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let c = brush.coverage(px as f32 + 0.5 - x, py as f32 + 0.5 - y);
+                if c <= 0.0 {
+                    continue;
+                }
+                let i = py * w + px;
+                let k = (c * brush.opacity * clip.map_or(1.0, |s| s[i])).clamp(0.0, 1.0);
+                mask.data[i] += (value.clamp(0.0, 1.0) - mask.data[i]) * k;
+            }
+        }
+        let region = Region::new(x0, y0, x1, y1);
+        *changed = Some(changed.map_or(region, |c: Region| c.union(region)));
+        self.layers[*layer].canvas.mark_dirty(region);
+    }
+
+    /// Dabs along a line on the mask (spaced like the brush's stroke).
+    pub fn mask_line(&mut self, from: (f32, f32), to: (f32, f32), brush: &Brush, value: f32) {
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        let steps = (len / brush.step()).ceil().max(1.0) as usize;
+        for s in 1..=steps {
+            let t = s as f32 / steps as f32;
+            self.mask_dab(from.0 + dx * t, from.1 + dy * t, brush, value);
+        }
+    }
+
+    /// Finish painting on the mask: one undo step.
+    pub fn end_mask_stroke(&mut self) {
+        let Some((layer, before_all, Some(region))) = self.mask_stroke.take() else { return };
+        let Some(mask) = &self.layers[layer].mask else { return };
+        let before = read_mask(&before_all, self.width, region);
+        let after = read_mask(&mask.data, self.width, region);
+        self.record_alone(Edit::MaskPixels { layer, region, before, after });
+    }
+
+    fn record_alone(&mut self, edit: Edit) {
+        self.history.seal();
+        self.history.record(edit);
+        self.history.seal();
+    }
+
     // ----- Layer groups -----
 
     pub fn groups(&self) -> &[LayerGroup] {
@@ -768,15 +1154,26 @@ impl Document {
             return None;
         }
         let original = layer.canvas.buffers();
-        let bounds = match (transform::content_bounds(&original.dry, self.width), transform::content_bounds(&original.wet, self.width)) {
-            (Some(a), Some(b)) => a.union(b),
-            (a, b) => a.or(b)?,
-        };
         let has_wet = layer.canvas.has_wet_paint();
         let has_relief = original.relief.iter().any(|&h| h > 0.0);
+        // With a selection, only the selected paint moves; the handles frame the selection.
+        let (lifted, bounds) = match (&self.selection, self.selection_bounds()) {
+            (Some(sel), Some(bounds)) => {
+                let lifted = scaled_buffers(&original, |i| sel[i]);
+                let base = scaled_buffers(&original, |i| 1.0 - sel[i]);
+                (Some((lifted, base, sel.clone())), bounds)
+            }
+            _ => {
+                let bounds = match (transform::content_bounds(&original.dry, self.width), transform::content_bounds(&original.wet, self.width)) {
+                    (Some(a), Some(b)) => a.union(b),
+                    (a, b) => a.or(b)?,
+                };
+                (None, bounds)
+            }
+        };
         self.history.seal();
         self.transforming =
-            Some(TransformSource { layer: self.active, original, has_wet, has_relief, bounds, current: Transform::default() });
+            Some(TransformSource { layer: self.active, original, lifted, has_wet, has_relief, bounds, current: Transform::default() });
         Some(bounds)
     }
 
@@ -795,12 +1192,23 @@ impl Document {
         let mut shown = if t.is_identity() {
             src.original.clone()
         } else {
-            let (w, h, o) = (self.width, self.height, &src.original);
-            Buffers {
+            let (w, h) = (self.width, self.height);
+            let o = src.lifted.as_ref().map_or(&src.original, |(lifted, _, _)| lifted);
+            let moved = Buffers {
                 dry: transform::resample(&o.dry, w, h, src.bounds, t),
                 wet: if src.has_wet { transform::resample(&o.wet, w, h, src.bounds, t) } else { vec![[0.0; 4]; w * h] },
                 relief: if src.has_relief { transform::resample_scalar(&o.relief, w, h, src.bounds, t) } else { vec![0.0; w * h] },
                 wet_relief: if src.has_relief { transform::resample_scalar(&o.wet_relief, w, h, src.bounds, t) } else { vec![0.0; w * h] },
+            };
+            match &src.lifted {
+                // The moved part goes on top of what stayed behind.
+                Some((_, base, _)) => Buffers {
+                    dry: moved.dry.iter().zip(&base.dry).map(|(m, b)| over(*m, *b)).collect(),
+                    wet: moved.wet.iter().zip(&base.wet).map(|(m, b)| over(*m, *b)).collect(),
+                    relief: moved.relief.iter().zip(&base.relief).map(|(m, b)| (m + b).min(MAX_RELIEF)).collect(),
+                    wet_relief: moved.wet_relief.iter().zip(&base.wet_relief).map(|(m, b)| (m + b).min(MAX_RELIEF)).collect(),
+                },
+                None => moved,
             }
         };
         self.layers[src.layer].canvas.swap_buffers(&mut shown);
@@ -814,9 +1222,17 @@ impl Document {
             self.layers[src.layer].canvas.swap_buffers(&mut src.original);
             return false;
         }
-        self.history.seal();
-        self.history.record(Edit::Wetness { layers: vec![(src.layer, src.original)], label: "Transform" });
-        self.history.seal();
+        let paint = Edit::Wetness { layers: vec![(src.layer, src.original)], label: "Transform" };
+        match src.lifted {
+            // The selection moves with the paint (one undo step for both).
+            Some((_, _, sel)) => {
+                let moved = transform::resample_scalar(&sel, self.width, self.height, src.bounds, &src.current);
+                let old = self.selection.replace(Arc::new(moved));
+                self.selection_version += 1;
+                self.record_batch(vec![paint, Edit::Selection { other: old }], "Transform selection");
+            }
+            None => self.record_alone(paint),
+        }
         true
     }
 
@@ -1027,6 +1443,34 @@ impl Document {
                 }
                 Edit::Groups { other: current, label }
             }
+            Edit::LayerMask { layer, other, label } => {
+                let current = std::mem::replace(&mut self.layers[layer].mask, other);
+                self.active = layer;
+                Edit::LayerMask { layer, other: current, label }
+            }
+            Edit::MaskEnabled { layer } => {
+                if let Some(m) = &mut self.layers[layer].mask {
+                    m.enabled = !m.enabled;
+                }
+                Edit::MaskEnabled { layer }
+            }
+            Edit::MaskPixels { layer, region, before, after } => {
+                if let Some(m) = &mut self.layers[layer].mask {
+                    write_mask(&mut m.data, self.width, region, &before);
+                }
+                self.layers[layer].canvas.mark_dirty(region);
+                self.active = layer;
+                Edit::MaskPixels { layer, region, before: after, after: before }
+            }
+            Edit::Selection { other } => {
+                let current = std::mem::replace(&mut self.selection, other);
+                self.selection_version += 1;
+                Edit::Selection { other: current }
+            }
+            Edit::LayerBlend { layer, before, after } => {
+                self.layers[layer].blend = before;
+                Edit::LayerBlend { layer, before: after, after: before }
+            }
             Edit::LayerImpasto { layer, before, after } => {
                 self.layers[layer].impasto = before;
                 Edit::LayerImpasto { layer, before: after, after: before }
@@ -1130,8 +1574,18 @@ impl Document {
             for (layer, k) in &thick {
                 let relief = &layer.canvas.relief()[start..start + w];
                 let k = *k;
-                for (h, r) in line.iter_mut().zip(relief) {
-                    *h += r * k;
+                match &layer.mask {
+                    // Masked-out paint casts no relief.
+                    Some(m) if m.enabled => {
+                        for ((h, r), m) in line.iter_mut().zip(relief).zip(&m.data[start..start + w]) {
+                            *h += r * k * m;
+                        }
+                    }
+                    _ => {
+                        for (h, r) in line.iter_mut().zip(relief) {
+                            *h += r * k;
+                        }
+                    }
                 }
             }
         });
@@ -1229,7 +1683,7 @@ impl Document {
                     while i < self.layers.len() && self.layers[i].group == layer.group {
                         let l = &self.layers[i];
                         if l.visible && l.opacity > 0.0 {
-                            members.push((i, l.opacity));
+                            members.push((i, l.opacity, l.blend));
                         }
                         i += 1;
                     }
@@ -1239,7 +1693,7 @@ impl Document {
                 }
                 group => {
                     if layer.visible && layer.opacity > 0.0 && group.is_none_or(|g| g.visible) {
-                        steps.push(Step::Layer(i, layer.opacity));
+                        steps.push(Step::Layer(i, layer.opacity, layer.blend));
                     }
                     i += 1;
                 }
@@ -1253,17 +1707,19 @@ impl Document {
         let mut out = base;
         let mut coverage = 0.0;
         for step in plan {
-            let p = match step {
-                Step::Layer(n, opacity) => scale(self.layers[*n].canvas.combined(i), *opacity),
+            let (p, mode) = match step {
+                Step::Layer(n, opacity, mode) => (scale(self.layers[*n].shown_pixel(i), *opacity), *mode),
+                // A faded group is its own picture (blend modes inside it
+                // blend only with the group's layers), then fades in normally.
                 Step::Group(members, opacity) => {
                     let mut g = [0.0f32; 4];
-                    for (n, o) in members {
-                        g = over(scale(self.layers[*n].canvas.combined(i), *o), g);
+                    for (n, o, mode) in members {
+                        g = blend(scale(self.layers[*n].shown_pixel(i), *o), g, *mode);
                     }
-                    scale(g, *opacity)
+                    (scale(g, *opacity), BlendMode::Normal)
                 }
             };
-            out = over(p, out);
+            out = blend(p, out, mode);
             coverage = p[3] + coverage * (1.0 - p[3]);
         }
         (out, coverage)
@@ -1328,8 +1784,9 @@ impl Document {
     /// One layer's pixels (wet over dry) as straight RGBA floats, ignoring
     /// its opacity and visibility (used for layered PSD export).
     pub fn layer_rgba_f32(&self, index: usize) -> Vec<[f32; 4]> {
-        let canvas = &self.layers[index].canvas;
-        (0..self.width * self.height).into_par_iter().map(|i| straight(canvas.combined(i))).collect()
+        // (With its mask applied, so it looks the same in other apps.)
+        let layer = &self.layers[index];
+        (0..self.width * self.height).into_par_iter().map(|i| straight(layer.shown_pixel(i))).collect()
     }
 
     /// The lit paper alone (opaque), for a "Paper" layer in PSD export.
@@ -1441,6 +1898,26 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let len = dot3(v, v).sqrt();
     [v[0] / len, v[1] / len, v[2] / len]
+}
+
+/// All of a layer's buffers with each pixel scaled by `k(i)` (0..=1).
+fn scaled_buffers(b: &Buffers, k: impl Fn(usize) -> f32 + Sync) -> Buffers {
+    Buffers {
+        dry: b.dry.par_iter().enumerate().map(|(i, p)| scale(*p, k(i))).collect(),
+        wet: b.wet.par_iter().enumerate().map(|(i, p)| scale(*p, k(i))).collect(),
+        relief: b.relief.par_iter().enumerate().map(|(i, h)| h * k(i)).collect(),
+        wet_relief: b.wet_relief.par_iter().enumerate().map(|(i, h)| h * k(i)).collect(),
+    }
+}
+
+fn read_mask(data: &[f32], width: usize, r: Region) -> Vec<f32> {
+    (r.y0..r.y1).flat_map(|y| data[y * width + r.x0..y * width + r.x1].iter().copied()).collect()
+}
+
+fn write_mask(data: &mut [f32], width: usize, r: Region, values: &[f32]) {
+    for (row, y) in (r.y0..r.y1).enumerate() {
+        data[y * width + r.x0..y * width + r.x1].copy_from_slice(&values[row * r.width()..(row + 1) * r.width()]);
+    }
 }
 
 /// Premultiplied -> straight alpha, clamped to 0..=1.
@@ -1971,6 +2448,175 @@ mod tests {
         assert_eq!(loaded.groups(), doc.groups());
         assert_eq!(loaded.layers()[1].group, Some(gid));
         assert_eq!(loaded.composite_pixel(10, 10), doc.composite_pixel(10, 10));
+    }
+
+    #[test]
+    fn blend_modes_combine_layers_and_survive_undo_files_merge_and_psd() {
+        let gray = Color::rgb(0.5, 0.5, 0.5);
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, RED); // layer 0
+        doc.add_layer();
+        paint_dot(&mut doc, 10.0, 10.0, gray); // layer 1 on top
+        assert_eq!(doc.composite_pixel(10, 10), Some(gray), "normal: gray covers red");
+        doc.set_layer_blend(1, BlendMode::Multiply);
+        let p = doc.composite_pixel(10, 10).unwrap();
+        assert!((p.r - 0.5).abs() < 0.01 && p.g < 0.01, "multiply: half-dark red, {p:?}");
+        assert_eq!(doc.undo_description(), Some("Blend mode"));
+        doc.undo();
+        assert_eq!(doc.composite_pixel(10, 10), Some(gray));
+        doc.redo();
+
+        // Saved and loaded.
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        doc.save(&mut bytes).unwrap();
+        let loaded = Document::load(std::io::Cursor::new(bytes.into_inner())).unwrap();
+        assert_eq!(loaded.layers()[1].blend, BlendMode::Multiply);
+
+        // PSD carries Photoshop's code for it.
+        let mut psd = std::io::Cursor::new(Vec::new());
+        doc.write_psd(&mut psd, crate::PsdOptions { include_paper: false, sixteen_bit: false }).unwrap();
+        assert!(psd.get_ref().windows(8).any(|w| w == b"8BIMmul "), "PSD blend key");
+
+        // Merging down bakes the multiply in.
+        assert!(doc.merge_down());
+        let merged = doc.composite_pixel(10, 10).unwrap();
+        assert!((merged.r - 0.5).abs() < 0.01 && merged.g < 0.01, "{merged:?}");
+    }
+
+    #[test]
+    fn painting_stays_inside_the_selection() {
+        let mut doc = Document::new(40, 20, Color::WHITE);
+        doc.select(&SelectShape::Rect { x0: 0.0, y0: 0.0, x1: 20.0, y1: 20.0 }, SelectMode::Replace);
+        assert_eq!(doc.selection_bounds(), Some(Region::new(0, 0, 20, 20)));
+        // A stroke across the whole width only paints the left half.
+        let brush = Brush { radius: 5.0, color: RED, ..Brush::default() };
+        doc.begin_stroke();
+        let mut stroke = Stroke::begin(doc.active_canvas(), &brush, DabMode::Paint, 2.0, 10.0);
+        stroke.line_to(doc.active_canvas(), &brush, 38.0, 10.0);
+        doc.end_stroke();
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE), "outside the selection: untouched");
+
+        // Fill and clear work on the selection only.
+        doc.invert_selection();
+        assert!(doc.fill_selection(Color::BLACK));
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::BLACK));
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        assert_eq!(doc.undo_description(), Some("Fill selection"));
+        doc.undo();
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE));
+
+        // Selection changes are undoable; without a selection, tools work everywhere.
+        doc.undo(); // the invert
+        assert_eq!(doc.selection_bounds(), Some(Region::new(0, 0, 20, 20)));
+        doc.deselect();
+        assert!(doc.selection().is_none());
+        assert!(!doc.clear_selected(), "nothing to clear without a selection");
+        doc.select(&SelectShape::Rect { x0: 5.0, y0: 5.0, x1: 15.0, y1: 15.0 }, SelectMode::Replace);
+        assert!(doc.clear_selected());
+        assert_eq!(doc.composite_pixel(10, 10), Some(Color::WHITE), "cleared");
+        assert_eq!(doc.composite_pixel(2, 10), Some(RED), "outside kept");
+    }
+
+    #[test]
+    fn layer_masks_hide_without_erasing() {
+        let mut doc = Document::new(40, 20, Color::WHITE);
+        let wide = Brush { radius: 30.0, color: RED, ..Brush::default() };
+        doc.begin_stroke();
+        let _ = Stroke::begin(doc.active_canvas(), &wide, DabMode::Paint, 20.0, 10.0);
+        doc.end_stroke();
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED));
+
+        // A mask from a selection: only the left half shows.
+        doc.select(&SelectShape::Rect { x0: 0.0, y0: 0.0, x1: 20.0, y1: 20.0 }, SelectMode::Replace);
+        assert!(doc.add_mask());
+        doc.deselect();
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE), "hidden, not erased");
+        assert!(doc.layers()[0].canvas.pixel(30, 10).unwrap().a > 0.99, "the paint is still there");
+
+        // Turning the mask off shows everything; undo turns it back on.
+        doc.set_mask_enabled(false);
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED));
+        doc.undo();
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE));
+
+        // Painting white on the mask reveals; one undo step.
+        let reveal = Brush { radius: 4.0, hardness: 1.0, ..Brush::default() };
+        assert!(doc.begin_mask_stroke());
+        doc.mask_line((28.0, 10.0), (32.0, 10.0), &reveal, 1.0);
+        doc.end_mask_stroke();
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED), "revealed");
+        assert_eq!(doc.undo_description(), Some("Paint on mask"));
+        doc.undo();
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE));
+
+        // Saved and loaded with the mask.
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        doc.save(&mut bytes).unwrap();
+        let loaded = Document::load(std::io::Cursor::new(bytes.into_inner())).unwrap();
+        assert_eq!(loaded.layers()[0].mask, doc.layers()[0].mask);
+
+        // Exported layer pixels have the mask applied (PSD looks the same).
+        assert_eq!(doc.layer_rgba_f32(0)[10 * 40 + 30][3], 0.0);
+
+        // Apply: the hidden paint is erased and the mask goes away; undo restores both.
+        doc.apply_mask();
+        assert!(doc.layers()[0].mask.is_none());
+        assert_eq!(doc.layers()[0].canvas.pixel(30, 10).unwrap().a, 0.0);
+        doc.undo();
+        assert!(doc.layers()[0].mask.is_some());
+        assert!(doc.layers()[0].canvas.pixel(30, 10).unwrap().a > 0.99);
+
+        // Merge down bakes the mask in.
+        doc.add_layer();
+        doc.layers.swap(0, 1); // (put the masked layer on top for this test)
+        doc.set_active(1);
+        assert!(doc.merge_down());
+        assert!(doc.layers()[0].mask.is_none());
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE));
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+    }
+
+    #[test]
+    fn copy_paste_and_moving_just_the_selection() {
+        let mut doc = Document::new(60, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, RED);
+        paint_dot(&mut doc, 40.0, 10.0, Color::BLACK);
+        doc.select(&SelectShape::Rect { x0: 0.0, y0: 0.0, x1: 25.0, y1: 20.0 }, SelectMode::Replace);
+
+        // Copy the red dot (only) and paste it on a new layer, same place.
+        let clip = doc.copy_selected().unwrap();
+        assert_eq!((clip.x, clip.w), (0, 25));
+        doc.paste(&clip);
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(doc.layers()[1].name, "Pasted");
+        assert_eq!(doc.layers()[1].canvas.pixel(10, 10), Some(RED));
+        assert_eq!(doc.layers()[1].canvas.pixel(40, 10).unwrap().a, 0.0, "the black dot wasn't selected");
+        assert_eq!(doc.undo_description(), Some("Paste"));
+        doc.undo();
+
+        // Transform with a selection moves only the selected paint, and the selection with it.
+        let bounds = doc.begin_transform().unwrap();
+        assert_eq!(bounds, Region::new(0, 0, 25, 20), "the handles frame the selection");
+        doc.preview_transform(&Transform { dx: 20.0, ..Transform::default() });
+        assert!(doc.apply_transform());
+        assert_eq!(doc.composite_pixel(30, 10), Some(RED), "moved");
+        assert_eq!(doc.composite_pixel(10, 10), Some(Color::WHITE), "left nothing behind");
+        assert_eq!(doc.composite_pixel(40, 10), Some(Color::BLACK), "the rest stayed");
+        assert_eq!(doc.selection_bounds(), Some(Region::new(20, 0, 45, 20)), "the selection moved too");
+        doc.undo();
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        assert_eq!(doc.selection_bounds(), Some(Region::new(0, 0, 25, 20)));
+
+        // Cut: copied and erased.
+        let cut = doc.cut_selected().unwrap();
+        assert_eq!(doc.composite_pixel(10, 10), Some(Color::WHITE));
+        assert!(cut.rgba8().as_chunks::<4>().0.iter().any(|p| p == &[255, 0, 0, 255]), "the clipboard image has the red");
+
+        // An image from the system clipboard is centered on a new layer.
+        doc.paste_image(2, 1, &[0, 0, 255, 255, 0, 0, 255, 255]);
+        assert_eq!(doc.layers().last().unwrap().canvas.pixel(29, 9), Some(Color::rgb(0.0, 0.0, 1.0)));
     }
 
     #[test]

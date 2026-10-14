@@ -7,7 +7,7 @@ use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
 
 use oxide_engine::{
-    Bristles, Color, Tip, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, Stroke, StrokePoint, Transform,
+    Bristles, Brush, Color, SelectMode, SelectShape, Tip, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, Stroke, StrokePoint, Transform,
 };
 use serde_json::{Value, json};
 
@@ -41,6 +41,8 @@ pub struct Session {
     pub carried: Option<Color>,
     /// MultiColored brush: colors loaded side by side (empty = one color).
     pub multicolor: Vec<Color>,
+    /// The last copy (copy / cut), for paste.
+    pub clip: Option<oxide_engine::Clip>,
 }
 
 impl Default for Session {
@@ -69,6 +71,7 @@ impl Session {
             dirty_brush: true,
             carried: None,
             multicolor: Vec::new(),
+            clip: None,
         }
     }
 
@@ -180,6 +183,67 @@ impl Session {
                 Ok(Output::Json(self.layers_json()))
             }
             Command::ImportImage(a) => self.import_image(a),
+            Command::Copy(_) => {
+                self.clip = Some(self.document.copy_selected().ok_or("Nothing to copy (the selected part of this layer is empty).")?);
+                let c = self.clip.as_ref().expect("just set");
+                Ok(Output::Text(format!("Copied {} × {} px", c.w, c.h)))
+            }
+            Command::Cut(_) => {
+                self.clip = Some(self.document.cut_selected().ok_or("Nothing to cut (the selected part of this layer is empty).")?);
+                let c = self.clip.as_ref().expect("just set");
+                Ok(Output::Text(format!("Cut {} × {} px", c.w, c.h)))
+            }
+            Command::Paste(_) => {
+                let clip = self.clip.clone().ok_or("Nothing copied yet (copy or cut first).")?;
+                self.document.paste(&clip);
+                Ok(Output::Json(self.layers_json()))
+            }
+            Command::Select(a) => self.select(a),
+            Command::Selection(a) => {
+                let doc = &mut self.document;
+                let done = match a.action.as_str() {
+                    "all" => {
+                        doc.select_all();
+                        true
+                    }
+                    "none" | "deselect" => {
+                        doc.deselect();
+                        true
+                    }
+                    "invert" => {
+                        doc.invert_selection();
+                        true
+                    }
+                    "feather" => {
+                        doc.feather_selection(a.radius.unwrap_or(8.0).clamp(1.0, 200.0));
+                        true
+                    }
+                    "fill" => doc.fill_selection(self.color),
+                    "clear" => doc.clear_selected(),
+                    other => return Err(format!("Unknown selection action \"{other}\" (all, none, invert, feather, fill, clear).")),
+                };
+                if !done {
+                    return Err("Nothing selected (or the current layer can't be painted on).".into());
+                }
+                Ok(Output::Json(self.selection_json()))
+            }
+            Command::Mask(a) => {
+                let doc = &mut self.document;
+                let has = doc.layers()[doc.active_index()].mask.is_some();
+                match a.action.as_str() {
+                    "add" if has => return Err("The current layer already has a mask.".into()),
+                    "add" => {
+                        doc.add_mask();
+                    }
+                    _ if !has => return Err("The current layer has no mask (mask action \"add\" first).".into()),
+                    "on" => doc.set_mask_enabled(true),
+                    "off" => doc.set_mask_enabled(false),
+                    "apply" => doc.apply_mask(),
+                    "delete" => doc.delete_mask(),
+                    other => return Err(format!("Unknown mask action \"{other}\" (add, on, off, apply, delete).")),
+                }
+                Ok(Output::Json(self.layers_json()))
+            }
             Command::GroupLayer(_) => {
                 self.document.group_active_layer().ok_or("The current layer is already in a group.")?;
                 Ok(Output::Json(self.layers_json()))
@@ -449,6 +513,20 @@ impl Session {
         let mode = if erasing { DabMode::Erase } else { DabMode::Paint };
         let tip = self.carried.filter(|_| self.tool.is_wet_medium() && self.dirty_brush && self.multicolor.is_empty());
         let on_palette = a.target.as_deref() == Some("palette");
+        if a.target.as_deref() == Some("mask") {
+            // Painting on the layer mask: the color's lightness is the value.
+            if !self.document.begin_mask_stroke() {
+                return Err("The current layer has no mask (mask action \"add\" first).".into());
+            }
+            let value = if erasing { 1.0 } else { 0.299 * self.color.r + 0.587 * self.color.g + 0.114 * self.color.b };
+            let dab = |p: &StrokePoint| Brush { radius: (brush.radius * brush.pressure_size(p.pressure)).max(0.5), opacity: brush.opacity * brush.pressure_opacity(p.pressure), ..brush.clone() };
+            self.document.mask_dab(points[0].x, points[0].y, &dab(&points[0]), value);
+            for pair in points.windows(2) {
+                self.document.mask_line((pair[0].x, pair[0].y), (pair[1].x, pair[1].y), &dab(&pair[1]), value);
+            }
+            self.document.end_mask_stroke();
+            return Ok(Output::Text(format!("Painted a {}-point stroke on the mask", a.points.len())));
+        }
 
         let doc: &mut Document = if on_palette { self.document.palette.get_or_insert_with(|| Box::new(new_palette())) } else { &mut self.document };
         let layer = &doc.layers()[doc.active_index()];
@@ -509,6 +587,49 @@ impl Session {
         )))
     }
 
+    fn select(&mut self, a: SelectArgs) -> R {
+        let mode = match a.mode.as_deref().unwrap_or("replace") {
+            "replace" => SelectMode::Replace,
+            "add" => SelectMode::Add,
+            "subtract" => SelectMode::Subtract,
+            "intersect" => SelectMode::Intersect,
+            other => return Err(format!("Unknown mode \"{other}\" (replace, add, subtract, intersect).")),
+        };
+        let boxed = || -> Result<(f32, f32, f32, f32), String> {
+            match (a.x0, a.y0, a.x1, a.y1) {
+                (Some(x0), Some(y0), Some(x1), Some(y1)) => Ok((x0, y0, x1, y1)),
+                _ => Err("Give x0, y0, x1, y1 (the box).".into()),
+            }
+        };
+        let shape = match a.shape.as_deref().unwrap_or("rect") {
+            "rect" | "rectangle" => {
+                let (x0, y0, x1, y1) = boxed()?;
+                SelectShape::Rect { x0, y0, x1, y1 }
+            }
+            "ellipse" => {
+                let (x0, y0, x1, y1) = boxed()?;
+                SelectShape::Ellipse { x0, y0, x1, y1 }
+            }
+            "lasso" | "polygon" => {
+                let points = a.points.clone().unwrap_or_default();
+                if points.len() < 3 {
+                    return Err("A lasso needs at least 3 points.".into());
+                }
+                SelectShape::Polygon(points.into_iter().map(|[x, y]| (x, y)).collect())
+            }
+            other => return Err(format!("Unknown shape \"{other}\" (rect, ellipse, lasso).")),
+        };
+        self.document.select(&shape, mode);
+        Ok(Output::Json(self.selection_json()))
+    }
+
+    fn selection_json(&self) -> Value {
+        match self.document.selection_bounds() {
+            Some(r) => json!({"selected": true, "bounds": [r.x0, r.y0, r.x1, r.y1]}),
+            None => json!({"selected": false}),
+        }
+    }
+
     fn import_image(&mut self, a: ImportImageArgs) -> R {
         let path = PathBuf::from(&a.path);
         let reference = a.reference.unwrap_or(false);
@@ -537,6 +658,13 @@ impl Session {
         }
         if let Some(on) = a.tracing {
             self.document.set_tracing(i, on);
+        }
+        if let Some(name) = a.blend.as_deref() {
+            let mode = oxide_engine::BlendMode::from_key(name).ok_or_else(|| {
+                let all: Vec<String> = oxide_engine::BlendMode::ALL.iter().map(|m| m.key()).collect();
+                format!("Unknown blend mode \"{name}\" ({}).", all.join(", "))
+            })?;
+            self.document.set_layer_blend(i, mode);
         }
         if let Some(depth) = a.impasto_depth {
             self.document.set_layer_impasto(i, (depth >= 0.0).then(|| (depth / 10.0).clamp(0.0, 1.0)));
@@ -618,6 +746,7 @@ impl Session {
             "tool": self.tool.label(),
             "color": to_hex(self.color),
             "brush": self.brush_json(),
+            "selection": self.selection_json(),
             "multicolor": self.multicolor.iter().map(|c| to_hex(*c)).collect::<Vec<_>>(),
             "natural_colors": self.natural_colors,
             "can_undo": self.document.undo_description(),
@@ -636,7 +765,7 @@ impl Session {
                 json!({"index": i, "name": l.name, "visible": l.visible, "opacity": l.opacity,
                        "wet": l.canvas.has_wet_paint(), "current": i == active, "locked": l.locked,
                        "lock_transparency": l.lock_transparency(), "tracing": l.tracing,
-                       "impasto_depth": l.impasto.map(|d| d * 10.0),
+                       "impasto_depth": l.impasto.map(|d| d * 10.0), "blend": l.blend.key(), "mask": l.mask.as_ref().map(|m| json!({"enabled": m.enabled})),
                        "group": l.group.and_then(|id| self.document.group(id)).map(|g| json!({"name": g.name, "opacity": g.opacity, "visible": g.visible}))})
             })
             .collect();
@@ -751,6 +880,10 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Pressure (0–1) per point changes size/opacity/mixing like a pen. Use 3-value points [x, y, pressure] for tapered or expressive strokes; `smooth: true` draws a curve through sparse points.
 - The surface is textured paper/canvas (set_paper); grainy brushes catch its tooth.
 - Layers: add_layer, select_layer, set_layer (name, opacity, visible, locked, lock_transparency, tracing), move_layer, delete_layer, duplicate_layer, merge_down, merge_visible, clear_layer. dry locks wet paint so later strokes glide over it. Merging dries the merged paint.
+- Selections: select (rect / ellipse box, or lasso points; mode replace / add / subtract / intersect) limits painting, fill and clear to that area; selection action all / none / invert / feather / fill / clear. info shows the selection's bounds.
+- copy / cut (the selected part of the current layer, or all of it) and paste (a new layer, same place). With a selection, transform_layer moves only the selected paint (and the selection with it).
+- Layer masks: mask action add (from the selection, or reveal-all) hides parts of a layer without erasing; stroke with target \"mask\" paints on it (black hides, white reveals, eraser reveals); on / off / apply / delete.
+- Blend modes (set_layer blend: multiply for shadow glazes, screen / color_dodge for light, overlay / soft_light for contrast, color to tint, luminosity for values; normal = back to covering).
 - Layer groups: group_layer puts the current layer in a new group; move_layer at a group's edge moves a layer into or out of it (add_layer inside a group joins it); set_group name / opacity (fades the group as one picture) / visible; ungroup keeps the layers. info shows each layer's group.
 - Lock transparency (set_layer lock_transparency: true) = paint only where the layer already has paint: recolor or shade finished shapes without spilling outside them.
 - transform_layer moves, scales, rotates or flips the current layer's paint (fit: \"fit\"/\"fill\" sizes an imported image to the canvas).
@@ -867,6 +1000,34 @@ mod tests {
         let Output::Text(off) = run(&mut s, r##"{"command": "set_multicolor", "colors": []}"##) else { panic!() };
         assert!(off.contains("off"));
         assert!(s.execute(serde_json::from_str(r##"{"command": "set_multicolor", "colors": ["#FFFFFF"]}"##).unwrap()).is_err());
+    }
+
+    #[test]
+    fn selections_and_masks() {
+        let mut s = Session::new(Document::new(100, 40, Color::WHITE));
+        run(&mut s, r##"{"command": "set_tool", "tool": "ink"}"##);
+        run(&mut s, r##"{"command": "set_brush", "size": 15}"##);
+        // Paint only inside the left half.
+        let Output::Json(sel) = run(&mut s, r##"{"command": "select", "x0": 0, "y0": 0, "x1": 50, "y1": 40}"##) else { panic!() };
+        assert_eq!(sel["bounds"], json!([0, 0, 50, 40]));
+        run(&mut s, r##"{"command": "stroke", "points": [[5, 20], [95, 20]]}"##);
+        let pick = |s: &mut Session, x: u32| {
+            let Output::Text(t) = run(s, &format!(r#"{{"command": "pick_color", "x": {x}, "y": 20}}"#)) else { panic!() };
+            t
+        };
+        assert!(pick(&mut s, 25).contains("#000000"));
+        assert!(pick(&mut s, 75).contains("#FFFFFF"), "outside the selection");
+        // Mask from a lasso on the left quarter, then reveal a bit by painting white on the mask.
+        run(&mut s, r##"{"command": "select", "shape": "lasso", "points": [[0, 0], [25, 0], [25, 40], [0, 40]]}"##);
+        run(&mut s, r##"{"command": "mask", "action": "add"}"##);
+        run(&mut s, r##"{"command": "selection", "action": "none"}"##);
+        assert!(pick(&mut s, 40).contains("#FFFFFF"), "masked out");
+        run(&mut s, r##"{"command": "set_color", "hex": "#FFFFFF"}"##);
+        run(&mut s, r##"{"command": "stroke", "points": [[35, 20], [45, 20]], "target": "mask"}"##);
+        assert!(pick(&mut s, 40).contains("#000000"), "revealed by the mask stroke");
+        let Output::Json(info) = run(&mut s, r##"{"command": "info"}"##) else { panic!() };
+        assert_eq!(info["layers"][0]["mask"]["enabled"], true);
+        assert!(s.execute(serde_json::from_str(r##"{"command": "selection", "action": "fill"}"##).unwrap()).is_err(), "nothing selected");
     }
 
     #[test]

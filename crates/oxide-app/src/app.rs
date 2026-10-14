@@ -10,6 +10,7 @@ mod menus;
 mod mixing_palette;
 mod new_artwork;
 mod select_canvas;
+mod select_tool;
 mod transform;
 mod panels;
 mod reference_image;
@@ -149,6 +150,19 @@ pub struct OxideApp {
     brush_search: String,
     /// The group name being edited in the Layers panel.
     renaming_group: Option<String>,
+    /// The Select tool: its shape, the selection being dragged, the outline
+    /// drawing cache, and the Feather amount.
+    select_kind: select_tool::SelectKind,
+    select_drag: Option<select_tool::SelectDrag>,
+    selection_outline: select_tool::OutlineCache,
+    feather_radius: f32,
+    /// Paint on the current layer's mask instead of its paint.
+    editing_mask: bool,
+    /// The last copied paint (keeps wetness and thickness), and a fingerprint
+    /// of the image we put on the system clipboard, to know if it's still ours.
+    clip: Option<(oxide_engine::Clip, u64)>,
+    /// The last point of a stroke on a mask.
+    mask_last: Option<(f32, f32)>,
     /// The secondary color.
     secondary: Color,
     /// Mix Color: X is held, so picked colors mix into the current one.
@@ -221,6 +235,21 @@ enum Command {
     SwapColors,
     GroupLayer,
     Ungroup,
+    AddMask,
+    ToggleMaskPainting,
+    ToggleMask,
+    ApplyMask,
+    DeleteMask,
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Deselect,
+    InvertSelection,
+    /// Select → Feather by n pixels.
+    Feather(u8),
+    FillSelection,
+    ClearSelection,
     /// File → Open Recent → item n.
     OpenRecent(u8),
     ClearRecent,
@@ -240,7 +269,7 @@ impl Command {
 
 /// Keyboard shortcuts. Order matters: egui ignores *extra* Shift/Alt when
 /// matching, so ⇧⌘S must be checked before ⌘S or it would trigger Save.
-const SHORTCUTS: [(Command, KeyboardShortcut); 33] = [
+const SHORTCUTS: [(Command, KeyboardShortcut); 40] = [
     // View: checked before ⌘0 (Fit), since extra modifiers would otherwise match it.
     (Command::ResetRotation, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::Num0)),
     // ⇧⌥⌘G before ⌥⌘G.
@@ -271,6 +300,14 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 33] = [
     (Command::New, KeyboardShortcut::new(Modifiers::COMMAND, Key::N)),
     (Command::Open, KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
     (Command::ImportImage, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::I)),
+    // Selections (⇧⌘A before ⌘A; ⇧⌘I import above ⌘I).
+    (Command::Deselect, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::A)),
+    (Command::Copy, KeyboardShortcut::new(Modifiers::COMMAND, Key::C)),
+    (Command::Cut, KeyboardShortcut::new(Modifiers::COMMAND, Key::X)),
+    (Command::Paste, KeyboardShortcut::new(Modifiers::COMMAND, Key::V)),
+    (Command::SelectAll, KeyboardShortcut::new(Modifiers::COMMAND, Key::A)),
+    (Command::InvertSelection, KeyboardShortcut::new(Modifiers::COMMAND, Key::I)),
+    (Command::FillSelection, KeyboardShortcut::new(Modifiers::ALT, Key::Backspace)),
     (Command::Quit, KeyboardShortcut::new(Modifiers::COMMAND, Key::Q)),
     (Command::Fit, KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0)),
     (Command::ActualSize, KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1)),
@@ -340,6 +377,13 @@ impl OxideApp {
             show_shortcuts: false,
             brush_search: String::new(),
             renaming_group: None,
+            select_kind: Default::default(),
+            select_drag: None,
+            selection_outline: Default::default(),
+            feather_radius: 8.0,
+            editing_mask: false,
+            clip: None,
+            mask_last: None,
             multicolor: Vec::new(),
             multicolor_on: false,
             secondary: Color::WHITE,
@@ -376,6 +420,50 @@ impl OxideApp {
         if self.multicolor_on && self.multicolor.is_empty() {
             self.multicolor.push(self.color);
         }
+    }
+
+    /// ⌘C / ⌘X: the selected paint (or the whole layer) to Oxide's clipboard
+    /// and, as an image, to the Mac's (so other apps can paste it).
+    fn copy(&mut self, cut: bool) {
+        let clip = if cut { self.document.cut_selected() } else { self.document.copy_selected() };
+        let Some(clip) = clip else {
+            return self.info("Nothing to copy here (the selected part of this layer is empty).");
+        };
+        let rgba = clip.rgba8();
+        let fingerprint = fingerprint(&rgba);
+        let image = arboard::ImageData { width: clip.w, height: clip.h, bytes: std::borrow::Cow::Owned(rgba) };
+        if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_image(image)) {
+            self.error(format!("Copied inside Oxide, but not to the Mac clipboard: {e}"));
+        }
+        self.info(format!("{} {} × {} px", if cut { "Cut" } else { "Copied" }, clip.w, clip.h));
+        self.clip = Some((clip, fingerprint));
+    }
+
+    /// ⌘V: paste on a new layer, then Transform to place it. Our own copy
+    /// keeps its wetness and thickness; an image from another app comes in centered.
+    fn paste(&mut self) {
+        let system = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok();
+        match (system, &self.clip) {
+            // Still the image we copied: paste our richer copy.
+            (Some(img), Some((clip, fp))) if fingerprint(&img.bytes) == *fp => {
+                let clip = clip.clone();
+                self.document.paste(&clip);
+            }
+            (Some(img), _) => self.document.paste_image(img.width, img.height, &img.bytes),
+            (None, Some((clip, _))) => {
+                let clip = clip.clone();
+                self.document.paste(&clip);
+            }
+            (None, None) => return self.info("Nothing to paste (copy something, or an image in another app)."),
+        }
+        // Frame the pasted paint, not the old selection.
+        self.document.deselect();
+        self.start_transform();
+    }
+
+    /// Are strokes going to the current layer's mask?
+    fn mask_painting(&self) -> bool {
+        self.editing_mask && self.document.layers()[self.document.active_index()].mask.is_some()
     }
 
     /// Is the MultiColored brush on, with at least two colors loaded?
@@ -450,6 +538,17 @@ impl OxideApp {
         if self.stroke.is_some() {
             return;
         }
+        // Typing in a text field: ⌘A/C/X/V are for the text, not the canvas.
+        if ctx.egui_wants_keyboard_input() && matches!(command, Command::Copy | Command::Cut | Command::Paste | Command::SelectAll) {
+            let event = match command {
+                Command::Copy => egui::Event::Copy,
+                Command::Cut => egui::Event::Cut,
+                Command::Paste => egui::Event::Paste(arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default()),
+                _ => egui::Event::Key { key: Key::A, physical_key: Some(Key::A), pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
+            };
+            ctx.input_mut(|i| i.events.push(event));
+            return;
+        }
         // While transforming: ⌘T again or most commands apply it first; undo cancels it.
         if self.transform.is_some() && !command.keeps_transform() {
             match command {
@@ -520,6 +619,36 @@ impl OxideApp {
             Command::TogglePenSettings => self.show_pen_settings = !self.show_pen_settings,
             Command::ShowShortcuts => self.show_shortcuts = true,
             Command::SwapColors => self.swap_colors(),
+            Command::AddMask => {
+                if self.document.add_mask() {
+                    self.editing_mask = true;
+                    self.info("Added a mask. Painting now goes to the mask: dark hides, light reveals (Layers panel → Paint on mask to switch back).");
+                }
+            }
+            Command::ToggleMaskPainting => self.editing_mask = !self.editing_mask,
+            Command::ToggleMask => {
+                let i = self.document.active_index();
+                if let Some(on) = self.document.layers()[i].mask.as_ref().map(|m| m.enabled) {
+                    self.document.set_mask_enabled(!on);
+                }
+            }
+            Command::ApplyMask => self.document.apply_mask(),
+            Command::DeleteMask => self.document.delete_mask(),
+            Command::Copy => self.copy(false),
+            Command::Cut => self.copy(true),
+            Command::Paste => self.paste(),
+            Command::SelectAll => self.document.select_all(),
+            Command::Deselect => self.document.deselect(),
+            Command::InvertSelection => self.document.invert_selection(),
+            Command::Feather(r) => self.document.feather_selection(r as f32),
+            Command::FillSelection => {
+                if !self.document.fill_selection(self.color) {
+                    self.info("Select an area first (Select tool, L), on a layer you can paint on.");
+                }
+            }
+            Command::ClearSelection => {
+                self.document.clear_selected();
+            }
             Command::GroupLayer => {
                 if self.document.group_active_layer().is_none() {
                     self.info("This layer is already in a group.");
@@ -662,6 +791,10 @@ impl OxideApp {
                 }
                 if i.key_pressed(Key::Slash) {
                     view_keys.push(Command::LockTransparency);
+                }
+                // ⌫ / Delete erases what's selected (with a selection).
+                if (i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete)) && self.document.selection().is_some() {
+                    view_keys.push(Command::ClearSelection);
                 }
             }
             if self.tool == Tool::OilsAcrylics && i.modifiers.is_none() {
@@ -968,4 +1101,11 @@ fn apply_theme(ctx: &egui::Context) {
 pub fn to_color32(c: Color) -> egui::Color32 {
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     egui::Color32::from_rgb(byte(c.r), byte(c.g), byte(c.b))
+}
+
+/// A quick fingerprint of clipboard image bytes (to recognize our own copy).
+fn fingerprint(bytes: &[u8]) -> u64 {
+    // FNV-1a over a sample of the bytes (fast even for big images).
+    let step = (bytes.len() / 65_536).max(1);
+    bytes.iter().step_by(step).fold(0xcbf2_9ce4_8422_2325u64 ^ bytes.len() as u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }

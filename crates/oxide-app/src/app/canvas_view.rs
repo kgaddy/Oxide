@@ -61,7 +61,7 @@ impl OxideApp {
         let pen_down = pen.touching();
         let primary_down = ui.input(|i| i.pointer.primary_down()) || pen_down;
         // Hidden, locked, and tracing layers can't be painted on.
-        let blocked = !self.document.can_paint_active() && self.tool != Tool::Picker;
+        let blocked = !self.document.can_paint_active() && !matches!(self.tool, Tool::Picker | Tool::Select);
         // ⌘-drag on the canvas: left/right = size, up/down = loading (no painting).
         let command_down = ui.input(|i| i.modifiers.command);
         let mut adjusting = None;
@@ -114,6 +114,7 @@ impl OxideApp {
                     StrokePoint { pressure: self.mouse_pressure, ..StrokePoint::mouse(p.x, p.y) }
                 };
                 match self.tool {
+                    Tool::Select => self.select_drag_to(p, ui),
                     Tool::Picker => {
                         // Mix Color (X held): mix once per click, not every frame of a drag.
                         let fresh_press = ui.input(|i| i.pointer.primary_pressed());
@@ -123,6 +124,27 @@ impl OxideApp {
                             && let Some(c) = self.document.composite_pixel(p.x as usize, p.y as usize)
                         {
                             self.pick_color(c);
+                        }
+                    }
+                    // Painting on the layer's mask: dark hides, light reveals, the eraser reveals.
+                    _ if !blocked && self.mask_painting() && (self.tool.paints() || self.tool == Tool::Eraser) => {
+                        let mut brush = self.stroke_brush();
+                        brush.radius = (brush.radius * brush.pressure_size(point.pressure)).max(0.5);
+                        brush.opacity *= brush.pressure_opacity(point.pressure);
+                        let erasing = self.tool == Tool::Eraser || (self.tool.is_wet_medium() && self.state().erase);
+                        let c = self.color;
+                        let value = if erasing { 1.0 } else { 0.299 * c.r + 0.587 * c.g + 0.114 * c.b };
+                        match self.mask_last {
+                            None => {
+                                if self.document.begin_mask_stroke() {
+                                    self.document.mask_dab(p.x, p.y, &brush, value);
+                                    self.mask_last = Some((p.x, p.y));
+                                }
+                            }
+                            Some(last) => {
+                                self.document.mask_line(last, (p.x, p.y), &brush, value);
+                                self.mask_last = Some((p.x, p.y));
+                            }
                         }
                     }
                     _ if !blocked => {
@@ -174,6 +196,10 @@ impl OxideApp {
                 } else if self.tool == Tool::Picker && response.drag_stopped() {
                     self.remember_color(self.color);
                 }
+                self.select_release();
+                if self.mask_last.take().is_some() {
+                    self.document.end_mask_stroke();
+                }
             }
         }
 
@@ -199,7 +225,7 @@ impl OxideApp {
 
         // Brush outline under the cursor, so you can see the size before painting.
         if let Some(hover) = response.hover_pos() {
-            if self.tool != Tool::Picker && !space_down && !transforming {
+            if !matches!(self.tool, Tool::Picker | Tool::Select) && !space_down && !transforming {
                 self.track_cursor_direction(hover);
                 self.draw_tip_outline(&painter, hover, &xf);
             }
@@ -207,7 +233,7 @@ impl OxideApp {
                 egui::CursorIcon::Grab
             } else if blocked {
                 egui::CursorIcon::NotAllowed
-            } else if self.tool == Tool::Picker {
+            } else if matches!(self.tool, Tool::Picker | Tool::Select) {
                 egui::CursorIcon::Crosshair
             } else {
                 egui::CursorIcon::None
@@ -222,6 +248,14 @@ impl OxideApp {
             let brush_pos = xf.to_screen(Vec2::new(bx, by));
             painter.line_segment([brush_pos, pen_pos], LineStroke::new(1.0, Color32::from_white_alpha(140)));
             painter.circle_filled(brush_pos, 2.5, Color32::from_white_alpha(200));
+        }
+        self.draw_selection(&painter, &xf);
+        // Painting on a mask: say so, top-left of the workspace.
+        if self.mask_painting() {
+            let pos = workspace.left_top() + Vec2::new(12.0, 12.0);
+            let text = "◐ Painting on the layer mask: dark hides, light reveals (eraser reveals)";
+            painter.text(pos + Vec2::splat(1.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::BLACK);
+            painter.text(pos, egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
         }
         if transforming {
             let hover = response.hover_pos().filter(|_| !space_down && !r_down);

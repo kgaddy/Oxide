@@ -21,6 +21,9 @@ use rayon::prelude::*;
 
 use crate::Document;
 
+/// One layer for the PSD: name, pixels, opacity (0–255), visible, blend mode.
+type PsdLayer = (String, Vec<[f32; 4]>, u8, bool, crate::BlendMode);
+
 /// Options for PSD export.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PsdOptions {
@@ -56,16 +59,16 @@ impl Document {
         out.write_all(&resources)?;
 
         // ---- 4. Layer and mask information ----
-        let mut layers: Vec<(String, Vec<[f32; 4]>, u8, bool)> = Vec::new();
+        let mut layers: Vec<PsdLayer> = Vec::new();
         if options.include_paper {
-            layers.push(("Paper".to_string(), self.paper_rgba_f32(), 255, true));
+            layers.push(("Paper".to_string(), self.paper_rgba_f32(), 255, true, crate::BlendMode::Normal));
         }
         for (i, layer) in self.layers().iter().enumerate() {
             // (PSD has groups too, but a flat list with each group's
             // visibility and opacity folded in looks the same.)
             let group = layer.group.and_then(|id| self.group(id));
             let opacity = (layer.opacity * group.map_or(1.0, |g| g.opacity)).clamp(0.0, 1.0);
-            layers.push((layer.name.clone(), self.layer_rgba_f32(i), (opacity * 255.0).round() as u8, self.layer_shown(i)));
+            layers.push((layer.name.clone(), self.layer_rgba_f32(i), (opacity * 255.0).round() as u8, self.layer_shown(i), layer.blend));
         }
         let layer_info = layer_info(&layers, w, h, options.sixteen_bit);
         // Section length = layer info block (with its own length) + global mask info (4 bytes).
@@ -86,14 +89,14 @@ impl Document {
 
 /// The "layer info" block: count, records, then every layer's channel data.
 /// Padded to an even length as the spec requires.
-fn layer_info(layers: &[(String, Vec<[f32; 4]>, u8, bool)], w: usize, h: usize, sixteen: bool) -> Vec<u8> {
+fn layer_info(layers: &[PsdLayer], w: usize, h: usize, sixteen: bool) -> Vec<u8> {
     let bytes_per_sample = if sixteen { 2 } else { 1 };
     let channel_len = (2 + w * h * bytes_per_sample) as u32; // compression tag + pixels
     let mut info = Vec::new();
     // A negative count says "the first alpha channel is the merged image's transparency".
     info.extend((-(layers.len() as i16)).to_be_bytes());
 
-    for (name, _, opacity, visible) in layers {
+    for (name, _, opacity, visible, mode) in layers {
         info.extend(0i32.to_be_bytes()); // top
         info.extend(0i32.to_be_bytes()); // left
         info.extend((h as i32).to_be_bytes()); // bottom
@@ -104,7 +107,7 @@ fn layer_info(layers: &[(String, Vec<[f32; 4]>, u8, bool)], w: usize, h: usize, 
             info.extend(channel_len.to_be_bytes());
         }
         info.extend(b"8BIM");
-        info.extend(b"norm"); // blend mode: normal
+        info.extend(mode.psd_key()); // blend mode (Photoshop's code)
         info.push(*opacity);
         info.push(0); // clipping: base
         info.push(if *visible { 0 } else { 0b10 }); // flags: bit 1 = hidden
@@ -121,7 +124,7 @@ fn layer_info(layers: &[(String, Vec<[f32; 4]>, u8, bool)], w: usize, h: usize, 
     }
 
     // Channel image data, in the same order as the records: A, R, G, B.
-    for (_, pixels, _, _) in layers {
+    for (_, pixels, _, _, _) in layers {
         for channel in [3, 0, 1, 2] {
             info.extend(0u16.to_be_bytes()); // raw
             info.extend(channel_bytes(pixels, channel, sixteen));

@@ -161,6 +161,9 @@ pub struct Canvas {
     /// Lock transparency: paint only where there's already paint (recolor
     /// existing strokes); transparent areas stay transparent.
     preserve_alpha: bool,
+    /// The selection while a stroke is painted (0..=1 per pixel): dabs only
+    /// work inside it. None = no selection.
+    clip: Option<Arc<Vec<f32>>>,
 }
 
 impl Canvas {
@@ -178,6 +181,7 @@ impl Canvas {
             changed: None,
             surface: None,
             preserve_alpha: false,
+            clip: None,
         };
         canvas.clear(background);
         canvas
@@ -185,6 +189,49 @@ impl Canvas {
 
     pub fn width(&self) -> usize {
         self.width
+    }
+
+    /// Limit painting to a selection (None = everywhere).
+    pub fn set_clip(&mut self, clip: Option<Arc<Vec<f32>>>) {
+        self.clip = clip;
+    }
+
+    /// Erase (`color` None) or fill with `color` (dry paint), by `amount`
+    /// 0..=1 per pixel (a selection), within `region`.
+    pub fn apply_amount(&mut self, amount: &[f32], region: Region, color: Option<Color>) {
+        let paint = color.map(premultiply);
+        for y in region.y0..region.y1 {
+            for x in region.x0..region.x1 {
+                let i = y * self.width + x;
+                let k = amount[i];
+                if k <= 0.0 {
+                    continue;
+                }
+                match paint {
+                    None => {
+                        let was_wet = self.wet[i][3] > 0.0;
+                        self.dry[i] = scale(self.dry[i], 1.0 - k);
+                        self.wet[i] = scale(self.wet[i], 1.0 - k);
+                        self.relief[i] *= 1.0 - k;
+                        self.wet_relief[i] *= 1.0 - k;
+                        if was_wet && self.wet[i][3] <= 0.0 {
+                            self.wet_count -= 1;
+                        }
+                    }
+                    Some(p) => {
+                        // Fill: wet paint here dries under the new paint (like dry media).
+                        if self.wet[i][3] > 0.0 {
+                            self.dry[i] = over(self.wet[i], self.dry[i]);
+                            self.wet[i] = [0.0; 4];
+                            self.wet_relief[i] = 0.0;
+                            self.wet_count -= 1;
+                        }
+                        self.dry[i] = over(scale(p, k), self.dry[i]);
+                    }
+                }
+            }
+        }
+        self.mark_changed(region);
     }
 
     pub fn preserve_alpha(&self) -> bool {
@@ -408,6 +455,14 @@ impl Canvas {
                 let coverage = match style.texture {
                     Some(tex) => brush.textured_coverage(dx, dy, x, y, tex),
                     None => brush.coverage(dx, dy),
+                };
+                if coverage <= 0.0 {
+                    continue;
+                }
+                // A selection limits where this dab can work.
+                let coverage = match &self.clip {
+                    Some(clip) => coverage * clip[y * self.width + x],
+                    None => coverage,
                 };
                 if coverage <= 0.0 {
                     continue;

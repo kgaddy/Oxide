@@ -3,6 +3,7 @@
 //! This crate knows nothing about windows or UI. The app crate feeds it
 //! pointer positions and displays the pixels it produces.
 
+mod blend;
 mod brush;
 mod canvas;
 mod document;
@@ -13,15 +14,18 @@ pub mod multicolor;
 mod paper;
 mod psd;
 mod region;
+pub mod selection;
+pub use selection::{SelectMode, SelectShape};
 mod spectral;
 mod stroke;
 mod tip;
 mod tips;
 mod transform;
 
+pub use blend::{BlendMode, blend};
 pub use brush::{Bristles, Brush, PaintMode, Rotation};
 pub use canvas::{Buffers, Canvas, Color, DabMode, DabStyle, MAX_RELIEF, ReliefDab, Wetness};
-pub use document::{DEFAULT_DPI, Document, Layer, LayerGroup};
+pub use document::{Clip, DEFAULT_DPI, Document, Layer, LayerGroup, LayerMask};
 pub use file::FileError;
 pub use paint::{Mixing, mix_paint};
 /// Exposed for benchmarks (examples/bench_mix.rs).
