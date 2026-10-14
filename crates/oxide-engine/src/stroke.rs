@@ -8,7 +8,8 @@ use crate::tip::{DabTexture, hash2};
 use crate::brush::{PaintMode, Rotation};
 use crate::paint::Mixing;
 use crate::spectral::Pigment;
-use crate::{Brush, Canvas, Color, DabMode, DabStyle, Wetness};
+use crate::canvas::Buffers;
+use crate::{Brush, Canvas, Color, DabMode, DabStyle, Region, Wetness};
 
 /// One continuous brush stroke, from pen-down to pen-up.
 ///
@@ -57,6 +58,7 @@ impl StrokePoint {
     }
 }
 
+#[derive(Clone)]
 pub struct Stroke {
     mode: DabMode,
     last: (f32, f32),
@@ -79,6 +81,7 @@ pub struct Stroke {
     bristles: Vec<bristle::Bristle>,
 }
 
+#[derive(Clone)]
 struct WetPaint {
     /// The color at the tip of the brush (changes as it picks up paint).
     color: Color,
@@ -99,6 +102,19 @@ struct WetPaint {
     bands: Vec<Color>,
     band_loaded: Vec<Color>,
     band_average: Color,
+}
+
+/// What a [`Stroke::preview`] painted over, to put back.
+pub struct Preview {
+    region: Region,
+    saved: Buffers,
+}
+
+impl Preview {
+    /// Put the canvas back as it was before the preview.
+    pub fn restore(self, canvas: &mut Canvas) {
+        canvas.write_region(self.region, &self.saved);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -205,6 +221,51 @@ impl Stroke {
             let fade = 1.0 - (i + 1) as f32 / (n + 1) as f32;
             self.paint(canvas, brush, dab, fade);
         }
+    }
+
+    /// Show the stroke as if the brush lifted at the cursor, without changing
+    /// the stroke: the dabs held back for lift-off, plus one at the cursor
+    /// (dabs only go down every `spacing`), are painted at full strength on
+    /// a copy of the stroke. Call [`Preview::restore`] before painting the
+    /// stroke further or finishing it. None if there's nothing to show.
+    ///
+    /// Without this, paint trails the cursor by the lift-off length plus up
+    /// to one spacing step, in canvas pixels: barely visible at fit, but
+    /// hundreds of screen pixels when zoomed in.
+    pub fn preview(&self, canvas: &mut Canvas, brush: &Brush) -> Option<Preview> {
+        let (cx, cy) = self.last;
+        let gap = self.since_last_dab > 0.25;
+        if self.tail.is_empty() && !gap {
+            return None;
+        }
+        // Everything the preview can touch: the held-back dabs and the cursor,
+        // plus the brush's reach (bristles splay out to 1.3× the radius).
+        let reach = brush.radius * 2.0 + 6.0;
+        let (mut x0, mut y0, mut x1, mut y1) = (cx, cy, cx, cy);
+        for d in &self.tail {
+            (x0, y0, x1, y1) = (x0.min(d.x), y0.min(d.y), x1.max(d.x), y1.max(d.y));
+        }
+        let clamp = |v: f32, max: usize| (v.max(0.0) as usize).min(max);
+        let region = Region::new(
+            clamp((x0 - reach).floor(), canvas.width()),
+            clamp((y0 - reach).floor(), canvas.height()),
+            clamp((x1 + reach).ceil(), canvas.width()),
+            clamp((y1 + reach).ceil(), canvas.height()),
+        );
+        if region.is_empty() {
+            return None;
+        }
+        let saved = canvas.read_region(region);
+        let mut ghost = self.clone();
+        while let Some(dab) = ghost.tail.pop_front() {
+            ghost.paint(canvas, brush, dab, 1.0);
+        }
+        if gap {
+            let p = self.last_point;
+            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction };
+            ghost.paint(canvas, brush, dab, 1.0);
+        }
+        Some(Preview { region, saved })
     }
 
     /// The color on the brush now (for wet brushes), so a "dirty brush" can
@@ -812,6 +873,34 @@ mod tests {
         let twisted = StrokePoint { rotation: Some(30.0), ..tilted };
         assert_eq!(twisted.pen_angle(Rotation::PenRotation), Some(30.0));
         assert_eq!(StrokePoint::mouse(0.0, 0.0).pen_angle(Rotation::PenTilt), None);
+    }
+
+    #[test]
+    fn preview_reaches_the_cursor_and_restores_exactly() {
+        let mut canvas = Canvas::new(300, 40, Color::TRANSPARENT);
+        // Long lift-off and wide spacing: the paint would trail far behind the cursor.
+        let brush = Brush { radius: 8.0, lift_off: 1.0, spacing: 0.5, ..Brush::default() };
+        let mut stroke = Stroke::begin(&mut canvas, &brush, DabMode::Paint, 20.0, 20.0);
+        stroke.line_to(&mut canvas, &brush, 285.0, 20.0);
+        assert_eq!(canvas.pixel(285, 20).unwrap().a, 0.0, "held back / not reached yet");
+        let before = canvas.read_region(canvas.bounds());
+
+        let preview = stroke.preview(&mut canvas, &brush).expect("something to show");
+        assert!(canvas.pixel(285, 20).unwrap().a > 0.9, "the preview reaches the cursor");
+        preview.restore(&mut canvas);
+        let after = canvas.read_region(canvas.bounds());
+        assert!(after.dry == before.dry && after.wet == before.wet && after.relief == before.relief, "restored exactly");
+
+        // The stroke itself is untouched: finishing still paints the tapered end.
+        let paint = |c: &Canvas| (200..300).flat_map(|x| (0..40).map(move |y| (x, y))).map(|(x, y)| c.pixel(x, y).unwrap().a).sum::<f32>();
+        let held = paint(&canvas);
+        stroke.finish(&mut canvas, &brush);
+        assert!(paint(&canvas) > held, "the real ending goes down on pen-up");
+        // A brush with no lift-off and fine spacing has nothing to preview.
+        let fine = Brush { radius: 8.0, spacing: 0.01, ..Brush::default() };
+        let mut s = Stroke::begin(&mut canvas, &fine, DabMode::Paint, 20.0, 30.0);
+        s.line_to(&mut canvas, &fine, 40.0, 30.0);
+        assert!(s.preview(&mut canvas, &fine).is_none());
     }
 
     #[test]

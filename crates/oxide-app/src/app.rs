@@ -95,6 +95,9 @@ pub struct OxideApp {
     recent_colors: Vec<Color>,
     /// The stroke being painted right now, if the button is down.
     stroke: Option<Stroke>,
+    /// The stroke's end drawn ahead of time (held-back lift-off dabs and the
+    /// gap to the cursor), restored before the stroke goes on (see `Stroke::preview`).
+    stroke_preview: Option<oxide_engine::Preview>,
     /// Keep picked-up paint on the brush between strokes.
     dirty_brush: bool,
     /// The paint left on a dirty brush from the last stroke.
@@ -358,6 +361,7 @@ impl OxideApp {
             tool_states: Tool::ALL.map(Tool::default_state),
             recent_colors: Vec::new(),
             stroke: None,
+            stroke_preview: None,
             dirty_brush: true,
             carried_color: None,
             view: View { fit: true, zoom: 1.0, pan: egui::Vec2::ZERO, last_scale: 1.0, rotation: 0.0, flip: false },

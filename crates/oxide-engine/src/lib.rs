@@ -35,7 +35,7 @@ pub mod spectral_bench {
 pub use psd::PsdOptions;
 pub use paper::{Paper, PaperKind, PaperSettings, surface_acceptance};
 pub use region::Region;
-pub use stroke::{Stroke, StrokePoint};
+pub use stroke::{Preview, Stroke, StrokePoint};
 pub use tip::DabTexture;
 pub use tips::{Tip, TipImage, image_tips, register_tip, unregister_tip};
 pub use transform::Transform;

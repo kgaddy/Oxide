@@ -87,12 +87,23 @@ impl OxideApp {
         let point = StrokePoint::mouse(cx + radius * b.angle.cos(), cy + radius * b.angle.sin());
         let brush = self.current_brush();
         let started = Instant::now();
+        // (The same steps as real painting, preview included.)
+        let canvas = self.document.active_canvas();
+        if let Some(preview) = self.stroke_preview.take() {
+            preview.restore(canvas);
+        }
         match &mut b.stroke {
             None => {
                 self.document.begin_stroke();
-                b.stroke = Some(Stroke::begin_at(self.document.active_canvas(), &brush, DabMode::Paint, point, None));
+                let canvas = self.document.active_canvas();
+                let stroke = Stroke::begin_at(canvas, &brush, DabMode::Paint, point, None);
+                self.stroke_preview = stroke.preview(canvas, &brush);
+                b.stroke = Some(stroke);
             }
-            Some(stroke) => stroke.line_to_point(self.document.active_canvas(), &brush, point),
+            Some(stroke) => {
+                stroke.line_to_point(canvas, &brush, point);
+                self.stroke_preview = stroke.preview(canvas, &brush);
+            }
         }
         if b.frame > WARMUP {
             b.paint.push(started.elapsed().as_secs_f32() * 1000.0);
@@ -103,6 +114,9 @@ impl OxideApp {
         b.frame += 1;
         if b.frame >= WARMUP + FRAMES {
             if let Some(mut stroke) = b.stroke.take() {
+                if let Some(preview) = self.stroke_preview.take() {
+                    preview.restore(self.document.active_canvas());
+                }
                 stroke.finish(self.document.active_canvas(), &brush);
                 self.document.end_stroke();
             }

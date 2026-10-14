@@ -115,6 +115,7 @@ impl OxideApp {
     fn replace_document(&mut self, document: Document, path: Option<PathBuf>) {
         self.document = document;
         self.stroke = None;
+        self.stroke_preview = None; // (it belonged to the old document)
         self.saved_state = self.document.state_id();
         self.mixing_palette.reset_view();
         self.mixing_palette.saved_state = self.palette_state();

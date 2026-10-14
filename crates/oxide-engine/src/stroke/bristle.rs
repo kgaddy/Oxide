@@ -14,6 +14,7 @@ use crate::{Bristles, Brush, Canvas, Color, DabMode, DabStyle, Wetness};
 use super::{PendingDab, Stroke, mode_rates, plow_force};
 
 /// One hair.
+#[derive(Clone)]
 pub(super) struct Bristle {
     /// Where it sits in the tip, in a unit circle (before size, shape and angle).
     offset: (f32, f32),

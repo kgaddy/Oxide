@@ -165,7 +165,9 @@ impl OxideApp {
                                 self.document.begin_stroke();
                                 let tip = self.dirty_tip();
                                 let canvas = self.document.active_canvas();
-                                self.stroke = Some(Stroke::begin_at(canvas, &brush, mode, point, tip));
+                                let stroke = Stroke::begin_at(canvas, &brush, mode, point, tip);
+                                self.stroke_preview = stroke.preview(canvas, &brush);
+                                self.stroke = Some(stroke);
                                 if self.tool.paints() {
                                     self.remember_color(self.color);
                                 }
@@ -173,9 +175,16 @@ impl OxideApp {
                             Some(stroke) => {
                                 // The stabilizer's string is measured on screen, so it feels the same at any zoom.
                                 let string = self.app_settings.stroke_smoothing * 60.0 / xf.scale;
-                                if let Some(point) = self.stabilizer.follow(point, string, self.app_settings.pressure_smoothing) {
-                                    stroke.line_to_point(self.document.active_canvas(), &brush, point);
+                                // Last frame's preview comes off before the stroke goes on...
+                                let canvas = self.document.active_canvas();
+                                if let Some(preview) = self.stroke_preview.take() {
+                                    preview.restore(canvas);
                                 }
+                                if let Some(point) = self.stabilizer.follow(point, string, self.app_settings.pressure_smoothing) {
+                                    stroke.line_to_point(canvas, &brush, point);
+                                }
+                                // ...and a new one shows the paint reaching the cursor.
+                                self.stroke_preview = stroke.preview(canvas, &brush);
                             }
                         }
                     }
@@ -184,8 +193,11 @@ impl OxideApp {
             }
             None => {
                 if let Some(mut stroke) = self.stroke.take() {
-                    // Paint the lift-off at the end of the stroke.
+                    // Swap the preview for the real ending: the lift-off taper.
                     let brush = self.stroke_brush();
+                    if let Some(preview) = self.stroke_preview.take() {
+                        preview.restore(self.document.active_canvas());
+                    }
                     stroke.finish(self.document.active_canvas(), &brush);
                     // A dirty brush keeps the paint it picked up for the next stroke.
                     if self.tool.is_wet_medium() && self.dirty_brush {
