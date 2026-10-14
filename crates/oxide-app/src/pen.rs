@@ -10,6 +10,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// How many pressure readings are kept between frames (a frame usually
+/// brings 2–9; tablets report ~200+ times a second).
+pub const MAX_SAMPLES: usize = 64;
+
 /// The latest pen reading.
 #[derive(Clone, Copy, Debug)]
 pub struct PenState {
@@ -33,6 +37,10 @@ pub struct PenState {
     /// Description of the most recent event, e.g. "LeftMouseDragged/TabletPoint p=0.42".
     pub last_description: &'static str,
     pub last_raw_pressure: f32,
+    /// Every pressure reading while touching since the app last took them
+    /// (oldest first), so strokes follow the pressure between frames too.
+    pub samples: [f32; MAX_SAMPLES],
+    pub sample_count: usize,
 }
 
 impl Default for PenState {
@@ -48,11 +56,23 @@ impl Default for PenState {
             pen_events_seen: 0,
             last_description: "none yet",
             last_raw_pressure: 0.0,
+            samples: [0.0; MAX_SAMPLES],
+            sample_count: 0,
         }
     }
 }
 
 impl PenState {
+    /// Keep a pressure reading (dropping the oldest when full).
+    fn push_sample(&mut self, pressure: f32) {
+        if self.sample_count == MAX_SAMPLES {
+            self.samples.copy_within(1.., 0);
+            self.sample_count -= 1;
+        }
+        self.samples[self.sample_count] = pressure;
+        self.sample_count += 1;
+    }
+
     /// Is the pen tip on the tablet right now? (Pressure counts even if the
     /// driver hasn't decided it's a "click" yet, so light touches paint.)
     pub fn touching(&self) -> bool {
@@ -85,6 +105,14 @@ impl PenInput {
         *self.state.lock().expect("pen state lock")
     }
 
+    /// The pressure readings since the last call (oldest first), and forget them.
+    pub fn take_samples(&self) -> Vec<f32> {
+        let mut pen = self.state.lock().expect("pen state lock");
+        let samples = pen.samples[..pen.sample_count].to_vec();
+        pen.sample_count = 0;
+        samples
+    }
+
     /// Did we manage to start listening to the tablet?
     pub fn available(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -92,6 +120,24 @@ impl PenInput {
         #[cfg(not(target_os = "macos"))]
         return false;
     }
+}
+
+/// Pressure for each of `n` points the pointer passed through this frame,
+/// spreading the frame's pressure `samples` (oldest first) along them in
+/// order; the last point gets the newest reading. `fallback` when there are none.
+pub fn spread(samples: &[f32], n: usize, fallback: f32) -> Vec<f32> {
+    (1..=n)
+        .map(|j| match samples {
+            [] => fallback,
+            [only] => *only,
+            _ => {
+                let at = j as f32 / n as f32 * (samples.len() - 1) as f32;
+                let (i, t) = (at.floor() as usize, at.fract());
+                let next = samples[(i + 1).min(samples.len() - 1)];
+                samples[i] + (next - samples[i]) * t
+            }
+        })
+        .collect()
 }
 
 /// Turn raw pressure into the pressure brushes use. `curve` < 1 is softer
@@ -197,6 +243,10 @@ mod mac {
         pen.in_proximity = true;
         pen.last_event = Some(Instant::now());
         pen.pressure = if kind == NSEventType::LeftMouseUp { 0.0 } else { super::finite_or(raw, 0.0).clamp(0.0, 1.0) };
+        // Every reading while touching (and the lift itself), for smooth width changes.
+        if pen.pressure > 0.0 || kind == NSEventType::LeftMouseUp {
+            pen.push_sample(pen.pressure);
+        }
         let tilt = e.tilt();
         // AppKit's y axis points up; the canvas's points down.
         pen.tilt = (super::finite_or(tilt.x as f32, 0.0), -super::finite_or(tilt.y as f32, 0.0));
@@ -225,6 +275,24 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_samples_spread_along_the_frame() {
+        // Two points, four readings easing off: the path ends at the newest one.
+        assert_eq!(spread(&[0.8, 0.6, 0.4, 0.2], 2, 1.0), vec![0.5, 0.2]);
+        // More points than readings: blended in between.
+        let p = spread(&[1.0, 0.0], 4, 1.0);
+        assert_eq!(p, vec![0.75, 0.5, 0.25, 0.0]);
+        assert_eq!(spread(&[], 2, 0.3), vec![0.3, 0.3]);
+        assert_eq!(spread(&[0.7], 3, 0.3), vec![0.7, 0.7, 0.7]);
+        // Overflowing readings keep the newest.
+        let mut pen = PenState::default();
+        for i in 0..(MAX_SAMPLES + 5) {
+            pen.push_sample(i as f32);
+        }
+        assert_eq!(pen.sample_count, MAX_SAMPLES);
+        assert_eq!(pen.samples[MAX_SAMPLES - 1], (MAX_SAMPLES + 4) as f32);
+    }
 
     #[test]
     fn soft_curve_boosts_light_pressure() {

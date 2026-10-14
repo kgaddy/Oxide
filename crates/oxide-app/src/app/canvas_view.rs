@@ -58,6 +58,8 @@ impl OxideApp {
         // The pen counts as "down" as soon as it reports pressure, even if the
         // tablet driver hasn't decided it's a mouse click yet (light touches).
         let pen = self.pen.read();
+        // Every pressure reading since last frame (taken every frame, so none go stale).
+        let pen_samples = self.pen.take_samples();
         let pen_down = pen.touching();
         let primary_down = ui.input(|i| i.pointer.primary_down()) || pen_down;
         // Hidden, locked, and tracing layers can't be painted on.
@@ -113,6 +115,7 @@ impl OxideApp {
                     // A mouse has no pressure: use the Pressure slider.
                     StrokePoint { pressure: self.mouse_pressure, ..StrokePoint::mouse(p.x, p.y) }
                 };
+                let path = if pen.is_pen { self.pen_path(ui, &xf, &pen_samples, Some(p), point) } else { vec![point] };
                 match self.tool {
                     Tool::Select => self.select_drag_to(p, ui),
                     Tool::Picker => {
@@ -180,8 +183,10 @@ impl OxideApp {
                                 if let Some(preview) = self.stroke_preview.take() {
                                     preview.restore(canvas);
                                 }
-                                if let Some(point) = self.stabilizer.follow(point, string, self.app_settings.pressure_smoothing) {
-                                    stroke.line_to_point(canvas, &brush, point);
+                                for point in path {
+                                    if let Some(point) = self.stabilizer.follow(point, string, self.app_settings.pressure_smoothing) {
+                                        stroke.line_to_point(canvas, &brush, point);
+                                    }
                                 }
                                 // ...and a new one shows the paint reaching the cursor.
                                 self.stroke_preview = stroke.preview(canvas, &brush);
@@ -197,6 +202,15 @@ impl OxideApp {
                     let brush = self.stroke_brush();
                     if let Some(preview) = self.stroke_preview.take() {
                         preview.restore(self.document.active_canvas());
+                    }
+                    // The pen's last moves as it lifts (pressure easing off to 0)
+                    // arrive in the same frame as the lift: paint them too, so the
+                    // line thins out at the end instead of stopping at full width.
+                    if pen.is_pen && !pen_samples.is_empty() {
+                        let last = StrokePoint { pressure: 0.0, ..StrokePoint::mouse(0.0, 0.0) };
+                        for point in self.pen_path(ui, &xf, &pen_samples, None, last) {
+                            stroke.line_to_point(self.document.active_canvas(), &brush, point);
+                        }
                     }
                     stroke.finish(self.document.active_canvas(), &brush);
                     // A dirty brush keeps the paint it picked up for the next stroke.
@@ -289,6 +303,31 @@ impl OxideApp {
     fn dirty_tip(&self) -> Option<oxide_engine::Color> {
         // A MultiColored brush starts each stroke clean, with its colors side by side.
         self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush && !self.multicolor_active())
+    }
+
+    /// With a pen: every position the pointer passed this frame (and `end`,
+    /// if it isn't the last), each with its own pressure from `samples`, so the
+    /// line's width follows the pen smoothly instead of stepping once per frame.
+    /// `like` gives the tilt and rotation (and the pressure if there are no samples).
+    fn pen_path(&self, ui: &egui::Ui, xf: &ViewXform, samples: &[f32], end: Option<Vec2>, like: StrokePoint) -> Vec<StrokePoint> {
+        let mut moved: Vec<Vec2> = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::PointerMoved(pos) => Some(xf.to_canvas(*pos)),
+                    _ => None,
+                })
+                .collect()
+        });
+        if let Some(end) = end
+            && moved.last() != Some(&end)
+        {
+            moved.push(end);
+        }
+        let curve = self.app_settings.pressure_curve;
+        let samples: Vec<f32> = samples.iter().map(|&s| crate::pen::apply_curve(s, curve)).collect();
+        let pressures = crate::pen::spread(&samples, moved.len(), like.pressure);
+        moved.into_iter().zip(pressures).map(|(c, pressure)| StrokePoint { x: c.x, y: c.y, pressure, ..like }).collect()
     }
 
     /// Follow which way the pointer is moving (smoothed), for the cursor.
@@ -431,7 +470,8 @@ pub(super) fn view_xform(view: &mut View, workspace: Rect, canvas_size: Vec2, ma
         let w = canvas_size.x * cos + canvas_size.y * sin;
         let h = canvas_size.x * sin + canvas_size.y * cos;
         let available = workspace.shrink(margin);
-        (available.width() / w).min(available.height() / h).max(View::MIN_ZOOM)
+        // Never past 100% (the 100% button's size): a small canvas shows at actual size.
+        (available.width() / w).min(available.height() / h).clamp(View::MIN_ZOOM, 1.0)
     } else {
         view.zoom
     };

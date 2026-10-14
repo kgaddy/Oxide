@@ -113,7 +113,8 @@ impl Tool {
         // real thing: ink and oils thicken, pencil and airbrush darken.
         let (size_pressure, opacity_pressure) = match self {
             Tool::OilsAcrylics => (0.6, 0.3),
-            Tool::Ink => (0.85, 0.0),
+            // Ink: a light touch thins the line right down (to 10%), for tapers.
+            Tool::Ink => (1.0, 0.0),
             Tool::Pencil => (0.3, 0.8),
             Tool::Marker => (0.2, 0.4),
             Tool::Airbrush => (0.0, 1.0),

@@ -317,7 +317,10 @@ impl OxideApp {
             }
         });
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.view.fit, "Fit").on_hover_text("Fit to screen (. or ⌘0)").clicked() {
+            // A real button (a selectable label looks like plain text until it's on);
+            // highlighted while the view is fitted.
+            let fit = egui::Button::new("Fit to Window").selected(self.view.fit);
+            if ui.add(fit).on_hover_text("Show the whole canvas, as big as the window allows (up to 100%); it stays fitted when the window resizes (. or ⌘0)").clicked() {
                 self.view.fit = true;
             }
             if ui.button("100%").on_hover_text("Actual size (0 or ⌘1)").clicked() {
