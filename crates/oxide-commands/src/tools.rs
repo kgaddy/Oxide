@@ -5,7 +5,7 @@
 //! the tip looks like. A **medium** (oils & acrylics, ink, pencil, ...) says
 //! how the paint behaves. Any medium can use any brush preset.
 
-use oxide_engine::{Bristles, Brush, Color, PaintMode, Rotation, Tip};
+use oxide_engine::{Bristles, Brush, Color, PaintMode, Rotation, TaperEnds, Tip};
 
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -174,6 +174,8 @@ pub struct BrushShape {
     pub lift_off: f32,
     /// Both ends of every stroke come to a clean point, like an engraved line (0 = off).
     pub taper: f32,
+    /// Which ends the taper points (both, or just the start or the end).
+    pub taper_ends: TaperEnds,
     /// How much the paper texture shows in the stroke (0 = ignores the paper).
     pub grain: f32,
     /// How the tip turns while painting (fixed, follow the stroke, pen...).
@@ -204,6 +206,7 @@ impl Default for BrushShape {
             streaks: 0.0,
             lift_off: 0.0,
             taper: 0.0,
+            taper_ends: TaperEnds::Both,
             grain: 0.0,
             rotation: Rotation::None,
             size_pressure: 0.0,
@@ -257,6 +260,7 @@ impl ToolState {
             streaks: s.streaks,
             lift_off: s.lift_off,
             taper: s.taper,
+            taper_ends: s.taper_ends,
             grain: s.grain,
             bristles: s.bristles,
             tip: s.tip,

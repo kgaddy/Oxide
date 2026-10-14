@@ -33,6 +33,28 @@ impl Rotation {
     }
 }
 
+/// Which ends of a stroke the [taper](Brush::taper) points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TaperEnds {
+    /// Both ends come to a point (an engraved line).
+    #[default]
+    Both,
+    /// Starts at a point and ends at full size.
+    Start,
+    /// Starts at full size and ends at a point.
+    End,
+}
+
+impl TaperEnds {
+    pub fn tapers_start(self) -> bool {
+        matches!(self, TaperEnds::Both | TaperEnds::Start)
+    }
+
+    pub fn tapers_end(self) -> bool {
+        matches!(self, TaperEnds::Both | TaperEnds::End)
+    }
+}
+
 /// How a wet brush treats the paint already on the canvas (paint modes
 /// for oils & acrylics). Pressure matters: with a mouse it's 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -129,6 +151,8 @@ pub struct Brush {
     /// Both ends of every stroke come to a clean point, like an engraved line
     /// (0..=1; 1 = the longest taper). Unlike lift-off it doesn't fade or break up.
     pub taper: f32,
+    /// Which ends the taper points.
+    pub taper_ends: TaperEnds,
     /// Pick up dry paint as well as wet (the Smudge tool works on dry paint).
     pub pickup_dry: bool,
     /// How much pen pressure controls the size (0 = not at all, 1 = a light
@@ -182,6 +206,7 @@ impl Default for Brush {
             streaks: 0.0,
             lift_off: 0.0,
             taper: 0.0,
+            taper_ends: TaperEnds::Both,
             pickup_dry: false,
             size_pressure: 0.0,
             opacity_pressure: 0.0,
@@ -281,6 +306,14 @@ impl Brush {
         }
         let t = (from_end / length).clamp(0.0, 1.0);
         1.0 - (1.0 - t) * (1.0 - t)
+    }
+
+    /// The taper's size for a dab `from_start` pixels into a stroke and
+    /// `from_end` pixels before its end, for the ends this brush tapers.
+    pub fn taper_at(&self, from_start: f32, from_end: f32) -> f32 {
+        let start = if self.taper_ends.tapers_start() { self.taper_scale(from_start) } else { 1.0 };
+        let end = if self.taper_ends.tapers_end() { self.taper_scale(from_end) } else { 1.0 };
+        start * end
     }
 
     pub fn step(&self) -> f32 {

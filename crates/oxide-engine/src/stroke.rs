@@ -229,7 +229,7 @@ impl Stroke {
         let end = self.travelled;
         for i in 0..n {
             let mut dab = self.tail.pop_front().expect("counted above");
-            dab.taper *= brush.taper_scale(end - dab.dist);
+            dab.taper *= brush.taper_at(f32::INFINITY, end - dab.dist);
             // 1.0 at the start of the lift-off, down toward 0 at the very end.
             let fade = match (i + lift).checked_sub(n) {
                 Some(j) => 1.0 - (j + 1) as f32 / (lift + 1) as f32,
@@ -276,7 +276,7 @@ impl Stroke {
         // The taper's end shows as it will look when the pen lifts here.
         let end = self.travelled;
         while let Some(mut dab) = ghost.tail.pop_front() {
-            dab.taper *= brush.taper_scale(end - dab.dist);
+            dab.taper *= brush.taper_at(f32::INFINITY, end - dab.dist);
             ghost.paint(canvas, brush, dab, 1.0);
         }
         if gap && brush.taper <= 0.0 {
@@ -321,7 +321,7 @@ impl Stroke {
     /// [`Stroke::place`] for a dab `dist` pixels along the stroke.
     #[allow(clippy::too_many_arguments)]
     fn place_at(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32, pressure: f32, pen_angle: Option<f32>, dist: f32) {
-        let taper = brush.taper_scale(dist);
+        let taper = brush.taper_at(dist, f32::INFINITY);
         self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction, dist, taper });
         let keep = lift_off_dabs(brush).max(taper_dabs(brush));
         while self.tail.len() > keep {
@@ -563,6 +563,9 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 /// How many dabs to hold back so the end of the stroke can taper.
 fn taper_dabs(brush: &Brush) -> usize {
+    if !brush.taper_ends.tapers_end() {
+        return 0;
+    }
     (brush.taper_length() / brush.step()).ceil() as usize
 }
 
@@ -647,6 +650,18 @@ mod tests {
         // It's clean: the end is as opaque as the middle, not faded like lift-off.
         let a = canvas.pixel(220, 15).map_or(0.0, |c| c.a);
         assert!(a > 0.9, "solid near the point: {a}");
+    }
+
+    #[test]
+    fn taper_can_point_just_one_end() {
+        for (ends, thin_start) in [(crate::TaperEnds::End, false), (crate::TaperEnds::Start, true)] {
+            let brush = Brush { radius: 6.0, hardness: 1.0, spacing: 0.05, taper: 0.5, taper_ends: ends, ..Brush::default() };
+            let mut canvas = Canvas::new(240, 30, Color::TRANSPARENT);
+            line(&mut canvas, &brush, (10.0, 15.0), (230.0, 15.0));
+            let (start, end) = (thickness(&canvas, 13), thickness(&canvas, 226));
+            let (thin, full) = if thin_start { (start, end) } else { (end, start) };
+            assert!(thin <= 5 && full >= 11, "{ends:?}: start {start}, end {end}");
+        }
     }
 
     #[test]

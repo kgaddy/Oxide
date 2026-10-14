@@ -3,7 +3,7 @@
 //! space between them, bending to follow both. Each line is an ordinary brush
 //! stroke, so the brush's taper and pressure response shape it.
 
-use oxide_engine::{Brush, Canvas, DabMode, Stroke, StrokePoint};
+use oxide_engine::{Brush, Canvas, DabMode, Stroke, StrokePoint, TaperEnds};
 
 /// Which way the lines run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,8 +164,9 @@ fn paint_line(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[StrokeP
     stroke.finish(canvas, brush);
 }
 
-/// One line, broken up toward its thin end: solid where it's full width,
-/// then dashes that get shorter with wider gaps, then dots.
+/// One line, broken up toward its thin end (its start if the taper is
+/// reversed): solid where it's full width, then dashes that get shorter with
+/// wider gaps, then dots.
 ///
 /// The pieces are painted as short strokes without a taper of their own, each
 /// sized by the line's taper where it sits, so the line keeps its pointed
@@ -173,6 +174,13 @@ fn paint_line(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[StrokeP
 fn paint_broken(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[StrokePoint], fade: f32, amount: f32, rng: &mut Rng) {
     if line.len() < 2 {
         return paint_line(canvas, brush, mode, line);
+    }
+    // Reversed taper (the point at the start): break up toward the start
+    // instead, by working on the line backwards with the point at its end.
+    if brush.taper_ends == TaperEnds::Start {
+        let backwards: Vec<StrokePoint> = line.iter().rev().copied().collect();
+        let brush = Brush { taper_ends: TaperEnds::End, ..brush.clone() };
+        return paint_broken(canvas, &brush, mode, &backwards, fade, amount, rng);
     }
     // Distance along the line at each point.
     let mut at = vec![0.0];
@@ -232,7 +240,7 @@ fn paint_piece(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[Stroke
     for k in 0..steps {
         let (a, b) = (from + (to - from) * k as f32 / steps as f32, from + (to - from) * (k + 1) as f32 / steps as f32);
         let mid = (a + b) / 2.0;
-        let piece = Brush { taper: 0.0, radius: brush.radius * brush.taper_scale(mid.min(total - mid)), ..brush.clone() };
+        let piece = Brush { taper: 0.0, radius: brush.radius * brush.taper_at(mid, total - mid), ..brush.clone() };
         let mut stroke = Stroke::begin_at(canvas, &piece, mode, point(a), None);
         stroke.line_to_point(canvas, &piece, point(b));
         stroke.finish(canvas, &piece);
@@ -361,6 +369,19 @@ mod tests {
         // Count the gaps along the last part of the line.
         let gaps = (120..205).filter(|&x| inked(x) && !inked(x + 1)).count();
         assert!(gaps >= 5, "broken up toward the end: {gaps} gaps");
+    }
+
+    #[test]
+    fn reversed_taper_breaks_up_the_start() {
+        use oxide_engine::Color;
+        let mut canvas = Canvas::new(220, 20, Color::TRANSPARENT);
+        let brush = Brush { radius: 2.0, hardness: 1.0, spacing: 0.05, taper: 0.5, taper_ends: TaperEnds::Start, ..Brush::default() };
+        let line: Vec<StrokePoint> = (0..=200).map(|x| StrokePoint::mouse(10.0 + x as f32, 10.0)).collect();
+        paint_hatch(&mut canvas, &brush, DabMode::Paint, &[line], &HatchSettings { break_up: 0.5, ..ruled() }, 3);
+        let inked = |x: usize| canvas.pixel(x, 10).is_some_and(|c| c.a > 0.3);
+        assert!((150..205).all(inked), "solid at the end");
+        let gaps = (12..90).filter(|&x| inked(x) && !inked(x + 1)).count();
+        assert!(gaps >= 5, "broken up toward the start: {gaps} gaps");
     }
 
     #[test]

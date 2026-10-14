@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
-use oxide_engine::{Bristles, Brush, Color, DabMode, Document, Rotation, Stroke, Tip};
+use oxide_engine::{Bristles, Brush, Color, DabMode, Document, Rotation, Stroke, TaperEnds, Tip};
 use serde::{Deserialize, Serialize};
 
 use crate::app::PAPER;
@@ -41,6 +41,8 @@ pub struct BrushPreset {
     pub lift_off: f32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub taper: f32,
+    #[serde(default, skip_serializing_if = "is_both")]
+    pub taper_ends: TaperEnds,
     /// How the tip turns while painting. Missing in older files: fixed.
     #[serde(default)]
     pub rotation: Rotation,
@@ -75,6 +77,10 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+fn is_both(v: &TaperEnds) -> bool {
+    *v == TaperEnds::Both
+}
+
 impl BrushPreset {
     pub fn from_shape(name: &str, group: &str, shape: &BrushShape) -> Self {
         BrushPreset {
@@ -89,6 +95,7 @@ impl BrushPreset {
             streaks: shape.streaks,
             lift_off: shape.lift_off,
             taper: shape.taper,
+            taper_ends: shape.taper_ends,
             rotation: shape.rotation,
             size_pressure: Some(shape.size_pressure),
             opacity_pressure: Some(shape.opacity_pressure),
@@ -122,6 +129,7 @@ impl BrushPreset {
             streaks: self.streaks,
             lift_off: self.lift_off,
             taper: self.taper,
+            taper_ends: self.taper_ends,
             rotation: self.rotation,
             size_pressure: self.size_pressure.unwrap_or(0.0),
             opacity_pressure: self.opacity_pressure.unwrap_or(0.0),
@@ -146,7 +154,7 @@ impl BrushPreset {
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {
-    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, taper: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
+    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, taper: 0.0, taper_ends: TaperEnds::Both, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
 }
 
 /// A built-in preset whose tip turns to follow the stroke (flat brushes, knives).

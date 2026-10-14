@@ -165,6 +165,9 @@ pub struct SetBrushArgs {
     pub lift_off: Option<f32>,
     /// Both stroke ends come to a clean point, like an engraved line, 0–1 (0 = off).
     pub taper: Option<f32>,
+    /// Which ends the taper points: "both" (default), "start" (starts at a point,
+    /// ends full size) or "end" (starts full size, ends at a point).
+    pub taper_ends: Option<String>,
     /// How much the paper texture shows in the stroke 0–1.
     pub grain: Option<f32>,
     /// Oils: how thick the paint goes on (impasto), 0 = flat, 1 = very thick. Default 0.5.

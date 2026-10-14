@@ -147,8 +147,7 @@ impl OxideApp {
                     .on_hover_text("Throw each dab off the stroke's path, up to one brush radius at 1");
                 ui.add(egui::Slider::new(&mut shape.lift_off, 0.0..=1.0).text("Lift-off"))
                     .on_hover_text("How much the end of a stroke thins, fades, and breaks up as the brush lifts off");
-                ui.add(egui::Slider::new(&mut shape.taper, 0.0..=1.0).text("Taper"))
-                    .on_hover_text("Both ends of every stroke come to a clean point, like an engraved line, even with a mouse");
+                super::panels::taper_controls(ui, shape);
                 ui.add(egui::Slider::new(&mut shape.size_pressure, 0.0..=1.0).text("Size ← pressure"))
                     .on_hover_text("How much pen pressure changes the size: 0 = none, 1 = light touch is very thin");
                 ui.add(egui::Slider::new(&mut shape.opacity_pressure, 0.0..=1.0).text("Opacity ← pressure"))

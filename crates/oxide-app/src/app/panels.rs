@@ -81,8 +81,7 @@ impl OxideApp {
             }
         }
         if tool.paints() || tool == Tool::Eraser {
-            ui.add(egui::Slider::new(&mut state.shape.taper, 0.0..=1.0).text("Taper"))
-                .on_hover_text("Both ends of every stroke come to a clean point, like an engraved line, even with a mouse (0 = off)");
+            taper_controls(ui, &mut state.shape);
         }
 
         if tool == Tool::Knife {
@@ -541,4 +540,27 @@ fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
     ui.painter().rect_filled(rect, 2.0, to_color32(color));
     ui.painter().rect_stroke(rect, 2.0, stroke, StrokeKind::Inside);
     response
+}
+
+/// The Taper slider, and which ends it points (Properties and Brush Creator).
+pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
+    use oxide_engine::TaperEnds;
+    ui.add(egui::Slider::new(&mut shape.taper, 0.0..=1.0).text("Taper"))
+        .on_hover_text("Strokes come to a clean point, like an engraved line, even with a mouse (0 = off)");
+    if shape.taper <= 0.0 {
+        return;
+    }
+    ui.horizontal(|ui| {
+        let mut both = shape.taper_ends == TaperEnds::Both;
+        if ui.checkbox(&mut both, "Both ends").on_hover_text("Point both ends of the stroke. Off: full size at one end, tapering to a point at the other").changed() {
+            shape.taper_ends = if both { TaperEnds::Both } else { TaperEnds::End };
+        }
+        if !both {
+            let reversed = shape.taper_ends == TaperEnds::Start;
+            let hint = "Which end gets the point. Off: the stroke starts full size and tapers where it ends. On: it starts at a point and ends full size (Hatch: Break up moves to that end too).\n(Hatch lines end at the second rail, or where you finished the rails for Along.)";
+            if ui.selectable_label(reversed, "⇄ Reverse").on_hover_text(hint).clicked() {
+                shape.taper_ends = if reversed { TaperEnds::End } else { TaperEnds::Start };
+            }
+        }
+    });
 }
