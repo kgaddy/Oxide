@@ -253,7 +253,12 @@ impl OxideApp {
         // Painting on a mask: say so, top-left of the workspace.
         if self.mask_painting() {
             let pos = workspace.left_top() + Vec2::new(12.0, 12.0);
-            let text = "◐ Painting on the layer mask: dark hides, light reveals (eraser reveals)";
+            let mask_on = self.document.layers()[self.document.active_index()].mask.as_ref().is_some_and(|m| m.enabled);
+            let text = if mask_on {
+                "◐ Painting on the layer mask: dark hides, light reveals (eraser reveals)"
+            } else {
+                "◌ Painting on the layer mask, but it's off: changes won't show until you turn it on (Layers panel → Mask → On)"
+            };
             painter.text(pos + Vec2::splat(1.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::BLACK);
             painter.text(pos, egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
         }

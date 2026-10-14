@@ -238,6 +238,9 @@ impl Session {
             Command::Mask(a) => {
                 let doc = &mut self.document;
                 let has = doc.layers()[doc.active_index()].mask.is_some();
+                if !matches!(a.action.as_str(), "add" | "on" | "off" | "apply" | "delete") {
+                    return Err(format!("Unknown mask action \"{}\" (add, on, off, apply, delete).", a.action));
+                }
                 match a.action.as_str() {
                     "add" if has => return Err("The current layer already has a mask.".into()),
                     "add" => {
@@ -248,7 +251,7 @@ impl Session {
                     "off" => doc.set_mask_enabled(false),
                     "apply" => doc.apply_mask(),
                     "delete" => doc.delete_mask(),
-                    other => return Err(format!("Unknown mask action \"{other}\" (add, on, off, apply, delete).")),
+                    _ => unreachable!("checked above"),
                 }
                 Ok(Output::Json(self.layers_json()))
             }
@@ -533,7 +536,9 @@ impl Session {
                 self.document.mask_line((pair[0].x, pair[0].y), (pair[1].x, pair[1].y), &dab(&pair[1]), value);
             }
             self.document.end_mask_stroke();
-            return Ok(Output::Text(format!("Painted a {}-point stroke on the mask", a.points.len())));
+            let mask_on = self.document.layers()[self.document.active_index()].mask.as_ref().is_some_and(|m| m.enabled);
+            let note = if mask_on { "" } else { " (the mask is off, so this won't show until mask action \"on\")" };
+            return Ok(Output::Text(format!("Painted a {}-point stroke on the mask{note}", a.points.len())));
         }
 
         let doc: &mut Document = if on_palette { self.document.palette.get_or_insert_with(|| Box::new(new_palette())) } else { &mut self.document };
@@ -1036,6 +1041,15 @@ mod tests {
         let Output::Json(info) = run(&mut s, r##"{"command": "info"}"##) else { panic!() };
         assert_eq!(info["layers"][0]["mask"]["enabled"], true);
         assert!(s.execute(serde_json::from_str(r##"{"command": "selection", "action": "fill"}"##).unwrap()).is_err(), "nothing selected");
+        // An unknown action says so, even on a layer without a mask.
+        run(&mut s, r##"{"command": "add_layer"}"##);
+        let e = s.execute(serde_json::from_str(r##"{"command": "mask", "action": "hide"}"##).unwrap()).unwrap_err();
+        assert!(e.contains("Unknown mask action"), "{e}");
+        // Painting on a mask that's off: done, with a note.
+        run(&mut s, r##"{"command": "mask", "action": "add"}"##);
+        run(&mut s, r##"{"command": "mask", "action": "off"}"##);
+        let Output::Text(t) = run(&mut s, r##"{"command": "stroke", "points": [[35, 20], [45, 20]], "target": "mask"}"##) else { panic!() };
+        assert!(t.contains("the mask is off"), "{t}");
     }
 
     #[test]

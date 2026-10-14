@@ -492,9 +492,7 @@ impl Document {
         if before != mode {
             self.layers[index].blend = mode;
             self.all_dirty = true;
-            self.history.seal();
-            self.history.record(Edit::LayerBlend { layer: index, before, after: mode });
-            self.history.seal();
+            self.record_alone(Edit::LayerBlend { layer: index, before, after: mode });
         }
     }
 
@@ -898,25 +896,15 @@ impl Document {
     /// Paste on a new layer above the current one, at the same place (or
     /// centered if it came from elsewhere and wouldn't fit).
     pub fn paste(&mut self, clip: &Clip) {
-        let (w, h) = (clip.w.min(self.width), clip.h.min(self.height));
-        let (x, y) = if clip.x + w <= self.width && clip.y + h <= self.height {
-            (clip.x, clip.y)
-        } else {
-            ((self.width - w) / 2, (self.height - h) / 2)
-        };
-        let mut layer = self.new_layer("Pasted");
-        // Crop to the canvas if the clip is bigger.
-        let rows = |v: &[[f32; 4]]| (0..h).flat_map(|r| v[r * clip.w..r * clip.w + w].iter().copied()).collect::<Vec<_>>();
-        let rows1 = |v: &[f32]| (0..h).flat_map(|r| v[r * clip.w..r * clip.w + w].iter().copied()).collect::<Vec<_>>();
-        let b = Buffers { dry: rows(&clip.buffers.dry), wet: rows(&clip.buffers.wet), relief: rows1(&clip.buffers.relief), wet_relief: rows1(&clip.buffers.wet_relief) };
-        layer.canvas.write_region(Region::new(x, y, x + w, y + h), &b);
-        layer.canvas.take_changed();
-        self.insert_layer(layer);
-        self.history.relabel_last("Paste");
+        self.paste_buffers(clip.w, clip.h, &clip.buffers, Some((clip.x, clip.y)));
     }
 
-    /// Paste an image (straight RGBA, 8-bit, row by row) on a new layer, centered (cropped if bigger).
-    pub fn paste_image(&mut self, w: usize, h: usize, rgba: &[u8]) {
+    /// Paste an image (straight RGBA, 8-bit, row by row) on a new layer,
+    /// centered (cropped if bigger). False if `rgba` isn't `w × h` pixels.
+    pub fn paste_image(&mut self, w: usize, h: usize, rgba: &[u8]) -> bool {
+        if w == 0 || h == 0 || w.checked_mul(h).and_then(|n| n.checked_mul(4)) != Some(rgba.len()) {
+            return false;
+        }
         let pixels: Vec<[f32; 4]> = rgba
             .as_chunks::<4>()
             .0
@@ -927,14 +915,28 @@ impl Document {
             })
             .collect();
         let n = w * h;
-        let clip = Clip {
-            x: usize::MAX / 2, // "from elsewhere": centered
-            y: 0,
-            w,
-            h,
-            buffers: Buffers { dry: pixels, wet: vec![[0.0; 4]; n], relief: vec![0.0; n], wet_relief: vec![0.0; n] },
+        let buffers = Buffers { dry: pixels, wet: vec![[0.0; 4]; n], relief: vec![0.0; n], wet_relief: vec![0.0; n] };
+        self.paste_buffers(w, h, &buffers, None);
+        true
+    }
+
+    /// Paste `w × h` region-sized buffers on a new layer at `at` (canvas
+    /// pixels), or centered when `at` is None or it wouldn't fit there.
+    fn paste_buffers(&mut self, clip_w: usize, clip_h: usize, buffers: &Buffers, at: Option<(usize, usize)>) {
+        let (w, h) = (clip_w.min(self.width), clip_h.min(self.height));
+        let (x, y) = match at {
+            Some((x, y)) if x + w <= self.width && y + h <= self.height => (x, y),
+            _ => ((self.width - w) / 2, (self.height - h) / 2),
         };
-        self.paste(&clip);
+        let mut layer = self.new_layer("Pasted");
+        // Crop to the canvas if the clip is bigger.
+        let rows = |v: &[[f32; 4]]| (0..h).flat_map(|r| v[r * clip_w..r * clip_w + w].iter().copied()).collect::<Vec<_>>();
+        let rows1 = |v: &[f32]| (0..h).flat_map(|r| v[r * clip_w..r * clip_w + w].iter().copied()).collect::<Vec<_>>();
+        let b = Buffers { dry: rows(&buffers.dry), wet: rows(&buffers.wet), relief: rows1(&buffers.relief), wet_relief: rows1(&buffers.wet_relief) };
+        layer.canvas.write_region(Region::new(x, y, x + w, y + h), &b);
+        layer.canvas.take_changed();
+        self.insert_layer(layer);
+        self.history.relabel_last("Paste");
     }
 
     // ----- Layer masks -----
@@ -2669,7 +2671,8 @@ mod tests {
         assert!(cut.rgba8().as_chunks::<4>().0.iter().any(|p| p == &[255, 0, 0, 255]), "the clipboard image has the red");
 
         // An image from the system clipboard is centered on a new layer.
-        doc.paste_image(2, 1, &[0, 0, 255, 255, 0, 0, 255, 255]);
+        assert!(!doc.paste_image(3, 1, &[0, 0, 255, 255, 0, 0, 255, 255]), "wrong size: refused");
+        assert!(doc.paste_image(2, 1, &[0, 0, 255, 255, 0, 0, 255, 255]));
         assert_eq!(doc.layers().last().unwrap().canvas.pixel(29, 9), Some(Color::rgb(0.0, 0.0, 1.0)));
     }
 

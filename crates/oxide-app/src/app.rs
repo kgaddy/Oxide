@@ -448,21 +448,27 @@ impl OxideApp {
     /// keeps its wetness and thickness; an image from another app comes in centered.
     fn paste(&mut self) {
         let system = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok();
-        match (system, &self.clip) {
-            // Still the image we copied: paste our richer copy.
-            (Some(img), Some((clip, fp))) if fingerprint(&img.bytes) == *fp => {
-                let clip = clip.clone();
-                self.document.paste(&clip);
-            }
-            (Some(img), _) => self.document.paste_image(img.width, img.height, &img.bytes),
-            (None, Some((clip, _))) => {
-                let clip = clip.clone();
-                self.document.paste(&clip);
-            }
-            (None, None) => return self.info("Nothing to paste (copy something, or an image in another app)."),
+        // Our own copy, if the Mac clipboard still holds it (or holds no image).
+        let ours = match (&system, &self.clip) {
+            (Some(img), Some((clip, fp))) if fingerprint(&img.bytes) == *fp => Some(clip.clone()),
+            (None, Some((clip, _))) => Some(clip.clone()),
+            _ => None,
+        };
+        if ours.is_none() && system.is_none() {
+            return self.info("Nothing to paste (copy something, or an image in another app).");
         }
-        // Frame the pasted paint, not the old selection.
+        // Deselect first, so the transform frames the pasted paint and undo
+        // goes Transform → Paste → Deselect.
         self.document.deselect();
+        match (ours, system) {
+            (Some(clip), _) => self.document.paste(&clip),
+            (None, Some(img)) => {
+                if !self.document.paste_image(img.width, img.height, &img.bytes) {
+                    return self.error("The clipboard image couldn't be read.");
+                }
+            }
+            (None, None) => unreachable!("checked above"),
+        }
         self.start_transform();
     }
 
@@ -560,13 +566,25 @@ impl OxideApp {
         }
         // Typing in a text field: ⌘A/C/X/V are for the text, not the canvas.
         if ctx.egui_wants_keyboard_input() && matches!(command, Command::Copy | Command::Cut | Command::Paste | Command::SelectAll) {
-            let event = match command {
-                Command::Copy => egui::Event::Copy,
-                Command::Cut => egui::Event::Cut,
-                Command::Paste => egui::Event::Paste(arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default()),
-                _ => egui::Event::Key { key: Key::A, physical_key: Some(Key::A), pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
-            };
-            ctx.input_mut(|i| i.events.push(event));
+            // Without the Mac menu bar, egui already sent its own Copy/Cut/Paste
+            // event with the key press; adding another would paste twice.
+            let already = ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        (command, e),
+                        (Command::Copy, egui::Event::Copy) | (Command::Cut, egui::Event::Cut) | (Command::Paste, egui::Event::Paste(_))
+                    )
+                })
+            });
+            if !already {
+                let event = match command {
+                    Command::Copy => egui::Event::Copy,
+                    Command::Cut => egui::Event::Cut,
+                    Command::Paste => egui::Event::Paste(arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default()),
+                    _ => egui::Event::Key { key: Key::A, physical_key: Some(Key::A), pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
+                };
+                ctx.input_mut(|i| i.events.push(event));
+            }
             return;
         }
         // While transforming: ⌘T again or most commands apply it first; undo cancels it.
