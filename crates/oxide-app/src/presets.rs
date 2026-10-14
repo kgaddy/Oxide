@@ -129,6 +129,12 @@ impl BrushPreset {
     pub fn matches(&self, shape: &BrushShape) -> bool {
         self.apply_to(shape) == *shape
     }
+
+    /// Same as [`Self::matches`], but any size counts (resizing with [ ] or
+    /// ⌘-drag doesn't make it a different brush).
+    pub fn matches_any_size(&self, shape: &BrushShape) -> bool {
+        BrushShape { radius: shape.radius, ..self.apply_to(shape) } == *shape
+    }
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {

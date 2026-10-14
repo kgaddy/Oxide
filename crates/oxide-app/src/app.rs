@@ -6,6 +6,7 @@ pub use canvas_view::ViewXform;
 mod export_dialog;
 mod files;
 mod layers;
+mod bench;
 mod menus;
 mod theming;
 mod mixing_palette;
@@ -166,6 +167,8 @@ pub struct OxideApp {
     clip: Option<(oxide_engine::Clip, u64)>,
     /// The last point of a stroke on a mask.
     mask_last: Option<(f32, f32)>,
+    /// The preset picked last for each tool (for the brush name above Properties).
+    brush_names: [Option<String>; Tool::COUNT],
     /// The secondary color (the second swatch; ⌘\\ swaps).
     secondary: Color,
     /// Mix Color: X is held, so picked colors mix into the current one.
@@ -185,6 +188,10 @@ pub struct OxideApp {
     /// How long our code took to build the last frames (ms, smoothed), shown
     /// in the status bar so slowdowns are easy to spot.
     frame_ms: f32,
+    /// The last frame's CPU time, unsmoothed (for the benchmark).
+    frame_ms_raw: f32,
+    /// `OXIDE_BENCH=1`: the painting benchmark (see `app/bench.rs`).
+    bench: Option<bench::Bench>,
 }
 
 /// Everything you can do from a menu or keyboard shortcut.
@@ -375,6 +382,8 @@ impl OxideApp {
             export_dialog: export_dialog::ExportDialog::default(),
             mixing_palette: mixing_palette::MixingPalette::default(),
             frame_ms: 0.0,
+            frame_ms_raw: 0.0,
+            bench: bench::Bench::requested().then(Default::default),
             pen: PenInput::new(ctx),
             mouse_pressure: 1.0,
             mode_key: None,
@@ -396,6 +405,7 @@ impl OxideApp {
             multicolor: Vec::new(),
             multicolor_on: false,
             secondary: Color::WHITE,
+            brush_names: Default::default(),
             mix_key: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
@@ -1061,6 +1071,7 @@ impl eframe::App for OxideApp {
         let ctx = ui.ctx().clone();
         self.handle_close_request(&ctx);
         self.watch_theme_file(&ctx);
+        self.bench_tick(&ctx);
         if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open && !self.export_dialog.open {
             self.handle_shortcuts(&ctx);
         }
@@ -1129,6 +1140,7 @@ impl eframe::App for OxideApp {
         self.update_title(&ctx);
 
         let ms = started.elapsed().as_secs_f32() * 1000.0;
+        self.frame_ms_raw = ms;
         self.frame_ms = if self.frame_ms == 0.0 { ms } else { self.frame_ms * 0.9 + ms * 0.1 };
     }
 }

@@ -15,6 +15,7 @@ impl OxideApp {
         // Don't shrink to the content: lay everything out to the panel's width.
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             CollapsingHeader::new("Tools").default_open(true).show(ui, |ui| self.tools_section(ui));
+            self.current_brush_label(ui);
             CollapsingHeader::new("Properties").default_open(true).show(ui, |ui| self.properties_section(ui));
             CollapsingHeader::new("Brush presets").default_open(true).show(ui, |ui| {
                 ui.weak(format!("Shapes for {}", self.tool.label()));
@@ -157,6 +158,33 @@ impl OxideApp {
         }
     }
 
+    /// The brush in use, by preset name, with its size: "Bristle Flat · size 14".
+    /// "(edited)" once its shape is changed beyond the size.
+    fn current_brush_label(&self, ui: &mut egui::Ui) {
+        if !self.tool.paints() && self.tool != Tool::Eraser && self.tool != Tool::Smudge {
+            return;
+        }
+        let shape = &self.state().shape;
+        let find = |name: &str| self.presets.entries.iter().find(|e| e.preset.name == name);
+        // The preset picked last for this tool (if it's still there), else one that matches.
+        let picked = self.brush_names[self.tool.index()].as_deref().and_then(find);
+        let (name, edited) = match picked {
+            Some(e) => (e.preset.name.as_str(), !e.preset.matches_any_size(shape)),
+            None => match self.presets.entries.iter().find(|e| e.preset.matches_any_size(shape)) {
+                Some(e) => (e.preset.name.as_str(), false),
+                None => ("Custom brush", false),
+            },
+        };
+        ui.horizontal(|ui| {
+            ui.weak("Brush");
+            ui.strong(name).on_hover_text(format!("The brush in use for {}", self.tool.label()));
+            if edited {
+                ui.weak("(edited)").on_hover_text("Changed since you picked it (other than size)");
+            }
+            ui.weak(format!("· size {:.0}", shape.radius)).on_hover_text("Brush size (as on the Size slider): [ and ] change it");
+        });
+    }
+
     fn presets_section(&mut self, ui: &mut egui::Ui) {
         let mut apply = None;
         let mut delete = None;
@@ -236,6 +264,7 @@ impl OxideApp {
             }
             let shape = self.presets.entries[i].preset.apply_to(&self.state().shape);
             self.state_mut().shape = shape;
+            self.brush_names[self.tool.index()] = Some(self.presets.entries[i].preset.name.clone());
         }
         if let Some(i) = delete {
             self.presets.delete(i);
