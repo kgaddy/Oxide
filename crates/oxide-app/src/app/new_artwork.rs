@@ -342,17 +342,32 @@ impl OxideApp {
                     ui.weak("Star a size, or add your own below.");
                 }
                 for preset in &list {
-                    ui.horizontal(|ui| {
+                    // Right to left: the star at a fixed spot on the right, then the
+                    // size filling the rest of the row (so rows can't overflow and drift).
+                    let height = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), height), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let selected = na.selected.as_deref() == Some(preset.name.as_str());
                         let fav = self.app_settings.is_favorite(&preset.name);
                         let is_custom = self.app_settings.custom_sizes.iter().any(|c| c.name == preset.name);
-                        let row_width = ui.available_width() - 30.0;
-                        let row = egui::Button::new(preset.label()).selected(selected).frame(selected).min_size(Vec2::new(row_width, 0.0));
+                        let star_size = Vec2::new(height + 4.0, height);
+                        if is_custom {
+                            // (Your own sizes have no star; keep the space so rows line up.)
+                            ui.allocate_space(star_size);
+                        } else {
+                            let icon = egui::Button::new(if fav { "★" } else { "☆" }).frame_when_inactive(false).min_size(star_size);
+                            let hint = if fav { "Remove from Favorites" } else { "Add to Favorites" };
+                            if ui.add(icon).on_hover_text(hint).clicked() {
+                                star = Some(preset.name.clone());
+                            }
+                        }
+                        // `right_text("")` pushes the label to the left edge.
+                        let row = egui::Button::new(preset.label())
+                            .right_text("")
+                            .selected(selected)
+                            .frame(selected)
+                            .min_size(Vec2::new(ui.available_width(), height));
                         if ui.add(row).clicked() {
                             apply = Some(preset.clone());
-                        }
-                        if !is_custom && ui.button(if fav { "★" } else { "☆" }).on_hover_text("Favorite").clicked() {
-                            star = Some(preset.name.clone());
                         }
                     });
                 }
