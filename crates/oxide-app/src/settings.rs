@@ -133,6 +133,8 @@ pub struct AppSettings {
     pub invert_rotation: bool,
     /// Show the color wheel as a painter's RYB wheel instead of RGB.
     pub ryb_wheel: bool,
+    /// The UI theme's name (View → Theme).
+    pub theme: String,
 }
 
 impl Default for AppSettings {
@@ -156,6 +158,7 @@ impl Default for AppSettings {
             tilt_offset: 0.0,
             invert_rotation: false,
             ryb_wheel: false,
+            theme: crate::theme::DEFAULT_THEME.into(),
         }
     }
 }

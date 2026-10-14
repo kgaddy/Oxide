@@ -1,7 +1,7 @@
 //! The Layers panel (list, visibility, opacity, order) and the Paper panel
 //! (surface texture and color).
 
-use eframe::egui::{self, Color32, Vec2};
+use eframe::egui::{self, Vec2};
 use oxide_engine::{Color, PaperKind};
 
 use super::{OxideApp, to_color32};
@@ -369,7 +369,7 @@ impl OxideApp {
             None
         };
         if let Some(text) = warning {
-            ui.colored_label(Color32::from_rgb(230, 170, 60), text);
+            ui.colored_label(ui.visuals().warn_fg_color, text);
         }
     }
 }

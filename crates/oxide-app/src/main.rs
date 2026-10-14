@@ -10,6 +10,7 @@ mod pen;
 mod presets;
 mod settings;
 mod smoothing;
+mod theme;
 mod tiles;
 
 use eframe::egui;

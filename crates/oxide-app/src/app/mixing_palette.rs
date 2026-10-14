@@ -242,7 +242,7 @@ impl OxideApp {
             let (chip, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::hover());
             match parsed {
                 Some(c) => ui.painter().rect_filled(chip, 3.0, to_color32(c)),
-                None => ui.painter().rect_stroke(chip, 3.0, LineStroke::new(1.0, Color32::from_gray(90)), egui::StrokeKind::Inside),
+                None => ui.painter().rect_stroke(chip, 3.0, LineStroke::new(1.0, crate::theme::outline(ui)), egui::StrokeKind::Inside),
             };
             if ui.button("Add").on_hover_text("Put a dab of this paint on the palette").clicked() || enter {
                 match parsed {
@@ -343,7 +343,7 @@ impl OxideApp {
         }
         let painter = ui.painter_at(rect);
         texture.paint(&painter, rect);
-        painter.rect_stroke(rect, 2.0, LineStroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Outside);
+        painter.rect_stroke(rect, 2.0, LineStroke::new(1.0, crate::theme::outline(ui)), egui::StrokeKind::Outside);
 
         if let Some(hover) = response.hover_pos() {
             if mp.tool == PaletteTool::Pick {

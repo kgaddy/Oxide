@@ -1,7 +1,7 @@
 //! The side panels: Tools, Properties, Brush presets (left) and
 //! Navigator, Color, Layers (right).
 
-use eframe::egui::{self, Color32, CollapsingHeader, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
+use eframe::egui::{self, CollapsingHeader, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
@@ -54,7 +54,7 @@ impl OxideApp {
             if tool.paints() {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(40.0, 22.0), Sense::hover());
                 ui.painter().rect_filled(rect, 3.0, to_color32(self.color));
-                ui.painter().rect_stroke(rect, 3.0, LineStroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+                ui.painter().rect_stroke(rect, 3.0, LineStroke::new(1.0, crate::theme::outline(ui)), StrokeKind::Inside);
             }
             ui.strong(tool.label());
         });
@@ -267,7 +267,7 @@ impl OxideApp {
                 .map(|c| to_thumb(xf.to_canvas(*c)))
                 .collect();
             outline.push(outline[0]);
-            ui.painter_at(thumb).add(egui::Shape::line(outline, LineStroke::new(1.5, Color32::from_rgb(52, 132, 228))));
+            ui.painter_at(thumb).add(egui::Shape::line(outline, LineStroke::new(1.5, ui.visuals().selection.bg_fill)));
 
             // Click or drag in the navigator to move the view there.
             if let (true, Some(pos)) = (response.is_pointer_button_down_on(), response.interact_pointer_pos()) {
@@ -345,9 +345,9 @@ impl OxideApp {
             let primary = Rect::from_min_size(rect.min, Vec2::new(36.0, 32.0));
             let back = ui.interact(secondary, ui.id().with("secondary-color"), Sense::click());
             ui.painter().rect_filled(secondary, 3.0, to_color32(self.secondary));
-            ui.painter().rect_stroke(secondary, 3.0, LineStroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+            ui.painter().rect_stroke(secondary, 3.0, LineStroke::new(1.0, crate::theme::outline(ui)), StrokeKind::Inside);
             ui.painter().rect_filled(primary, 3.0, to_color32(self.color));
-            ui.painter().rect_stroke(primary, 3.0, LineStroke::new(1.5, Color32::from_gray(200)), StrokeKind::Inside);
+            ui.painter().rect_stroke(primary, 3.0, LineStroke::new(1.5, ui.visuals().text_color()), StrokeKind::Inside);
             if back.on_hover_text("Secondary color: click (or ⌘\\) to swap").clicked() {
                 swap = true;
             }
@@ -454,7 +454,7 @@ impl OxideApp {
             self.add_multicolor(color);
         }
         if self.mix_key {
-            ui.colored_label(Color32::from_rgb(230, 170, 60), "Mix Color: picked colors mix into the current one");
+            ui.colored_label(ui.visuals().warn_fg_color, "Mix Color: picked colors mix into the current one");
         }
         if let Some(color) = picked {
             self.pick_color(color);
@@ -494,9 +494,9 @@ impl OxideApp {
 fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
     let stroke = if response.hovered() {
-        LineStroke::new(2.0, Color32::WHITE)
+        LineStroke::new(2.0, ui.visuals().text_color())
     } else {
-        LineStroke::new(1.0, Color32::from_gray(70))
+        LineStroke::new(1.0, crate::theme::outline(ui))
     };
     ui.painter().rect_filled(rect, 2.0, to_color32(color));
     ui.painter().rect_stroke(rect, 2.0, stroke, StrokeKind::Inside);

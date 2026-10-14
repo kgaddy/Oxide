@@ -142,9 +142,9 @@ impl OxideApp {
 
                 let (area, response) = ui.allocate_exact_size(ui.available_size().max(Vec2::new(160.0, 120.0)), Sense::click_and_drag());
                 let painter = ui.painter_at(area);
-                painter.rect_filled(area, 0.0, Color32::from_gray(40));
+                painter.rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
                 let (Some(texture), Some(rect)) = (&r.texture, r.image_rect(area)) else {
-                    painter.text(area.center(), egui::Align2::CENTER_CENTER, "Open… a photo to paint from", egui::FontId::proportional(14.0), Color32::GRAY);
+                    painter.text(area.center(), egui::Align2::CENTER_CENTER, "Open… a photo to paint from", egui::FontId::proportional(14.0), ui.visuals().weak_text_color());
                     return;
                 };
                 painter.image(texture.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);

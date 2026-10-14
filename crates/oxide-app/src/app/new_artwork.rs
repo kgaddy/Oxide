@@ -2,7 +2,7 @@
 //! DPI and orientation, Print/Screen/Favorites size presets, the paper to
 //! paint on with a live preview, and the recent files list.
 
-use eframe::egui::{self, Color32, Vec2};
+use eframe::egui::{self, Vec2};
 use oxide_engine::{Color, Paper, PaperSettings};
 
 use super::files::{NewSpec, PendingAction};
@@ -286,7 +286,7 @@ impl OxideApp {
                 let mb = w * h * BYTES_PER_PIXEL_PER_LAYER / (1024.0 * 1024.0);
                 let text = format!("≈ {mb:.0} MB per layer");
                 if mb > 1024.0 {
-                    ui.colored_label(Color32::from_rgb(230, 170, 60), text).on_hover_text(
+                    ui.colored_label(ui.visuals().warn_fg_color, text).on_hover_text(
                         "Very large: each layer (plus undo) needs this much memory. Painting may be slow.",
                     );
                 } else {

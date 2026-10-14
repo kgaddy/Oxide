@@ -251,9 +251,9 @@ impl OxideApp {
                     let stroke = if selected {
                         LineStroke::new(2.0, ui.visuals().selection.bg_fill)
                     } else if response.hovered() {
-                        LineStroke::new(1.5, Color32::WHITE)
+                        LineStroke::new(1.5, ui.visuals().text_color())
                     } else {
-                        LineStroke::new(1.0, Color32::from_gray(70))
+                        LineStroke::new(1.0, crate::theme::outline(ui))
                     };
                     ui.painter().rect_stroke(rect.shrink(1.0), 3.0, stroke, StrokeKind::Inside);
                     if i == 0 {

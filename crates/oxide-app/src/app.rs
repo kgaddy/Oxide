@@ -7,6 +7,7 @@ mod export_dialog;
 mod files;
 mod layers;
 mod menus;
+mod theming;
 mod mixing_palette;
 mod new_artwork;
 mod select_canvas;
@@ -122,6 +123,8 @@ pub struct OxideApp {
     /// Set once the user confirmed quitting, so the close isn't intercepted again.
     allow_close: bool,
     status: Option<Status>,
+    /// The UI theme (colors, shapes, fonts), and its file if it's a user theme.
+    themes: theming::ThemeState,
     /// The window title we last set (to avoid re-sending it every frame).
     title: String,
     /// Recent files, favorite sizes, ... (saved between runs).
@@ -252,6 +255,10 @@ enum Command {
     ClearSelection,
     /// File → Open Recent → item n.
     OpenRecent(u8),
+    /// View → Theme → item n.
+    Theme(u8),
+    OpenThemesFolder,
+    ReloadThemes,
     ClearRecent,
 }
 
@@ -263,6 +270,7 @@ impl Command {
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
                 | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
+                | Theme(_) | OpenThemesFolder | ReloadThemes
         )
     }
 }
@@ -318,12 +326,12 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 40] = [
 
 impl OxideApp {
     pub fn new(ctx: &egui::Context) -> Self {
-        apply_theme(ctx);
         // A pen tip wobbles a little when you tap. egui only counts a press as a
         // click if it moves less than 6 points, so pen taps on buttons were often
         // seen as tiny drags and ignored. Be more forgiving.
         ctx.options_mut(|o| o.input_options.max_click_dist = 16.0);
         let app_settings = AppSettings::load();
+        let (themes, theme_problem) = theming::ThemeState::start(ctx, &app_settings.theme);
         crate::open_files::set_wake(ctx);
         // Brush tips imported earlier (Photoshop, GIMP, images).
         oxide_commands::tip_import::load_library();
@@ -358,7 +366,8 @@ impl OxideApp {
             file_path: None,
             pending: None,
             allow_close: false,
-            status: None,
+            status: theme_problem.map(|text| Status { text, is_error: true }),
+            themes,
             title: String::new(),
             app_settings,
             new_artwork,
@@ -704,6 +713,9 @@ impl OxideApp {
                     self.request(PendingAction::OpenPath(path), ctx);
                 }
             }
+            Command::Theme(n) => self.choose_theme(n as usize, ctx),
+            Command::OpenThemesFolder => self.open_themes_folder(),
+            Command::ReloadThemes => self.reload_theme(ctx),
             Command::ClearRecent => {
                 self.app_settings.recent_files.clear();
                 self.save_app_settings();
@@ -1020,13 +1032,13 @@ impl OxideApp {
                 if self.texture.greyscale() {
                     parts.push("greyscale".to_string());
                 }
-                ui.colored_label(egui::Color32::from_rgb(120, 170, 235), format!("View: {}", parts.join(", ")))
+                ui.colored_label(self.themes.theme.colors.info, format!("View: {}", parts.join(", ")))
                     .on_hover_text("These change only how you see the painting, not the painting itself");
             }
             ui.separator();
             let frame = format!("{:.0} ms/frame", self.frame_ms);
             if self.frame_ms > 30.0 {
-                ui.colored_label(egui::Color32::from_rgb(230, 170, 60), frame)
+                ui.colored_label(self.themes.theme.colors.warning, frame)
                     .on_hover_text("Over ~30 ms per frame feels laggy. Try a release build: cargo run --release -p oxide-app");
             } else {
                 ui.weak(frame).on_hover_text("Time Oxide spends building each frame (lower is smoother)");
@@ -1048,6 +1060,7 @@ impl eframe::App for OxideApp {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         self.handle_close_request(&ctx);
+        self.watch_theme_file(&ctx);
         if self.pending.is_none() && !self.new_artwork.open && !self.select_canvas.open && !self.export_dialog.open {
             self.handle_shortcuts(&ctx);
         }
@@ -1091,7 +1104,7 @@ impl eframe::App for OxideApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(egui::Color32::from_gray(52)))
+            .frame(egui::Frame::new().fill(self.themes.theme.colors.workspace))
             .show(ui, |ui| self.canvas_view(ui));
 
         self.brush_creator_window(&ctx);
@@ -1119,20 +1132,6 @@ impl eframe::App for OxideApp {
         self.frame_ms = if self.frame_ms == 0.0 { ms } else { self.frame_ms * 0.9 + ms * 0.1 };
     }
 }
-
-/// Dark theme with a blue accent.
-fn apply_theme(ctx: &egui::Context) {
-    ctx.set_theme(egui::Theme::Dark);
-    let mut visuals = egui::Visuals::dark();
-    let accent = egui::Color32::from_rgb(52, 132, 228);
-    visuals.selection.bg_fill = accent;
-    visuals.hyperlink_color = accent;
-    visuals.panel_fill = egui::Color32::from_gray(32);
-    visuals.window_fill = egui::Color32::from_gray(36);
-    visuals.extreme_bg_color = egui::Color32::from_gray(22);
-    ctx.set_visuals(visuals);
-}
-
 
 pub fn to_color32(c: Color) -> egui::Color32 {
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;

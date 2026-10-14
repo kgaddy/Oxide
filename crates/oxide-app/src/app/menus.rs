@@ -18,7 +18,7 @@ pub struct Menu {
     pub entries: Vec<Entry>,
 }
 
-fn item(label: impl Into<String>, command: Command) -> Entry {
+pub(super) fn item(label: impl Into<String>, command: Command) -> Entry {
     Entry::Item { label: label.into(), command, enabled: true, checked: None }
 }
 
@@ -26,7 +26,7 @@ fn item_if(label: impl Into<String>, command: Command, enabled: bool) -> Entry {
     Entry::Item { label: label.into(), command, enabled, checked: None }
 }
 
-fn check(label: impl Into<String>, command: Command, checked: bool, enabled: bool) -> Entry {
+pub(super) fn check(label: impl Into<String>, command: Command, checked: bool, enabled: bool) -> Entry {
     Entry::Item { label: label.into(), command, enabled, checked: Some(checked) }
 }
 
@@ -103,6 +103,8 @@ impl OxideApp {
                     Entry::Separator,
                     check("Flip Horizontal", FlipView, self.view.flip, true),
                     check("Greyscale", Greyscale, self.texture.greyscale(), true),
+                    Entry::Separator,
+                    Entry::Submenu { label: "Theme", entries: self.theme_entries() },
                 ],
             },
             Menu {

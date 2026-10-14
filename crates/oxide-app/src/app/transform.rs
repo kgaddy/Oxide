@@ -193,7 +193,7 @@ impl OxideApp {
         let Some(tool) = &self.transform else { return };
         let to_screen = |c: [f32; 2]| xf.to_screen(Vec2::new(c[0], c[1]));
         let corners: Vec<Pos2> = tool.t.corners(tool.bounds).iter().map(|&c| to_screen(c)).collect();
-        let accent = Color32::from_rgb(90, 160, 255);
+        let accent = ui.visuals().selection.bg_fill;
         for i in 0..4 {
             let (a, b) = (corners[i], corners[(i + 1) % 4]);
             painter.line_segment([a, b], LineStroke::new(3.0, Color32::from_black_alpha(140)));
