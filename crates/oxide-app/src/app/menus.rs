@@ -308,15 +308,17 @@ pub mod native {
         checked: Option<bool>,
     }
 
-    /// A submenu item as shown: (label, command, enabled); an empty label is a separator.
-    type ShownItem = (String, Command, bool);
+    /// A dynamic submenu item as shown: (label, command, enabled, check mark);
+    /// an empty label is a separator.
+    type ShownItem = (String, Command, bool, Option<bool>);
 
     pub struct NativeMenu {
         _menu: muda::Menu,
         items: Vec<(Native, Shown)>,
         commands: HashMap<MenuId, Command>,
-        /// Submenus whose items change (Open Recent), with what they show now.
-        dynamic: Vec<(Submenu, Vec<ShownItem>)>,
+        /// Submenus whose items change (Open Recent, Theme), as shown, with their check items
+        /// (macOS ticks those itself when clicked, so they're compared too).
+        dynamic: Vec<(Submenu, Vec<ShownItem>, Vec<CheckMenuItem>)>,
         /// Commands whose shortcut the menu bar handles (macOS sends those keys
         /// to the menu, so the app must not also react to them).
         handled_shortcuts: Vec<Command>,
@@ -412,7 +414,7 @@ pub mod native {
                             // Filled in by `sync` (its items change).
                             let inner = Submenu::new(*label, true);
                             submenu.append(&inner).ok()?;
-                            dynamic.push((inner, Vec::new()));
+                            dynamic.push((inner, Vec::new(), Vec::new()));
                         }
                         Entry::Item { label, command, enabled, checked } => {
                             let accel = SHORTCUTS.iter().find(|(c, _)| c == command).and_then(|(_, s)| accelerator(s));
@@ -480,21 +482,29 @@ pub mod native {
                 Entry::Submenu { entries, .. } => Some(entries),
                 _ => None,
             });
-            for ((submenu, shown), entries) in self.dynamic.iter_mut().zip(submenus) {
+            for ((submenu, shown, checks), entries) in self.dynamic.iter_mut().zip(submenus) {
                 let now: Vec<ShownItem> = entries
                     .iter()
                     .map(|e| match e {
-                        Entry::Item { label, command, enabled, .. } => (label.clone(), *command, *enabled),
-                        _ => (String::new(), Command::ClearRecent, false), // separator
+                        Entry::Item { label, command, enabled, checked } => (label.clone(), *command, *enabled, *checked),
+                        _ => (String::new(), Command::ClearRecent, false, None), // separator
                     })
                     .collect();
-                if *shown == now {
+                let wanted = now.iter().filter_map(|i| i.3);
+                let ticks_differ = checks.iter().map(CheckMenuItem::is_checked).ne(wanted);
+                if *shown == now && !ticks_differ {
                     continue;
                 }
                 while submenu.remove_at(0).is_some() {}
-                for (label, command, enabled) in &now {
+                checks.clear();
+                for (label, command, enabled, checked) in &now {
                     if label.is_empty() {
                         submenu.append(&PredefinedMenuItem::separator()).ok();
+                    } else if let Some(on) = checked {
+                        let item = CheckMenuItem::with_id(format!("{command:?}"), label, *enabled, *on, None);
+                        self.commands.insert(item.id().clone(), *command);
+                        submenu.append(&item).ok();
+                        checks.push(item);
                     } else {
                         let item = MenuItem::with_id(format!("{command:?}"), label, *enabled, None);
                         self.commands.insert(item.id().clone(), *command);
