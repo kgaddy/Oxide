@@ -6,7 +6,7 @@
 use crate::Color;
 use crate::spectral::mix_srgb;
 
-/// How colors mix.
+/// How colors mix (the Edit → "Natural Colors" switch).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Mixing {
     /// Like real paint (Kubelka-Munk pigment mixing): blue + yellow = green.

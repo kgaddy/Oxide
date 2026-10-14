@@ -47,8 +47,7 @@ pub struct Layer {
     /// A tracing layer (marked "T"): a reference image whose colors new
     /// strokes pick up where they start. Always locked.
     pub tracing: bool,
-    /// This layer's own impasto depth (0..=1), or None to use the painting's
-    ///.
+    /// This layer's own impasto depth (0..=1), or None to use the painting's.
     pub impasto: Option<f32>,
     /// The group it's in (layers of a group sit together in the list).
     pub group: Option<u32>,

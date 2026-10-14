@@ -288,7 +288,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a4_at_200_dpi_matches_another app() {
+    fn a4_at_200_dpi_is_1654_by_2339_px() {
         let a4 = &print_presets()[0];
         let (w, h) = a4.pixels();
         assert_eq!((w.round(), h.round()), (1654.0, 2339.0));

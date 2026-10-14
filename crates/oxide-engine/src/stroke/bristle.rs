@@ -1,5 +1,4 @@
-//! The bristle engine: a brush made of separate hairs (another app's Bristle
-//! Brushes), as an alternative to stamping one tip shape.
+//! The bristle engine: a brush made of separate hairs, as an alternative to stamping one tip shape.
 //!
 //! Each step of the stroke, every hair moves toward its spot in the tip
 //! (lagging a little, so soft brushes fan out on curves), and if it touches

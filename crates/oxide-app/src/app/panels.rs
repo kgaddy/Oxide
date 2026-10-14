@@ -112,7 +112,7 @@ impl OxideApp {
             });
         }
         if tool.is_wet_medium() {
-            // another app's combined Oils & Acrylics: oiliness is what makes it
+            // Combined Oils & Acrylics: oiliness is what makes it
             // behave more like oil (blends, drags) or acrylic (covers).
             ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
                 .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
@@ -336,7 +336,7 @@ impl OxideApp {
     }
 
     fn color_section(&mut self, ui: &mut egui::Ui) {
-        // Primary and secondary color, familiar: the big swatch is what
+        // Primary and secondary color: the big swatch is what
         // you paint with; click the small one (or ⌘\\) to swap them.
         let mut swap = false;
         ui.horizontal(|ui| {
@@ -466,7 +466,7 @@ impl OxideApp {
 }
 
 impl OxideApp {
-    /// wet media controls: dry or rewet the paint.
+    /// Wet media controls: dry or rewet the paint.
     fn wet_media_section(&mut self, ui: &mut egui::Ui) {
         let active = self.document.active_index();
         let wet_here = self.document.layers()[active].canvas.has_wet_paint();

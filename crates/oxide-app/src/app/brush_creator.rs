@@ -167,7 +167,7 @@ impl OxideApp {
                 ui.horizontal(|ui| {
                     import_tips = ui
                         .button("Import tips…")
-                        .on_hover_text("Photoshop brushes (.abr), GIMP brushes (.gbr, .gih), or images (PNG, JPEG, TIFF, WebP): black on white, white on black or transparent")
+                        .on_hover_text("Photoshop brushes (.abr), GIMP brushes (.gbr, .gih), or images (PNG, JPEG, TIFF, WebP): black on white, white on black, or transparent")
                         .clicked();
                     if let oxide_engine::Tip::Image(image) = shape.tip {
                         if ui.button("Remove tip").on_hover_text("Delete this imported tip from Oxide's tip library").clicked() {

@@ -291,7 +291,7 @@ impl OxideApp {
     }
 }
 
-/// A grayscale, lit square of a paper texture thumbnails.
+/// A grayscale, lit square of a paper (a texture thumbnail).
 fn paper_thumbnail(settings: PaperSettings) -> egui::ColorImage {
     let paper = Paper::new(settings);
     let mut bytes = Vec::with_capacity(THUMB * THUMB * 4);

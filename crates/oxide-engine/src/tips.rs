@@ -1,5 +1,5 @@
 //! Texture tips: the brush stamps a grayscale image instead of a smooth
-//! ellipse. All tips are generated here in code
+//! ellipse (texture brushes). All tips are generated here in code
 //! (our own, clean-room), once, the first time they're used.
 //!
 //! A mask is sampled in the tip's own frame, so size, roundness, angle and

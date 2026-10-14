@@ -75,7 +75,7 @@ pub struct DabStyle<'a> {
 /// stuck on 8-bit rounding, and premultiplied alpha makes blending a simple
 /// `src + dst * (1 - src_alpha)`.
 ///
-/// Each layer has **two buffers** wet layer:
+/// Each layer has **two buffers**, a wet layer over a dry one:
 /// - **dry** paint underneath: locked in, wet brushes glide over it
 /// - **wet** paint on top: wet brushes pick it up, blend and smear it
 ///

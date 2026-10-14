@@ -1,5 +1,5 @@
 //! Window → Reference Image: a floating window with a photo to paint from,
-//! Reference Image panel. It's only for looking at (and
+//! like a reference photo pinned beside an easel. It's only for looking at (and
 //! picking colors from); it's not part of the painting.
 //!
 //! Scroll or pinch to zoom, drag to pan, double-click to fit. With the

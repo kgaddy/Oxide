@@ -1,7 +1,7 @@
 use crate::Color;
 use crate::paint::Mixing;
 
-/// How the brush tip turns while you paint.
+/// How the brush tip turns while you paint (rotation modes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Rotation {
     /// The tip keeps its angle (e.g. a calligraphy nib).
@@ -33,8 +33,8 @@ impl Rotation {
     }
 }
 
-/// How a wet brush treats the paint already on the canvas (another app's
-/// paint modes for oils & acrylics). Pressure matters: with a mouse it's 1.
+/// How a wet brush treats the paint already on the canvas (paint modes
+/// for oils & acrylics). Pressure matters: with a mouse it's 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaintMode {
     /// Lay the color down without mixing it with what's on the canvas.

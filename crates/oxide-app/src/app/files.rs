@@ -172,7 +172,7 @@ impl OxideApp {
         self.save_to(&path.with_extension("oxide"))
     }
 
-    /// "iterative save": painting_001.oxide, painting_002.oxide, ...
+    /// "Iterative save": painting_001.oxide, painting_002.oxide, ...
     /// keeps every version and switches to the new file.
     pub(super) fn save_iteration(&mut self) -> bool {
         let Some(current) = self.file_path.clone() else {

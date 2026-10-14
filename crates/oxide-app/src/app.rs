@@ -163,7 +163,7 @@ pub struct OxideApp {
     clip: Option<(oxide_engine::Clip, u64)>,
     /// The last point of a stroke on a mask.
     mask_last: Option<(f32, f32)>,
-    /// The secondary color.
+    /// The secondary color (the second swatch; ⌘\\ swaps).
     secondary: Color,
     /// Mix Color: X is held, so picked colors mix into the current one.
     mix_key: bool,
@@ -814,7 +814,7 @@ impl OxideApp {
                 let shape = &mut self.state_mut().shape;
                 shape.radius = (shape.radius / 1.15).max(0.5);
             }
-            // another app's view keys: G greyscale, 0 = 100%, . = fit to screen.
+            // View keys: G greyscale, 0 = 100%, . = fit to screen.
             if i.modifiers.is_none() {
                 if i.key_pressed(Key::G) {
                     view_keys.push(Command::Greyscale);
@@ -1120,7 +1120,7 @@ impl eframe::App for OxideApp {
     }
 }
 
-/// Dark theme with a blue accent, in the spirit of another app's workspace.
+/// Dark theme with a blue accent.
 fn apply_theme(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = egui::Visuals::dark();

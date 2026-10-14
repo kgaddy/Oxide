@@ -1,7 +1,7 @@
 //! Importing brush tips from other apps, and Oxide's tip library.
 //!
-//! - **Images** (PNG, JPEG, TIFF, WebP, BMP): what another app's Brush Creator
-//!   uses. Black-on-white, white-on-black and transparent
+//! - **Images** (PNG, JPEG, TIFF, WebP, BMP): the most common way tips are
+//!   shared. Black-on-white, white-on-black and transparent
 //!   PNGs all work: we look at the border to tell which way round it is.
 //! - **Photoshop .abr**: the sampled tips in brush packs (old v1/v2 files and
 //!   v6+ files, raw or run-length compressed, 8 or 16 bit). One file can hold
@@ -154,8 +154,7 @@ fn safe_name(name: &str) -> String {
 
 /// An image → coverage. With real transparency, the alpha is the tip.
 /// Otherwise the border tells us which way round it is: a light border means
-/// dark paint on white (Photoshop style); a dark border, light paint on black
-///.
+/// dark paint on white (Photoshop style); a dark border, light paint on black.
 fn frame_from_image(img: &image::DynamicImage) -> Frame {
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as usize, rgba.height() as usize);

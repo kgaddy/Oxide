@@ -1,4 +1,4 @@
-//! The Oxide desktop app: a workspace around the paint engine.
+//! The Oxide desktop app: a painting workspace around the paint engine.
 
 mod app;
 // Shared with the AI-agent server and CLI (see crates/oxide-commands).

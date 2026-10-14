@@ -30,7 +30,7 @@ impl OxideApp {
             .on_hover_text("Size of the bumps or the weave");
         ui.add(egui::Slider::new(&mut settings.light_angle, 0.0..=360.0).suffix("°").max_decimals(0).text("Light"))
             .on_hover_text("Direction the light comes from (225° = top-left)");
-        // Canvas visibility.
+        // Canvas visibility (Paper Texture / Paint Texture, 0–10).
         let mut paper_texture = settings.paper_visibility * 10.0;
         if ui.add(egui::Slider::new(&mut paper_texture, 0.0..=10.0).max_decimals(1).text("Paper texture"))
             .on_hover_text("How visible the texture is on bare paper")

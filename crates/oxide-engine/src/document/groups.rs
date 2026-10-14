@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// A layer group (one level, another app's Ctrl/Cmd+Alt+G). Groups pass through
+/// A layer group (one level; ⌥⌘G). Groups pass through
 /// (Photoshop's default): their layers blend with everything below, and the
 /// group's opacity fades the result as one picture.
 #[derive(Clone, Debug, PartialEq)]

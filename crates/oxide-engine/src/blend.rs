@@ -1,5 +1,5 @@
 //! Layer blend modes (Multiply, Screen, Overlay, ...), with the standard
-//! formulas used by Photoshop, another app and the W3C compositing spec.
+//! formulas from the W3C compositing spec (as used by Photoshop and others).
 //!
 //! A layer's color `Cs` meets the color below `Cb`; the mode's `B(Cb, Cs)`
 //! is used where both have paint, and plain paint elsewhere:

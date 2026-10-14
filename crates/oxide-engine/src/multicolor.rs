@@ -1,4 +1,4 @@
-//! The MultiColored brush: several colors loaded side by
+//! The MultiColored brush (⌥M): several colors loaded side by
 //! side across the tip. A stroke starts striped with all of them and, as the
 //! paint on the brush mixes, they blend toward their average.
 
