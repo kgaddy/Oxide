@@ -118,6 +118,7 @@ impl OxideApp {
                 let path = if pen.is_pen { self.pen_path(ui, &xf, &pen_samples, Some(p), point) } else { vec![point] };
                 match self.tool {
                     Tool::Select => self.select_drag_to(p, ui),
+                    Tool::Hatch => self.hatch_drag(p),
                     Tool::Picker => {
                         // Mix Color (X held): mix once per click, not every frame of a drag.
                         let fresh_press = ui.input(|i| i.pointer.primary_pressed());
@@ -223,6 +224,7 @@ impl OxideApp {
                     self.remember_color(self.color);
                 }
                 self.select_release();
+                self.hatch_release();
                 if self.mask_last.take().is_some() {
                     self.document.end_mask_stroke();
                 }
@@ -232,6 +234,7 @@ impl OxideApp {
         if transforming {
             self.transform_canvas_input(ui, &response, &xf, space_down || r_down);
         }
+        self.hatch_update(ui.ctx());
         self.upload_changes();
 
         // --- Draw ---
@@ -251,7 +254,7 @@ impl OxideApp {
 
         // Brush outline under the cursor, so you can see the size before painting.
         if let Some(hover) = response.hover_pos() {
-            if !matches!(self.tool, Tool::Picker | Tool::Select) && !space_down && !transforming {
+            if !matches!(self.tool, Tool::Picker | Tool::Select | Tool::Hatch) && !space_down && !transforming {
                 self.track_cursor_direction(hover);
                 self.draw_tip_outline(&painter, hover, &xf);
             }
@@ -259,7 +262,7 @@ impl OxideApp {
                 egui::CursorIcon::Grab
             } else if blocked {
                 egui::CursorIcon::NotAllowed
-            } else if matches!(self.tool, Tool::Picker | Tool::Select) {
+            } else if matches!(self.tool, Tool::Picker | Tool::Select | Tool::Hatch) {
                 egui::CursorIcon::Crosshair
             } else {
                 egui::CursorIcon::None
@@ -276,6 +279,7 @@ impl OxideApp {
             painter.circle_filled(brush_pos, 2.5, Color32::from_white_alpha(200));
         }
         self.draw_selection(&painter, &xf);
+        self.draw_hatch_rails(&painter, &xf);
         // Painting on a mask: say so, top-left of the workspace.
         if self.mask_painting() {
             let pos = workspace.left_top() + Vec2::new(12.0, 12.0);

@@ -126,6 +126,9 @@ pub struct Brush {
     /// How much the end of a stroke thins, fades, and breaks up when the
     /// brush lifts off the canvas (0..=1).
     pub lift_off: f32,
+    /// Both ends of every stroke come to a clean point, like an engraved line
+    /// (0..=1; 1 = the longest taper). Unlike lift-off it doesn't fade or break up.
+    pub taper: f32,
     /// Pick up dry paint as well as wet (the Smudge tool works on dry paint).
     pub pickup_dry: bool,
     /// How much pen pressure controls the size (0 = not at all, 1 = a light
@@ -178,6 +181,7 @@ impl Default for Brush {
             roughness: 0.0,
             streaks: 0.0,
             lift_off: 0.0,
+            taper: 0.0,
             pickup_dry: false,
             size_pressure: 0.0,
             opacity_pressure: 0.0,
@@ -262,6 +266,23 @@ impl Brush {
     }
 
     /// Distance in pixels between dabs along a stroke.
+    /// How long each end's [taper](Brush::taper) is, in canvas pixels
+    /// (up to 16 brush radii, capped so big brushes don't lag far behind).
+    pub fn taper_length(&self) -> f32 {
+        self.taper.clamp(0.0, 1.0) * (self.radius * 16.0).min(300.0)
+    }
+
+    /// The taper's size for a dab `from_end` pixels from either end of a
+    /// stroke: a point at the end, swelling quickly to full size, like a burin cut.
+    pub fn taper_scale(&self, from_end: f32) -> f32 {
+        let length = self.taper_length();
+        if length <= 0.0 {
+            return 1.0;
+        }
+        let t = (from_end / length).clamp(0.0, 1.0);
+        1.0 - (1.0 - t) * (1.0 - t)
+    }
+
     pub fn step(&self) -> f32 {
         // Flat tips are thinner across, so space dabs by the thin side too.
         let size = self.radius * 2.0 * self.roundness.clamp(0.05, 1.0).max(0.25);

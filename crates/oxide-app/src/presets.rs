@@ -39,6 +39,8 @@ pub struct BrushPreset {
     pub streaks: f32,
     #[serde(default)]
     pub lift_off: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub taper: f32,
     /// How the tip turns while painting. Missing in older files: fixed.
     #[serde(default)]
     pub rotation: Rotation,
@@ -69,6 +71,10 @@ fn one() -> f32 {
     1.0
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 impl BrushPreset {
     pub fn from_shape(name: &str, group: &str, shape: &BrushShape) -> Self {
         BrushPreset {
@@ -82,6 +88,7 @@ impl BrushPreset {
             roughness: shape.roughness,
             streaks: shape.streaks,
             lift_off: shape.lift_off,
+            taper: shape.taper,
             rotation: shape.rotation,
             size_pressure: Some(shape.size_pressure),
             opacity_pressure: Some(shape.opacity_pressure),
@@ -114,6 +121,7 @@ impl BrushPreset {
             roughness: self.roughness,
             streaks: self.streaks,
             lift_off: self.lift_off,
+            taper: self.taper,
             rotation: self.rotation,
             size_pressure: self.size_pressure.unwrap_or(0.0),
             opacity_pressure: self.opacity_pressure.unwrap_or(0.0),
@@ -138,7 +146,7 @@ impl BrushPreset {
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {
-    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
+    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, taper: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
 }
 
 /// A built-in preset whose tip turns to follow the stroke (flat brushes, knives).
@@ -156,6 +164,11 @@ fn textured(preset: BrushPreset, tip: Tip, jitter_angle: f32, jitter_size: f32, 
     BrushPreset { tip, jitter_angle, jitter_size, scatter, ..preset }
 }
 
+/// A built-in engraving brush: crisp, and every stroke tapers to a point at both ends.
+fn engraver(name: &str, radius: f32, taper: f32) -> BrushPreset {
+    BrushPreset { taper, ..builtin(name, radius, 1.0, 0.05, 1.0, 0.0) }
+}
+
 /// A built-in bristle brush (separate hairs).
 fn hairs(preset: BrushPreset, count: u32, thickness: f32, spread: f32, stiffness: f32) -> BrushPreset {
     BrushPreset { bristles: Some(Bristles { count, thickness, spread, stiffness }), ..preset }
@@ -169,6 +182,7 @@ fn builtin_group(preset: &BrushPreset) -> &'static str {
     match preset.name.as_str() {
         "Flat" | "Filbert" | "Chisel" | "Nib" => "Flat & Filbert",
         "Knife" | "Rough Knife" => "Knife",
+        _ if preset.taper > 0.0 => "Engraving",
         _ if preset.bristles.is_some() => "Bristle",
         _ if preset.tip != Tip::Round => "Texture",
         _ if preset.roughness > 0.0 || preset.streaks > 0.0 => "Natural",
@@ -197,6 +211,10 @@ fn builtin_list() -> Vec<BrushPreset> {
         follow(builtin("Knife", 18.0, 1.0, 0.03, 0.12, 0.0)),
         builtin("Broad Soft", 40.0, 0.0, 0.05, 1.0, 0.0),
         builtin("Dotted", 4.0, 0.9, 1.0, 1.0, 0.0),
+        // Engraving: swelling lines that come to a point at both ends.
+        engraver("Engraver", 3.0, 0.6),
+        engraver("Engraver Fine", 1.5, 0.8),
+        engraver("Engraver Bold", 6.0, 0.5),
         // Natural brushes: ragged edges, bristle streaks, lift-off.
         natural(builtin("Worn Round", 14.0, 0.6, 0.04, 1.0, 0.0), 0.4, 0.45, 0.6),
         natural(builtin("Rough Round", 14.0, 0.55, 0.04, 1.0, 0.0), 0.75, 0.35, 0.6),

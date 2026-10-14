@@ -80,6 +80,10 @@ impl OxideApp {
                 ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
             }
         }
+        if tool.paints() || tool == Tool::Eraser {
+            ui.add(egui::Slider::new(&mut state.shape.taper, 0.0..=1.0).text("Taper"))
+                .on_hover_text("Both ends of every stroke come to a clean point, like an engraved line, even with a mouse (0 = off)");
+        }
 
         if tool == Tool::Knife {
             // The knife's two jobs instead of paint modes.
@@ -151,6 +155,10 @@ impl OxideApp {
         }
         if let Some(mode) = clicked_mode {
             self.set_paint_mode(mode);
+        }
+        if tool == Tool::Hatch {
+            ui.add_space(4.0);
+            self.hatch_properties(ui);
         }
         if tool.paints() || tool == Tool::Smudge {
             ui.add(egui::Slider::new(&mut self.mouse_pressure, 0.05..=1.0).text("Pressure"))

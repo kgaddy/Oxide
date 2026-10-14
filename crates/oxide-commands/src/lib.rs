@@ -5,6 +5,7 @@
 
 pub mod command;
 pub mod export;
+pub mod hatch;
 pub mod import;
 pub mod palette;
 pub mod session;

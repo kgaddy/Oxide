@@ -24,6 +24,7 @@ pub enum Command {
     SetPaintMode(SetPaintModeArgs),
     SetBrush(SetBrushArgs),
     Stroke(StrokeArgs),
+    Hatch(HatchArgs),
     PickColor(PickColorArgs),
     ImportImage(ImportImageArgs),
     ImportTip(PathArgs),
@@ -122,7 +123,8 @@ pub struct SetMulticolorArgs {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SetToolArgs {
     /// "oils" (oils & acrylics, wet), "ink", "pencil", "marker", "airbrush", "eraser", "smudge",
-    /// or "knife" (palette knife: thick smooth paint; set_paint_mode "scrape" scrapes wet paint off).
+    /// "knife" (palette knife: thick smooth paint; set_paint_mode "scrape" scrapes wet paint off),
+    /// or "hatch" (crisp tapered engraving lines; use with the hatch command).
     pub tool: String,
 }
 
@@ -161,6 +163,8 @@ pub struct SetBrushArgs {
     pub streaks: Option<f32>,
     /// How much the stroke end thins and breaks up 0–1.
     pub lift_off: Option<f32>,
+    /// Both stroke ends come to a clean point, like an engraved line, 0–1 (0 = off).
+    pub taper: Option<f32>,
     /// How much the paper texture shows in the stroke 0–1.
     pub grain: Option<f32>,
     /// Oils: how thick the paint goes on (impasto), 0 = flat, 1 = very thick. Default 0.5.
@@ -205,6 +209,38 @@ pub struct StrokeArgs {
     /// "mask" (the current layer's mask: the color's lightness is the value,
     /// black hides, white reveals; the eraser reveals).
     pub target: Option<String>,
+}
+
+/// Engraving-style hatching: evenly spaced lines fill the space between two
+/// guide curves ("rails"), bending to follow both. Each line is a stroke with
+/// the current tool and brush (the hatch tool's tapered lines suit it best).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HatchArgs {
+    /// The first rail: [x, y] points in canvas pixels (e.g. a leaf's midrib). At least 2.
+    pub rail_a: Vec<Vec<f32>>,
+    /// The second rail (e.g. the leaf's edge). Either direction works.
+    pub rail_b: Vec<Vec<f32>>,
+    /// "across" (default: lines run from rail A to rail B) or "along" (lines
+    /// run beside the rails, morphing from one into the other, like down a stem).
+    pub direction: Option<String>,
+    /// Distance between lines in canvas pixels (default 6).
+    pub spacing: Option<f32>,
+    /// How much each line thins from start to end, 0–1 (default 0): across, toward
+    /// rail B; along, toward the rails' last points. Needs size_pressure > 0.
+    pub fade: Option<f32>,
+    /// Hand-made irregularity 0–1: lines bow and stop short a little (default 0.25; 0 = ruled).
+    pub wobble: Option<f32>,
+    /// Across: lines lean along the rails, -1–1 (default 0 = straight across;
+    /// positive leans toward the rails' last points, like veins toward a leaf's tip).
+    pub slant: Option<f32>,
+    /// Across: lines curve to one side, -1–1 (default 0 = straight).
+    pub bend: Option<f32>,
+    /// How much lines break into dashes, then dots, toward their thin end, 0–1
+    /// (default 0 = solid; 0.5 = the last ~half of each line). With fade, the
+    /// breaking follows the thinning. Renders light on a form.
+    pub break_up: Option<f32>,
+    /// Picks the wobble's randomness (default 1); the same seed redraws the same lines.
+    pub seed: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

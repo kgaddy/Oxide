@@ -79,6 +79,8 @@ pub struct Stroke {
     tail: VecDeque<PendingDab>,
     /// The hairs of a bristle brush (empty for stamped tips, or until the first step).
     bristles: Vec<bristle::Bristle>,
+    /// How far the stroke has come (canvas pixels along its path), for tapers.
+    travelled: f32,
 }
 
 #[derive(Clone)]
@@ -127,6 +129,10 @@ struct PendingDab {
     dir: (f32, f32),
     /// False for dabs placed before the brush moved (direction unknown).
     has_direction: bool,
+    /// How far along the stroke it is (canvas pixels), for the taper.
+    dist: f32,
+    /// Size from the taper so far (1 = full size); the end is applied at pen-up.
+    taper: f32,
 }
 
 impl Stroke {
@@ -173,6 +179,7 @@ impl Stroke {
             has_direction: false,
             tail: VecDeque::new(),
             bristles: Vec::new(),
+            travelled: 0.0,
         };
         stroke.place(canvas, brush, x, y, point.pressure, point.pen_angle(brush.rotation));
         stroke
@@ -203,10 +210,11 @@ impl Stroke {
         while d <= len {
             let t = d / len;
             let pressure = from_pressure + (point.pressure - from_pressure) * t;
-            self.place(canvas, brush, lx + dx * t, ly + dy * t, pressure, pen_angle);
+            self.place_at(canvas, brush, lx + dx * t, ly + dy * t, pressure, pen_angle, self.travelled + d);
             d += step;
         }
         self.since_last_dab = len - (d - step);
+        self.travelled += len;
         self.last = (x, y);
         self.last_point = point;
     }
@@ -215,10 +223,18 @@ impl Stroke {
     /// (Safe to skip for brushes without lift-off; they hold nothing back.)
     pub fn finish(&mut self, canvas: &mut Canvas, brush: &Brush) {
         let n = self.tail.len();
+        // The taper may hold back more dabs than lift-off; only the last
+        // `lift` of them fade.
+        let lift = lift_off_dabs(brush).min(n);
+        let end = self.travelled;
         for i in 0..n {
-            let dab = self.tail.pop_front().expect("counted above");
-            // 1.0 at the start of the tail, down toward 0 at the very end.
-            let fade = 1.0 - (i + 1) as f32 / (n + 1) as f32;
+            let mut dab = self.tail.pop_front().expect("counted above");
+            dab.taper *= brush.taper_scale(end - dab.dist);
+            // 1.0 at the start of the lift-off, down toward 0 at the very end.
+            let fade = match (i + lift).checked_sub(n) {
+                Some(j) => 1.0 - (j + 1) as f32 / (lift + 1) as f32,
+                None => 1.0,
+            };
             self.paint(canvas, brush, dab, fade);
         }
     }
@@ -257,12 +273,15 @@ impl Stroke {
         }
         let saved = canvas.read_region(region);
         let mut ghost = self.clone();
-        while let Some(dab) = ghost.tail.pop_front() {
+        // The taper's end shows as it will look when the pen lifts here.
+        let end = self.travelled;
+        while let Some(mut dab) = ghost.tail.pop_front() {
+            dab.taper *= brush.taper_scale(end - dab.dist);
             ghost.paint(canvas, brush, dab, 1.0);
         }
-        if gap {
+        if gap && brush.taper <= 0.0 {
             let p = self.last_point;
-            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction };
+            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction, dist: end, taper: 1.0 };
             ghost.paint(canvas, brush, dab, 1.0);
         }
         Some(Preview { region, saved })
@@ -296,8 +315,15 @@ impl Stroke {
     /// Queue a dab; paint the oldest queued dabs once the queue is longer
     /// than the lift-off length.
     fn place(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32, pressure: f32, pen_angle: Option<f32>) {
-        self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction });
-        let keep = lift_off_dabs(brush);
+        self.place_at(canvas, brush, x, y, pressure, pen_angle, self.travelled);
+    }
+
+    /// [`Stroke::place`] for a dab `dist` pixels along the stroke.
+    #[allow(clippy::too_many_arguments)]
+    fn place_at(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32, pressure: f32, pen_angle: Option<f32>, dist: f32) {
+        let taper = brush.taper_scale(dist);
+        self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction, dist, taper });
+        let keep = lift_off_dabs(brush).max(taper_dabs(brush));
         while self.tail.len() > keep {
             let dab = self.tail.pop_front().expect("longer than keep");
             self.paint(canvas, brush, dab, 1.0);
@@ -306,7 +332,7 @@ impl Stroke {
 
     /// Actually put paint down. `fade` is 1.0 normally, less while lifting off.
     fn paint(&mut self, canvas: &mut Canvas, brush: &Brush, dab: PendingDab, fade: f32) {
-        let PendingDab { x, y, pressure, pen_angle, dir, has_direction } = dab;
+        let PendingDab { x, y, pressure, pen_angle, dir, has_direction, taper, .. } = dab;
 
         // This dab's brush: turned (follow stroke / pen tilt / pen rotation)
         // and sized and faded by pen pressure.
@@ -316,7 +342,7 @@ impl Stroke {
         } else if let Some(angle) = pen_angle {
             adjusted.angle = brush.angle + angle;
         }
-        adjusted.radius = (brush.radius * brush.pressure_size(pressure)).max(0.5);
+        adjusted.radius = (brush.radius * brush.pressure_size(pressure) * taper).max(0.5);
         adjusted.opacity = brush.opacity * brush.pressure_opacity(pressure);
         let dab_seed = hash2(self.seed, self.dab_count);
         self.dab_count += 1;
@@ -535,6 +561,11 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// How many dabs to hold back so the end of the stroke can taper.
+fn taper_dabs(brush: &Brush) -> usize {
+    (brush.taper_length() / brush.step()).ceil() as usize
+}
+
 /// How many dabs to hold back for the lift-off taper.
 fn lift_off_dabs(brush: &Brush) -> usize {
     let lift = brush.lift_off.clamp(0.0, 1.0);
@@ -591,6 +622,31 @@ mod tests {
         stroke.line_to(canvas, brush, to.0, to.1);
         stroke.finish(canvas, brush);
         stroke
+    }
+
+    /// How many pixels in column `x` the paint covers.
+    fn thickness(canvas: &Canvas, x: usize) -> usize {
+        (0..canvas.height()).filter(|&y| canvas.pixel(x, y).is_some_and(|c| c.a > 0.5)).count()
+    }
+
+    #[test]
+    fn taper_points_both_ends_and_preview_shows_the_end() {
+        let brush = Brush { radius: 6.0, hardness: 1.0, spacing: 0.05, taper: 0.5, ..Brush::default() };
+        let mut canvas = Canvas::new(240, 30, Color::TRANSPARENT);
+        let mut stroke = Stroke::begin(&mut canvas, &brush, DabMode::Paint, 10.0, 15.0);
+        stroke.line_to(&mut canvas, &brush, 230.0, 15.0);
+        // Before pen-up, the preview already shows the pointed end.
+        let preview = stroke.preview(&mut canvas, &brush).expect("the end is held back");
+        let previewed = thickness(&canvas, 226);
+        preview.restore(&mut canvas);
+        stroke.finish(&mut canvas, &brush);
+        let (start, middle, end) = (thickness(&canvas, 13), thickness(&canvas, 120), thickness(&canvas, 226));
+        assert!(middle >= 11, "full width in the middle: {middle}");
+        assert!(start <= 5 && end <= 5, "pointed ends: start {start}, end {end}, middle {middle}");
+        assert_eq!(previewed, end, "the preview matches the finished end");
+        // It's clean: the end is as opaque as the middle, not faded like lift-off.
+        let a = canvas.pixel(220, 15).map_or(0.0, |c| c.a);
+        assert!(a > 0.9, "solid near the point: {a}");
     }
 
     #[test]

@@ -101,7 +101,7 @@ impl OxideServer {
         run(&self.session, Command::SetColor(a))
     }
 
-    #[tool(description = "Choose the medium: oils (wet), ink, pencil, marker, airbrush, eraser, smudge.")]
+    #[tool(description = "Choose the medium: oils (wet), ink, pencil, marker, airbrush, eraser, smudge, knife, hatch (tapered engraving lines).")]
     async fn set_tool(&self, Parameters(a): Parameters<SetToolArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetTool(a))
     }
@@ -119,6 +119,11 @@ impl OxideServer {
     #[tool(description = "Paint one stroke through the given points with the current tool, color, and brush. Points are [x, y] or [x, y, pressure].")]
     async fn stroke(&self, Parameters(a): Parameters<StrokeArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::Stroke(a))
+    }
+
+    #[tool(description = "Engraving-style hatching: evenly spaced, tapered lines fill the space between two guide curves (rail_a, rail_b), across or along them. Uses the current tool and brush (set_tool hatch first).")]
+    async fn hatch(&self, Parameters(a): Parameters<HatchArgs>) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::Hatch(a))
     }
 
     #[tool(description = "Pick the color at a point as the current color: from the painting (default) or the reference photo.")]

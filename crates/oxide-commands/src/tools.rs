@@ -19,13 +19,16 @@ pub enum Tool {
     Smudge,
     /// Palette knife: spreads thick, smooth paint, or scrapes wet paint off.
     Knife,
+    /// Engraving-style hatching: draw two guide curves and evenly spaced,
+    /// tapered lines fill the space between them (ink, dry).
+    Hatch,
     /// Make selections (rectangle, ellipse, lasso); painting stays inside them.
     Select,
     Picker,
 }
 
 impl Tool {
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 11;
     pub const ALL: [Tool; Tool::COUNT] = [
         Tool::OilsAcrylics,
         Tool::Ink,
@@ -35,6 +38,7 @@ impl Tool {
         Tool::Eraser,
         Tool::Smudge,
         Tool::Knife,
+        Tool::Hatch,
         Tool::Select,
         Tool::Picker,
     ];
@@ -54,6 +58,7 @@ impl Tool {
             Tool::Eraser => "Eraser",
             Tool::Smudge => "Smudge",
             Tool::Knife => "Knife",
+            Tool::Hatch => "Hatch",
             Tool::Select => "Select",
             Tool::Picker => "Picker",
         }
@@ -70,6 +75,7 @@ impl Tool {
             Tool::Eraser => "E",
             Tool::Smudge => "S",
             Tool::Knife => "K",
+            Tool::Hatch => "H",
             Tool::Select => "L",
             Tool::Picker => "I",
         }
@@ -77,7 +83,7 @@ impl Tool {
 
     /// Tools that put the current color on the canvas.
     pub fn paints(self) -> bool {
-        matches!(self, Tool::OilsAcrylics | Tool::Ink | Tool::Pencil | Tool::Marker | Tool::Airbrush | Tool::Knife)
+        matches!(self, Tool::OilsAcrylics | Tool::Ink | Tool::Pencil | Tool::Marker | Tool::Airbrush | Tool::Knife | Tool::Hatch)
     }
 
     /// Tools whose paint is wet (picks up and drags paint, can run dry).
@@ -107,6 +113,8 @@ impl Tool {
                 let blade = BrushShape { roundness: 0.15, rotation: Rotation::FollowStroke, ..shape(22.0, 1.0, 0.03, 0.5) };
                 (blade, 1.0, 0.9, 0.7)
             }
+            // Hatch lines: crisp engraver lines that taper at both ends.
+            Tool::Hatch => (BrushShape { taper: 0.6, ..shape(2.0, 1.0, 0.05, 0.2) }, 1.0, 1.0, 0.0),
             Tool::Picker | Tool::Select => (shape(1.0, 1.0, 0.1, 0.0), 1.0, 1.0, 0.0),
         };
         // How each medium responds to pen pressure (size, opacity), like the
@@ -115,6 +123,8 @@ impl Tool {
             Tool::OilsAcrylics => (0.6, 0.3),
             // Ink: a light touch thins the line right down (to 10%), for tapers.
             Tool::Ink => (1.0, 0.0),
+            // Hatch: pressure carries the Fade toward the second rail.
+            Tool::Hatch => (1.0, 0.0),
             Tool::Pencil => (0.3, 0.8),
             Tool::Marker => (0.2, 0.4),
             Tool::Airbrush => (0.0, 1.0),
@@ -162,6 +172,8 @@ pub struct BrushShape {
     pub streaks: f32,
     /// How much the stroke end thins and breaks up as the brush lifts (0 = off).
     pub lift_off: f32,
+    /// Both ends of every stroke come to a clean point, like an engraved line (0 = off).
+    pub taper: f32,
     /// How much the paper texture shows in the stroke (0 = ignores the paper).
     pub grain: f32,
     /// How the tip turns while painting (fixed, follow the stroke, pen...).
@@ -191,6 +203,7 @@ impl Default for BrushShape {
             roughness: 0.0,
             streaks: 0.0,
             lift_off: 0.0,
+            taper: 0.0,
             grain: 0.0,
             rotation: Rotation::None,
             size_pressure: 0.0,
@@ -243,6 +256,7 @@ impl ToolState {
             roughness: s.roughness,
             streaks: s.streaks,
             lift_off: s.lift_off,
+            taper: s.taper,
             grain: s.grain,
             bristles: s.bristles,
             tip: s.tip,

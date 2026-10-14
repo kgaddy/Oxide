@@ -5,6 +5,7 @@ mod canvas_view;
 pub use canvas_view::ViewXform;
 mod export_dialog;
 mod files;
+mod hatch;
 mod layers;
 mod bench;
 mod menus;
@@ -195,6 +196,8 @@ pub struct OxideApp {
     frame_ms_raw: f32,
     /// `OXIDE_BENCH=1`: the painting benchmark (see `app/bench.rs`).
     bench: Option<bench::Bench>,
+    /// The Hatch tool: its settings and the rails being drawn.
+    hatch: hatch::HatchTool,
 }
 
 /// Everything you can do from a menu or keyboard shortcut.
@@ -415,6 +418,7 @@ impl OxideApp {
             native_menu: None,
             menu_installed: false,
             reference: reference_image::ReferenceImage::default(),
+            hatch: Default::default(),
         }
     }
 

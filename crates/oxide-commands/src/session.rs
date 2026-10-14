@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use crate::command::*;
 use crate::export::{ExportFormat, ExportOptions, export};
+use crate::hatch::{HatchDirection, HatchSettings, hatch_lines, paint_hatch};
 use crate::palette::{add_note_line, add_paint_swatch, new_palette, parse_hex, to_hex};
 use crate::tools::{SWATCHES, Tool, ToolState};
 
@@ -119,6 +120,7 @@ impl Session {
             Command::SetPaintMode(a) => self.set_paint_mode(&a.mode),
             Command::SetBrush(a) => self.set_brush(a),
             Command::Stroke(a) => self.stroke(a),
+            Command::Hatch(a) => self.hatch(a),
             Command::PickColor(a) => {
                 let c = match a.from.as_deref().unwrap_or("painting") {
                     "painting" => self.document.composite_pixel(a.x.max(0.0) as usize, a.y.max(0.0) as usize).ok_or("Point is outside the painting.")?,
@@ -489,6 +491,7 @@ impl Session {
         if let Some(v) = a.roughness { s.shape.roughness = unit(v) }
         if let Some(v) = a.streaks { s.shape.streaks = unit(v) }
         if let Some(v) = a.lift_off { s.shape.lift_off = unit(v) }
+        if let Some(v) = a.taper { s.shape.taper = unit(v) }
         if let Some(v) = a.grain { s.shape.grain = unit(v) }
         if let Some(v) = a.size_pressure { s.shape.size_pressure = unit(v) }
         if let Some(v) = a.opacity_pressure { s.shape.opacity_pressure = unit(v) }
@@ -571,6 +574,54 @@ impl Session {
             self.carried = stroke.carried_color();
         }
         Ok(Output::Text(format!("Painted a {}-point stroke with {}", a.points.len(), self.tool.label())))
+    }
+
+    fn hatch(&mut self, a: HatchArgs) -> R {
+        let rail = |points: &[Vec<f32>], name: &str| -> Result<Vec<(f32, f32)>, String> {
+            if points.len() < 2 || points.len() > MAX_POINTS {
+                return Err(format!("{name} needs 2–{MAX_POINTS} points."));
+            }
+            points.iter().map(|p| match p.as_slice() {
+                [x, y, ..] => Ok((*x, *y)),
+                _ => Err(format!("Each {name} point is [x, y].")),
+            }).collect()
+        };
+        let (rail_a, rail_b) = (rail(&a.rail_a, "rail_a")?, rail(&a.rail_b, "rail_b")?);
+        let direction = match a.direction.as_deref().unwrap_or("across") {
+            "across" => HatchDirection::Across,
+            "along" => HatchDirection::Along,
+            other => return Err(format!("direction must be \"across\" or \"along\", not \"{other}\".")),
+        };
+        let defaults = HatchSettings::default();
+        let settings = HatchSettings {
+            direction,
+            spacing: a.spacing.unwrap_or(defaults.spacing).clamp(0.5, 500.0),
+            fade: a.fade.unwrap_or(defaults.fade).clamp(0.0, 1.0),
+            wobble: a.wobble.unwrap_or(defaults.wobble).clamp(0.0, 1.0),
+            slant: a.slant.unwrap_or(0.0).clamp(-1.0, 1.0),
+            bend: a.bend.unwrap_or(0.0).clamp(-1.0, 1.0),
+            break_up: a.break_up.unwrap_or(0.0).clamp(0.0, 1.0),
+        };
+        if !self.tool.paints() && self.tool != Tool::Eraser {
+            return Err(format!("{} doesn't paint; set_tool hatch (or ink) first.", self.tool.label()));
+        }
+        if !self.document.can_paint_active() {
+            return Err("The current layer is hidden, locked or the tracing layer; pick another layer to hatch on.".into());
+        }
+        let seed = a.seed.unwrap_or(1);
+        let lines = hatch_lines(&rail_a, &rail_b, &settings, seed);
+        if lines.is_empty() {
+            return Err("The rails are too short to hatch between.".into());
+        }
+        let mut brush = self.state().brush(self.tool, self.color);
+        brush.mixing = if self.natural_colors { Mixing::Pigment } else { Mixing::Rgb };
+        let erasing = self.tool == Tool::Eraser || (self.tool.is_wet_medium() && self.state().erase);
+        let mode = if erasing { DabMode::Erase } else { DabMode::Paint };
+        self.document.begin_stroke();
+        paint_hatch(self.document.active_canvas(), &brush, mode, &lines, &settings, seed);
+        self.document.end_stroke();
+        self.document.seal_history();
+        Ok(Output::Text(format!("Hatched {} lines with {}", lines.len(), self.tool.label())))
     }
 
     fn transform_layer(&mut self, a: TransformLayerArgs) -> R {
@@ -801,7 +852,7 @@ impl Session {
             "roundness": s.shape.roundness, "angle": s.shape.angle, "rotation": format!("{:?}", s.shape.rotation),
             "loading": s.loading, "length": s.length, "oiliness": s.oiliness, "thickness": s.thickness,
             "paint_mode": if s.erase { "Erase".to_string() } else { format!("{:?}", s.paint_mode) },
-            "roughness": s.shape.roughness, "streaks": s.shape.streaks, "lift_off": s.shape.lift_off, "grain": s.shape.grain,
+            "roughness": s.shape.roughness, "streaks": s.shape.streaks, "lift_off": s.shape.lift_off, "taper": s.shape.taper, "grain": s.shape.grain,
             "spacing": s.shape.spacing, "tip": s.shape.tip.key(), "jitter_angle": s.shape.jitter_angle, "jitter_size": s.shape.jitter_size, "scatter": s.shape.scatter,
             "bristles": s.shape.bristles.map(|b| json!({"count": b.count, "thickness": b.thickness, "spread": b.spread, "stiffness": b.stiffness})),
         })
@@ -832,7 +883,8 @@ fn parse_tool(name: &str) -> Result<Tool, String> {
         "eraser" => Tool::Eraser,
         "smudge" => Tool::Smudge,
         "knife" | "palette_knife" => Tool::Knife,
-        _ => return Err(format!("Unknown tool \"{name}\" (oils, ink, pencil, marker, airbrush, eraser, smudge, knife).")),
+        "hatch" | "hatching" | "engraver" => Tool::Hatch,
+        _ => return Err(format!("Unknown tool \"{name}\" (oils, ink, pencil, marker, airbrush, eraser, smudge, knife, hatch).")),
     })
 }
 
@@ -890,6 +942,7 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Palette knife (set_tool knife): spreads thick, flat-topped paint with crisp edges and pushes wet paint into ridges; set_paint_mode scrape = an empty knife that scrapes wet paint off (dried paint stays). Long straight strokes work best.
 - Bristle brushes (set_brush bristles: 60, plus bristle_thickness / bristle_spread / bristle_stiffness): the tip is real hairs, each carrying, picking up and running out of paint on its own; the most realistic oil strokes. Light pressure = only the middle hairs touch; bristles: 0 = back to a stamped tip.
 - MultiColored brush (set_multicolor colors: [\"#C8553D\", \"Ultramarine Blue\"]): 2–6 colors loaded side by side across the brush; strokes start striped and the colors blend toward their average as you paint. Best with a flat brush following the stroke. Empty list = one color again.
+- Engraving / pen-and-ink hatching: set_tool hatch (crisp lines that taper to a point at both ends), then hatch with rail_a and rail_b (two guide curves, e.g. a leaf's midrib and edge): evenly spaced lines fill between them, direction across (rail to rail) or along (beside the rails, like down a stem); spacing in px, fade thins each line from start to end (across: toward rail B; along: toward the rails' last points), wobble makes them hand-made, slant leans them toward the tip, bend curves them, break_up 0–1 breaks them into dashes then dots as they thin (light on a form). Any brush can taper both stroke ends with set_brush taper 0–1. Build tone with denser spacing or a second, crossing hatch.
 - Pressure (0–1) per point changes size/opacity/mixing like a pen. Use 3-value points [x, y, pressure] for tapered or expressive strokes; `smooth: true` draws a curve through sparse points.
 - The surface is textured paper/canvas (set_paper); grainy brushes catch its tooth.
 - Layers: add_layer, select_layer, set_layer (name, opacity, visible, locked, lock_transparency, tracing), move_layer, delete_layer, duplicate_layer, merge_down, merge_visible, clear_layer. dry locks wet paint so later strokes glide over it. Merging dries the merged paint.
