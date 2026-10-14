@@ -84,8 +84,9 @@ pub struct LayerMask {
     pub enabled: bool,
 }
 
-/// A layer group (one level, another app's Ctrl/Cmd+Alt+G): its layers are
-/// composited together, then faded by the group's opacity as one picture.
+/// A layer group (one level, another app's Ctrl/Cmd+Alt+G). Groups pass through
+/// (Photoshop's default): their layers blend with everything below, and the
+/// group's opacity fades the result as one picture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerGroup {
     pub id: u32,
@@ -103,8 +104,8 @@ pub(crate) struct GroupState {
     membership: Vec<Option<u32>>,
 }
 
-/// One step of compositing: a layer (with its opacity), or a group whose
-/// layers are composited together and then faded by the group's opacity.
+/// One step of compositing: a layer (with its opacity), or a faded group whose
+/// layers are composited onto what's below, then faded by the group's opacity.
 enum Step {
     Layer(usize, f32, BlendMode),
     Group(Vec<(usize, f32, BlendMode)>, f32),
@@ -550,6 +551,20 @@ impl Document {
         self.history.relabel_last("Duplicate layer");
     }
 
+    /// Would Merge Down change how the current layer looks? True when it has
+    /// a blend mode other than Normal and paint over places where the layer
+    /// below isn't fully covered: there it blended with what's further down,
+    /// but merged it becomes plain paint (one layer has one blend mode).
+    pub fn merge_down_changes_look(&self) -> bool {
+        let upper = self.active;
+        if upper == 0 || self.layers[upper].blend == BlendMode::Normal {
+            return false;
+        }
+        let (u, b) = (&self.layers[upper], &self.layers[upper - 1]);
+        let bo = if b.visible { b.opacity } else { 0.0 };
+        (0..self.width * self.height).into_par_iter().any(|i| u.shown_pixel(i)[3] > 0.004 && b.shown_pixel(i)[3] * bo < 0.996)
+    }
+
     /// Merge the current layer into the one below it (as one undo step). The
     /// merged paint is dried: one layer can't keep two layers' wet/dry
     /// stacking order.
@@ -780,22 +795,36 @@ impl Document {
     }
 
     fn set_selection(&mut self, selection: Option<Vec<f32>>, _label: &'static str) {
+        if let Some(edit) = self.replace_selection(selection) {
+            self.record_alone(edit);
+        }
+    }
+
+    /// Swap in a new selection; returns the undo step (None if nothing was
+    /// or is selected). The step keeps only the box where either selection
+    /// has something, not two full-canvas copies.
+    fn replace_selection(&mut self, selection: Option<Vec<f32>>) -> Option<Edit> {
+        let new_bounds = selection.as_deref().and_then(|s| transform::mask_bounds(s, self.width));
         // An empty selection is no selection.
-        let selection = selection.filter(|s| s.iter().any(|&v| v > 0.0)).map(Arc::new);
-        let before = std::mem::replace(&mut self.selection, selection);
+        let selection = selection.filter(|_| new_bounds.is_some()).map(Arc::new);
+        let region = match (self.selection_bounds(), new_bounds) {
+            (Some(a), Some(b)) => a.union(b),
+            (a, b) => a.or(b)?,
+        };
+        let crop = |s: &Option<Arc<Vec<f32>>>| s.as_ref().map(|s| read_mask(s, self.width, region));
+        let (before, after) = (crop(&self.selection), crop(&selection));
+        self.selection = selection;
         self.selection_version += 1;
-        self.history.seal();
-        self.history.record(Edit::Selection { other: before });
-        self.history.seal();
+        Some(Edit::Selection { region, before, after })
     }
 
     /// The box around what's selected (None without a selection).
     pub fn selection_bounds(&self) -> Option<Region> {
-        let sel = self.selection()?;
-        crate::transform::content_bounds(&sel.iter().map(|&v| [0.0, 0.0, 0.0, v]).collect::<Vec<_>>(), self.width)
+        transform::mask_bounds(self.selection()?, self.width)
     }
 
-    /// Erase what's selected on the current layer (Delete). False without a selection.
+    /// Erase what's selected on the current layer (Delete). False without a
+    /// selection, or if the layer can't be painted on or has lock transparency.
     pub fn clear_selected(&mut self) -> bool {
         self.apply_to_selection(None)
     }
@@ -808,6 +837,10 @@ impl Document {
     fn apply_to_selection(&mut self, color: Option<Color>) -> bool {
         let (Some(sel), Some(region)) = (self.selection.clone(), self.selection_bounds()) else { return false };
         if !self.can_paint_active() {
+            return false;
+        }
+        // Lock transparency: nothing may be erased.
+        if color.is_none() && self.layers[self.active].lock_transparency() {
             return false;
         }
         self.begin_stroke();
@@ -848,10 +881,14 @@ impl Document {
     }
 
     /// Copy, then erase what was copied (one undo step for the erase).
+    /// None if there's nothing to copy, or the selection can't be erased
+    /// (e.g. lock transparency).
     pub fn cut_selected(&mut self) -> Option<Clip> {
         let clip = self.copy_selected()?;
         if self.selection.is_some() {
-            self.clear_selected();
+            if !self.clear_selected() {
+                return None;
+            }
         } else {
             self.clear_active_layer();
         }
@@ -1227,9 +1264,8 @@ impl Document {
             // The selection moves with the paint (one undo step for both).
             Some((_, _, sel)) => {
                 let moved = transform::resample_scalar(&sel, self.width, self.height, src.bounds, &src.current);
-                let old = self.selection.replace(Arc::new(moved));
-                self.selection_version += 1;
-                self.record_batch(vec![paint, Edit::Selection { other: old }], "Transform selection");
+                let edits = std::iter::once(paint).chain(self.replace_selection(Some(moved))).collect();
+                self.record_batch(edits, "Transform selection");
             }
             None => self.record_alone(paint),
         }
@@ -1462,10 +1498,19 @@ impl Document {
                 self.active = layer;
                 Edit::MaskPixels { layer, region, before: after, after: before }
             }
-            Edit::Selection { other } => {
-                let current = std::mem::replace(&mut self.selection, other);
+            Edit::Selection { region, before, after } => {
+                match &before {
+                    // Nothing was selected (and the selection since lies inside `region`).
+                    None => self.selection = None,
+                    Some(values) => {
+                        let n = self.width * self.height;
+                        let sel = self.selection.get_or_insert_with(|| Arc::new(vec![0.0; n]));
+                        // (Copies first if a stroke still holds the old selection.)
+                        write_mask(Arc::make_mut(sel).as_mut_slice(), self.width, region, values);
+                    }
+                }
                 self.selection_version += 1;
-                Edit::Selection { other: current }
+                Edit::Selection { region, before: after, after: before }
             }
             Edit::LayerBlend { layer, before, after } => {
                 self.layers[layer].blend = before;
@@ -1677,7 +1722,7 @@ impl Document {
         while i < self.layers.len() {
             let layer = &self.layers[i];
             match layer.group.and_then(|id| self.group(id)) {
-                // A faded group: its layers are composited together first.
+                // A faded group: its layers are composited as one step.
                 Some(g) if g.opacity < 1.0 => {
                     let mut members = Vec::new();
                     while i < self.layers.len() && self.layers[i].group == layer.group {
@@ -1707,20 +1752,29 @@ impl Document {
         let mut out = base;
         let mut coverage = 0.0;
         for step in plan {
-            let (p, mode) = match step {
-                Step::Layer(n, opacity, mode) => (scale(self.layers[*n].shown_pixel(i), *opacity), *mode),
-                // A faded group is its own picture (blend modes inside it
-                // blend only with the group's layers), then fades in normally.
-                Step::Group(members, opacity) => {
-                    let mut g = [0.0f32; 4];
-                    for (n, o, mode) in members {
-                        g = blend(scale(self.layers[*n].shown_pixel(i), *o), g, *mode);
-                    }
-                    (scale(g, *opacity), BlendMode::Normal)
+            match step {
+                Step::Layer(n, opacity, mode) => {
+                    let p = scale(self.layers[*n].shown_pixel(i), *opacity);
+                    out = blend(p, out, *mode);
+                    coverage = p[3] + coverage * (1.0 - p[3]);
                 }
-            };
-            out = blend(p, out, mode);
-            coverage = p[3] + coverage * (1.0 - p[3]);
+                // A faded group passes through: its layers blend with what's
+                // below (so a Multiply inside it still darkens the paper),
+                // then the group's opacity mixes that with what was there.
+                // For Normal layers this is the same as fading the group as
+                // one picture, and at 100% the same as no group at all.
+                Step::Group(members, opacity) => {
+                    let (mut g, mut alone) = (out, 0.0f32);
+                    for (n, o, mode) in members {
+                        let p = scale(self.layers[*n].shown_pixel(i), *o);
+                        g = blend(p, g, *mode);
+                        alone = p[3] + alone * (1.0 - p[3]);
+                    }
+                    out = std::array::from_fn(|c| g[c] * opacity + out[c] * (1.0 - opacity));
+                    let a = alone * opacity;
+                    coverage = a + coverage * (1.0 - a);
+                }
+            }
         }
         (out, coverage)
     }
@@ -2617,6 +2671,93 @@ mod tests {
         // An image from the system clipboard is centered on a new layer.
         doc.paste_image(2, 1, &[0, 0, 255, 255, 0, 0, 255, 255]);
         assert_eq!(doc.layers().last().unwrap().canvas.pixel(29, 9), Some(Color::rgb(0.0, 0.0, 1.0)));
+    }
+
+    #[test]
+    fn groups_pass_blend_modes_through_at_any_opacity() {
+        let gray = Color::rgb(0.5, 0.5, 0.5);
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        doc.add_layer();
+        paint_dot(&mut doc, 10.0, 10.0, gray);
+        doc.set_layer_blend(1, BlendMode::Multiply);
+        let gid = doc.group_active_layer().unwrap();
+        // Gray multiplied onto white paper: gray, at 100% and (almost) at 99%.
+        assert_eq!(doc.composite_pixel(10, 10), Some(gray));
+        doc.set_group_opacity(gid, 0.99);
+        let p = doc.composite_pixel(10, 10).unwrap();
+        assert!((p.r - 0.505).abs() < 0.002 && (p.g - 0.505).abs() < 0.002, "no jump at 99%: {p:?}");
+        // Over red paint below the group, the multiply still darkens it when faded.
+        doc.set_active(0);
+        paint_dot(&mut doc, 10.0, 10.0, RED);
+        doc.set_group_opacity(gid, 0.5);
+        let p = doc.composite_pixel(10, 10).unwrap();
+        assert!((p.r - 0.75).abs() < 0.02 && p.g < 0.02, "half of a multiply on red: {p:?}");
+    }
+
+    #[test]
+    fn merge_down_says_when_a_blend_mode_cant_survive() {
+        let gray = Color::rgb(0.5, 0.5, 0.5);
+        let wide = Brush { radius: 30.0, color: RED, ..Brush::default() };
+        let mut doc = Document::new(20, 20, Color::WHITE);
+        doc.add_layer();
+        paint_dot(&mut doc, 10.0, 10.0, gray);
+        assert!(!doc.merge_down_changes_look(), "Normal merges exactly");
+        doc.set_layer_blend(1, BlendMode::Multiply);
+        assert!(doc.merge_down_changes_look(), "multiply over an empty layer");
+        // With the layer below fully painted, the merge looks the same.
+        doc.set_active(0);
+        doc.begin_stroke();
+        let _ = Stroke::begin(doc.active_canvas(), &wide, DabMode::Paint, 10.0, 10.0);
+        doc.end_stroke();
+        doc.set_active(1);
+        assert!(!doc.merge_down_changes_look());
+    }
+
+    #[test]
+    fn fill_and_clear_respect_lock_transparency() {
+        let mut doc = Document::new(40, 20, Color::WHITE);
+        paint_dot(&mut doc, 10.0, 10.0, RED);
+        doc.set_lock_transparency(0, true);
+        doc.select(&SelectShape::Rect { x0: 0.0, y0: 0.0, x1: 40.0, y1: 20.0 }, SelectMode::Replace);
+        assert!(!doc.clear_selected(), "nothing may be erased");
+        assert!(doc.cut_selected().is_none(), "cut can't erase either");
+        assert_eq!(doc.composite_pixel(10, 10), Some(RED));
+        // Fill recolors the paint that's there, and nothing else.
+        let alpha = |doc: &Document, x| doc.layers()[0].canvas.pixel(x, 10).unwrap().a;
+        let edge = (10..40).find(|&x| alpha(&doc, x) > 0.0 && alpha(&doc, x) < 0.99).expect("a soft edge");
+        let before = alpha(&doc, edge);
+        assert!(doc.fill_selection(Color::BLACK));
+        assert_eq!(doc.composite_pixel(10, 10), Some(Color::BLACK));
+        assert_eq!(doc.composite_pixel(30, 10), Some(Color::WHITE), "empty stays empty");
+        assert!((alpha(&doc, edge) - before).abs() < 1e-5, "coverage unchanged");
+    }
+
+    #[test]
+    fn selection_undo_keeps_only_the_changed_box() {
+        let mut doc = Document::new(200, 100, Color::WHITE);
+        doc.select(&SelectShape::Rect { x0: 10.0, y0: 10.0, x1: 20.0, y1: 20.0 }, SelectMode::Replace);
+        doc.select(&SelectShape::Rect { x0: 50.0, y0: 50.0, x1: 60.0, y1: 60.0 }, SelectMode::Add);
+        doc.deselect();
+        let Some(Edit::Selection { region, before, after }) = doc.history.pop_undo().map(|(_, e)| e) else { panic!("a selection step") };
+        assert_eq!(region, Region::new(10, 10, 60, 60), "just the box, not the canvas");
+        assert_eq!(before.map(|b| b.len()), Some(50 * 50));
+        assert!(after.is_none());
+        let mut doc = Document::new(200, 100, Color::WHITE);
+        doc.select(&SelectShape::Rect { x0: 10.0, y0: 10.0, x1: 20.0, y1: 20.0 }, SelectMode::Replace);
+        doc.select(&SelectShape::Rect { x0: 50.0, y0: 50.0, x1: 60.0, y1: 60.0 }, SelectMode::Replace);
+        doc.deselect();
+        // Undo and redo walk back and forth exactly.
+        doc.undo();
+        assert_eq!(doc.selection_bounds(), Some(Region::new(50, 50, 60, 60)));
+        doc.undo();
+        assert_eq!(doc.selection_bounds(), Some(Region::new(10, 10, 20, 20)));
+        doc.undo();
+        assert!(doc.selection().is_none());
+        doc.redo();
+        doc.redo();
+        assert_eq!(doc.selection_bounds(), Some(Region::new(50, 50, 60, 60)));
+        doc.redo();
+        assert!(doc.selection().is_none());
     }
 
     #[test]

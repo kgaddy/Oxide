@@ -83,10 +83,19 @@ pub fn center(r: Region) -> [f32; 2] {
 
 /// The smallest box around every pixel with paint on it.
 pub fn content_bounds(pixels: &[[f32; 4]], width: usize) -> Option<Region> {
+    bounds_where(pixels, width, |p| p[3] > 0.0)
+}
+
+/// The smallest box around every value above 0 (a selection or mask).
+pub fn mask_bounds(values: &[f32], width: usize) -> Option<Region> {
+    bounds_where(values, width, |&v| v > 0.0)
+}
+
+fn bounds_where<T>(data: &[T], width: usize, has: impl Fn(&T) -> bool) -> Option<Region> {
     let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
-    for (y, row) in pixels.chunks(width).enumerate() {
-        let Some(first) = row.iter().position(|p| p[3] > 0.0) else { continue };
-        let last = row.iter().rposition(|p| p[3] > 0.0).unwrap_or(first);
+    for (y, row) in data.chunks(width).enumerate() {
+        let Some(first) = row.iter().position(&has) else { continue };
+        let last = row.iter().rposition(&has).unwrap_or(first);
         x0 = x0.min(first);
         x1 = x1.max(last + 1);
         y0 = y0.min(y);

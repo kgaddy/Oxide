@@ -427,15 +427,20 @@ impl OxideApp {
     fn copy(&mut self, cut: bool) {
         let clip = if cut { self.document.cut_selected() } else { self.document.copy_selected() };
         let Some(clip) = clip else {
-            return self.info("Nothing to copy here (the selected part of this layer is empty).");
+            return self.info(if cut {
+                "Nothing to cut here (the selected part is empty, or the layer can't be erased: locked or lock transparency)."
+            } else {
+                "Nothing to copy here (the selected part of this layer is empty)."
+            });
         };
         let rgba = clip.rgba8();
         let fingerprint = fingerprint(&rgba);
         let image = arboard::ImageData { width: clip.w, height: clip.h, bytes: std::borrow::Cow::Owned(rgba) };
-        if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_image(image)) {
-            self.error(format!("Copied inside Oxide, but not to the Mac clipboard: {e}"));
+        let verb = if cut { "Cut" } else { "Copied" };
+        match arboard::Clipboard::new().and_then(|mut c| c.set_image(image)) {
+            Ok(()) => self.info(format!("{verb} {} × {} px", clip.w, clip.h)),
+            Err(e) => self.error(format!("{verb} inside Oxide, but not to the Mac clipboard: {e}")),
         }
-        self.info(format!("{} {} × {} px", if cut { "Cut" } else { "Copied" }, clip.w, clip.h));
         self.clip = Some((clip, fingerprint));
     }
 
@@ -459,6 +464,21 @@ impl OxideApp {
         // Frame the pasted paint, not the old selection.
         self.document.deselect();
         self.start_transform();
+    }
+
+    /// Merge Down, warning when the layer's blend mode can't survive it.
+    fn merge_down(&mut self) {
+        let changes_look = self.document.merge_down_changes_look();
+        let mode = self.document.layers()[self.document.active_index()].blend;
+        if !self.document.merge_down() {
+            return self.info("Nothing below to merge into");
+        }
+        if changes_look {
+            self.info(format!(
+                "Merged. Where the layer below was empty, the {} paint now covers instead of blending (⌘Z to undo).",
+                mode.label()
+            ));
+        }
     }
 
     /// Are strokes going to the current layer's mask?
@@ -647,7 +667,9 @@ impl OxideApp {
                 }
             }
             Command::ClearSelection => {
-                self.document.clear_selected();
+                if self.document.selection().is_some() && !self.document.clear_selected() {
+                    self.info("This layer can't be erased (locked, hidden, tracing, or lock transparency is on).");
+                }
             }
             Command::GroupLayer => {
                 if self.document.group_active_layer().is_none() {
@@ -675,11 +697,7 @@ impl OxideApp {
                 }
             }
             Command::DuplicateLayer => self.document.duplicate_active_layer(),
-            Command::MergeDown => {
-                if !self.document.merge_down() {
-                    self.info("Nothing below to merge into");
-                }
-            }
+            Command::MergeDown => self.merge_down(),
             Command::MergeVisible => {
                 if !self.document.merge_visible() {
                     self.info("Need at least two visible layers to merge");

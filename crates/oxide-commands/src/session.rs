@@ -163,8 +163,16 @@ impl Session {
                 Ok(Output::Json(self.layers_json()))
             }
             Command::MergeDown(_) => {
+                let changes_look = self.document.merge_down_changes_look();
+                let mode = self.document.layers()[self.document.active_index()].blend.key();
                 if !self.document.merge_down() {
                     return Err("The current layer is the bottom one; nothing to merge into.".into());
+                }
+                if changes_look {
+                    return Ok(Output::Text(format!(
+                        "Merged. Warning: where the layer below was empty, the {mode} paint now covers instead of blending (undo to restore).\n{}",
+                        serde_json::to_string_pretty(&self.layers_json()).unwrap_or_default()
+                    )));
                 }
                 Ok(Output::Json(self.layers_json()))
             }
@@ -189,7 +197,7 @@ impl Session {
                 Ok(Output::Text(format!("Copied {} × {} px", c.w, c.h)))
             }
             Command::Cut(_) => {
-                self.clip = Some(self.document.cut_selected().ok_or("Nothing to cut (the selected part of this layer is empty).")?);
+                self.clip = Some(self.document.cut_selected().ok_or("Nothing to cut (the selected part of this layer is empty, or it can't be erased: locked or lock transparency).")?);
                 let c = self.clip.as_ref().expect("just set");
                 Ok(Output::Text(format!("Cut {} × {} px", c.w, c.h)))
             }
@@ -223,7 +231,7 @@ impl Session {
                     other => return Err(format!("Unknown selection action \"{other}\" (all, none, invert, feather, fill, clear).")),
                 };
                 if !done {
-                    return Err("Nothing selected (or the current layer can't be painted on).".into());
+                    return Err("Nothing selected, or the current layer can't be painted on (hidden, locked, tracing; clear also needs lock transparency off).".into());
                 }
                 Ok(Output::Json(self.selection_json()))
             }

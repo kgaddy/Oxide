@@ -197,8 +197,13 @@ impl Canvas {
     }
 
     /// Erase (`color` None) or fill with `color` (dry paint), by `amount`
-    /// 0..=1 per pixel (a selection), within `region`.
+    /// 0..=1 per pixel (a selection), within `region`. With lock
+    /// transparency, erasing does nothing and filling only recolors paint
+    /// that's already there (its coverage stays the same).
     pub fn apply_amount(&mut self, amount: &[f32], region: Region, color: Option<Color>) {
+        if self.preserve_alpha && color.is_none() {
+            return;
+        }
         let paint = color.map(premultiply);
         for y in region.y0..region.y1 {
             for x in region.x0..region.x1 {
@@ -226,7 +231,13 @@ impl Canvas {
                             self.wet_relief[i] = 0.0;
                             self.wet_count -= 1;
                         }
-                        self.dry[i] = over(scale(p, k), self.dry[i]);
+                        self.dry[i] = if self.preserve_alpha {
+                            // Recolor toward the fill, keeping how much paint is here.
+                            let d = self.dry[i];
+                            std::array::from_fn(|c| if c == 3 { d[3] } else { d[c] + (p[c] * d[3] - d[c]) * k })
+                        } else {
+                            over(scale(p, k), self.dry[i])
+                        };
                     }
                 }
             }

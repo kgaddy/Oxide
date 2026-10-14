@@ -41,8 +41,9 @@ pub(crate) enum Edit {
     MaskEnabled { layer: usize },
     /// Painting on a layer's mask changed `region`.
     MaskPixels { layer: usize, region: Region, before: Vec<f32>, after: Vec<f32> },
-    /// The selection changed. Holds the *other* one (None = nothing selected).
-    Selection { other: Option<std::sync::Arc<Vec<f32>>> },
+    /// The selection changed inside `region` (outside it, both are empty).
+    /// None = nothing selected.
+    Selection { region: Region, before: Option<Vec<f32>>, after: Option<Vec<f32>> },
     /// A layer's blend mode changed.
     LayerBlend { layer: usize, before: crate::BlendMode, after: crate::BlendMode },
     /// A layer's own impasto depth changed (None = uses the painting's).
@@ -73,7 +74,7 @@ impl Edit {
             Edit::Pixels { before, after, .. } => before.bytes() + after.bytes(),
             Edit::Wetness { layers, .. } => layers.iter().map(|(_, b)| b.bytes()).sum(),
             Edit::Batch { edits, .. } => edits.iter().map(Edit::bytes).sum(),
-            Edit::Selection { other } => other.as_ref().map_or(0, |s| s.len() * 4),
+            Edit::Selection { before, after, .. } => (before.as_ref().map_or(0, Vec::len) + after.as_ref().map_or(0, Vec::len)) * 4,
             Edit::LayerMask { other, .. } => other.as_ref().map_or(0, |m| m.data.len() * 4),
             Edit::MaskPixels { before, after, .. } => (before.len() + after.len()) * 4,
             Edit::RemoveLayer { layer, .. } => layer.canvas.dry_pixels().len() * (2 * PIXEL + 4),

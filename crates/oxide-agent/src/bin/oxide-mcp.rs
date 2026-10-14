@@ -27,8 +27,16 @@ struct OxideServer {
 /// Run a command and turn its output (or error) into an MCP tool result.
 /// Errors are returned as tool errors with a readable message, so the agent
 /// can correct itself instead of failing.
+///
+/// Commands run one at a time, in the order they arrive (painting steps
+/// depend on each other), so this is synchronous on a single-threaded
+/// runtime (see `main`). If a command panics, the agent gets an error and
+/// the server keeps going: the lock is recovered instead of staying poisoned.
 fn run(session: &Mutex<Session>, command: Command) -> Result<CallToolResult, McpError> {
-    let result = session.lock().expect("session lock").execute(command);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).execute(command)
+    }))
+    .unwrap_or_else(|_| Err("Oxide hit an internal error running that command (a bug; details on stderr). The painting is still open; check it with info or snapshot.".into()));
     Ok(match result {
         Ok(Output::Text(text)) => CallToolResult::success(vec![ContentBlock::text(text)]),
         Ok(Output::Json(value)) => {
@@ -282,7 +290,8 @@ impl ServerHandler for OxideServer {
     }
 }
 
-#[tokio::main]
+// One thread: requests run strictly in arrival order (see `run`).
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stdout carries the MCP protocol; anything for humans goes to stderr.
     oxide_commands::tip_import::load_library();

@@ -208,7 +208,7 @@ impl OxideApp {
                 self.document.duplicate_active_layer();
             }
             if ui.add_enabled(active > 0, egui::Button::new("Merge ⏷")).on_hover_text("Merge into the layer below (⌘E). The merged paint is dried.").clicked() {
-                self.document.merge_down();
+                self.merge_down();
             }
             if ui.button("Clear").on_hover_text("Erase everything on this layer (⌘⌫)").clicked() {
                 self.document.clear_active_layer();
