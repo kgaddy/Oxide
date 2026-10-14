@@ -22,7 +22,10 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Oxide")
             .with_inner_size([1500.0, 950.0])
-            .with_min_inner_size([900.0, 600.0]),
+            .with_min_inner_size([900.0, 600.0])
+            // An empty icon tells eframe not to put its own (the egui logo) on the
+            // Dock while running, so macOS shows Oxide.app's icon, as Spotlight does.
+            .with_icon(egui::IconData::default()),
         ..Default::default()
     };
     eframe::run_native(
