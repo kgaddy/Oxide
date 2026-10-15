@@ -223,6 +223,10 @@ pub struct HatchArgs {
     pub rail_a: Vec<Vec<f32>>,
     /// The second rail (e.g. the leaf's edge). Either direction works.
     pub rail_b: Vec<Vec<f32>>,
+    /// Along only: a third rail, the curve the lines start on (e.g. the round
+    /// edge of a form), drawn across the gap from rail A's first point to rail
+    /// B's (it may run past them). Near the rails' last points, the lines end on it.
+    pub edge: Option<Vec<Vec<f32>>>,
     /// "across" (default: lines run from rail A to rail B) or "along" (lines
     /// run beside the rails, morphing from one into the other, like down a stem).
     pub direction: Option<String>,

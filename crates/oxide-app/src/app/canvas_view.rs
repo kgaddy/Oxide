@@ -222,6 +222,10 @@ impl OxideApp {
                     self.document.end_stroke();
                 } else if self.tool == Tool::Picker && response.drag_stopped() {
                     self.remember_color(self.color);
+                    // Picked with the Pick button: back to the tool you had.
+                    if let Some((tool, false)) = self.pick_return.take() {
+                        self.tool = tool;
+                    }
                 }
                 self.select_release();
                 self.hatch_release();

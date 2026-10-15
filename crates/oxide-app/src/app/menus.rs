@@ -42,6 +42,7 @@ pub const OTHER_SHORTCUTS: &[(&str, &str)] = &[
     ("Select tool (L)", "drag: rectangle / ellipse / lasso · Shift add · ⌥ subtract · Shift+⌥ overlap · click to deselect · ⌫ clears what's selected"),
     ("Mix Color", "hold X and pick a color (swatch, canvas with the Picker, palette, reference image): it mixes into the current color like paint"),
     ("Transform (⌘T)", "drag inside = move · handles = scale (Shift = free) · outside = rotate (Shift = 15°) · arrows nudge · Enter apply · Esc cancel"),
+    ("Pick a color", "hold ⌥ and click the canvas with any tool (not Select) · the Pick button by the color · the Picker tool (I)"),
     ("Reference image", "scroll = zoom · drag = pan · double-click = fit · ⌥-click (or Picker) = pick a color"),
 ];
 

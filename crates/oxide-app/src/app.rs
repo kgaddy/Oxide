@@ -118,6 +118,12 @@ pub struct OxideApp {
     show_right: bool,
     /// The layer name being typed in the Layers panel (committed on Enter).
     renaming: Option<String>,
+    /// A layer being renamed right in the list (double-click): its index,
+    /// the name so far, and whether its text box has been focused yet.
+    renaming_row: Option<(usize, String, bool)>,
+    /// The tool to go back to after picking a color: while ⌥ is held over the
+    /// canvas (`true`), or after one pick from the Pick button (`false`).
+    pick_return: Option<(Tool, bool)>,
 
     // ----- Files -----
     file_path: Option<PathBuf>,
@@ -377,6 +383,8 @@ impl OxideApp {
             show_left: true,
             show_right: true,
             renaming: None,
+            renaming_row: None,
+            pick_return: None,
             file_path: None,
             pending: None,
             allow_close: false,
@@ -1104,6 +1112,8 @@ impl eframe::App for OxideApp {
         // Mix Color: while X is held (and you're not typing), picked colors mix in.
         self.mix_key = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_down(Key::X) && i.modifiers.is_none());
 
+        self.alt_pick(&ctx);
+
         if !self.native_menu_frame(&ctx) {
             egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
         }
@@ -1150,6 +1160,40 @@ impl eframe::App for OxideApp {
         let ms = started.elapsed().as_secs_f32() * 1000.0;
         self.frame_ms_raw = ms;
         self.frame_ms = if self.frame_ms == 0.0 { ms } else { self.frame_ms * 0.9 + ms * 0.1 };
+    }
+}
+
+impl OxideApp {
+    /// Holding ⌥ over the canvas turns any tool (but Select) into the Picker until you let go.
+    fn alt_pick(&mut self, ctx: &egui::Context) {
+        let (alt, busy, hover) = ctx.input(|i| {
+            let alt = i.modifiers.alt && !i.modifiers.command && !i.modifiers.shift && !i.modifiers.ctrl;
+            (alt, i.pointer.any_down(), i.pointer.hover_pos())
+        });
+        if busy {
+            return; // never switch tools mid-drag
+        }
+        let over_canvas = hover.is_some_and(|p| self.last_workspace.contains(p));
+        if alt && over_canvas && !ctx.egui_wants_keyboard_input() {
+            // (Not the Select tool: there ⌥ subtracts from the selection.)
+            if !matches!(self.tool, Tool::Picker | Tool::Select) && self.stroke.is_none() && self.transform.is_none() && self.pick_return.is_none() {
+                self.pick_return = Some((self.tool, true));
+                self.tool = Tool::Picker;
+            }
+        } else if let Some((tool, true)) = self.pick_return {
+            self.pick_return = None;
+            if self.tool == Tool::Picker {
+                self.tool = tool;
+            }
+        }
+    }
+
+    /// The Pick button: pick one color from the canvas, then go back to the tool.
+    pub(super) fn pick_once(&mut self) {
+        if self.tool != Tool::Picker {
+            self.pick_return = Some((self.tool, false));
+            self.tool = Tool::Picker;
+        }
     }
 }
 

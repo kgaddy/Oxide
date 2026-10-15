@@ -1,11 +1,12 @@
 //! The Hatch tool: drag two guide curves ("rails") and evenly spaced,
 //! tapered lines fill the space between them (see `oxide_commands::hatch`).
+//! Along, an optional third rail (the edge) is the curve the lines start on.
 //! Until you do anything else, changing a setting redraws the last hatch.
 
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Stroke as LineStroke, Vec2};
-use oxide_commands::hatch::{HatchDirection, HatchSettings, hatch_lines, paint_hatch};
+use oxide_commands::hatch::{HatchDirection, HatchSettings, hatch_lines_with_edge, paint_hatch};
 use oxide_engine::{Color, DabMode};
 
 use super::OxideApp;
@@ -15,8 +16,12 @@ use crate::tools::{Tool, ToolState};
 #[derive(Default)]
 pub struct HatchTool {
     pub settings: HatchSettings,
+    /// Along: after the two rails, wait for a third, the edge the lines start on.
+    pub use_edge: bool,
     /// The first rail, once drawn (waiting for the second).
     rail_a: Option<Rail>,
+    /// The second rail, while waiting for the edge.
+    rail_b: Option<Rail>,
     /// The rail being dragged right now.
     drawing: Rail,
     /// The last hatch, while it can still be redrawn with new settings.
@@ -26,7 +31,7 @@ pub struct HatchTool {
 }
 
 struct LastHatch {
-    rails: (Rail, Rail),
+    rails: Rails,
     seed: u32,
     /// What it was painted with; a change means redraw it.
     used: Used,
@@ -40,6 +45,8 @@ struct LastHatch {
 type Used = (HatchSettings, ToolState, Color, bool);
 /// A guide curve, in canvas pixels.
 type Rail = Vec<(f32, f32)>;
+/// The two rails, and the edge if there is one.
+type Rails = (Rail, Rail, Option<Rail>);
 
 impl OxideApp {
     fn hatch_used(&self) -> Used {
@@ -66,21 +73,31 @@ impl OxideApp {
         if length < 3.0 {
             return;
         }
-        let Some(rail_a) = self.hatch.rail_a.take() else {
-            self.hatch.rail_a = Some(rail);
-            return;
+        let h = &mut self.hatch;
+        let wants_edge = h.use_edge && h.settings.direction == HatchDirection::Along;
+        let rails = match (h.rail_a.take(), h.rail_b.take()) {
+            (None, _) => {
+                h.rail_a = Some(rail);
+                return;
+            }
+            (Some(a), None) if wants_edge => {
+                (h.rail_a, h.rail_b) = (Some(a), Some(rail));
+                return;
+            }
+            (Some(a), None) => (a, rail, None),
+            (Some(a), Some(b)) => (a, b, Some(rail)),
         };
-        self.hatch.count += 1;
-        let seed = self.hatch.count.wrapping_mul(0x9e37_79b9);
-        self.paint_hatch_now((rail_a, rail), seed);
+        h.count += 1;
+        let seed = h.count.wrapping_mul(0x9e37_79b9);
+        self.paint_hatch_now(rails, seed);
     }
 
-    fn paint_hatch_now(&mut self, rails: (Rail, Rail), seed: u32) {
+    fn paint_hatch_now(&mut self, rails: Rails, seed: u32) {
         if !self.document.can_paint_active() || self.mask_painting() {
             self.error("Can't hatch here: pick a visible, unlocked layer (and leave mask editing).");
             return;
         }
-        let lines = hatch_lines(&rails.0, &rails.1, &self.hatch.settings, seed);
+        let lines = hatch_lines_with_edge(&rails.0, &rails.1, rails.2.as_deref(), &self.hatch.settings, seed);
         let brush = self.current_brush();
         self.document.begin_stroke();
         paint_hatch(self.document.active_canvas(), &brush, DabMode::Paint, &lines, &self.hatch.settings, seed);
@@ -106,7 +123,7 @@ impl OxideApp {
             return;
         }
         if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.hatch.rail_a = None;
+            (self.hatch.rail_a, self.hatch.rail_b) = (None, None);
             self.hatch.last = None;
         }
         let used = self.hatch_used();
@@ -128,7 +145,8 @@ impl OxideApp {
         self.paint_hatch_now(last.rails, last.seed);
     }
 
-    /// The rails: the one being drawn, the first one waiting, and the last hatch's.
+    /// The rails: the one being drawn, the ones waiting, and the last hatch's
+    /// (the edge in orange).
     pub(super) fn draw_hatch_rails(&self, painter: &egui::Painter, xf: &ViewXform) {
         if self.tool != Tool::Hatch {
             return;
@@ -139,16 +157,19 @@ impl OxideApp {
             painter.add(egui::Shape::line(points.clone(), LineStroke::new(3.0, Color32::from_black_alpha(90))));
             painter.add(egui::Shape::line(points, LineStroke::new(1.5, color)));
         };
-        let guide = Color32::from_rgb(70, 190, 255);
-        if let Some(last) = &self.hatch.last {
-            let faint = guide.gamma_multiply(0.45);
-            line(&last.rails.0, faint);
-            line(&last.rails.1, faint);
+        let (guide, edge) = (Color32::from_rgb(70, 190, 255), Color32::from_rgb(255, 160, 60));
+        let h = &self.hatch;
+        if let Some(last) = &h.last {
+            line(&last.rails.0, guide.gamma_multiply(0.45));
+            line(&last.rails.1, guide.gamma_multiply(0.45));
+            if let Some(e) = &last.rails.2 {
+                line(e, edge.gamma_multiply(0.45));
+            }
         }
-        if let Some(a) = &self.hatch.rail_a {
-            line(a, guide);
+        for rail in [&h.rail_a, &h.rail_b].into_iter().flatten() {
+            line(rail, guide);
         }
-        line(&self.hatch.drawing, guide);
+        line(&h.drawing, if h.rail_b.is_some() { edge } else { guide });
     }
 
     /// The Hatch tool's settings (Properties panel).
@@ -168,6 +189,11 @@ impl OxideApp {
             .on_hover_text("Distance between lines (closer = darker)");
         ui.add(egui::Slider::new(&mut s.fade, 0.0..=1.0).text("Fade"))
             .on_hover_text("Each line thins from start to end: Across, toward the second rail you drew; Along, toward where you finished drawing the rails");
+        if s.direction == HatchDirection::Along {
+            ui.checkbox(&mut self.hatch.use_edge, "Edge rail")
+                .on_hover_text("Draw a third rail after the two: the curve the lines start on (or end on, if you draw it at the rails' far end), like the round edge of a form. Draw it across the gap from rail to rail; it can run past them.");
+        }
+        let s = &mut self.hatch.settings;
         if s.direction == HatchDirection::Across {
             ui.add(egui::Slider::new(&mut s.slant, -1.0..=1.0).text("Slant"))
                 .on_hover_text("Lines lean along the rails, toward where you finished drawing them (like veins toward a leaf's tip)");
@@ -177,12 +203,25 @@ impl OxideApp {
         ui.add(egui::Slider::new(&mut s.wobble, 0.0..=1.0).text("Wobble"))
             .on_hover_text("Hand-made irregularity: lines bow and stop short a little (0 = ruled)");
         ui.add(egui::Slider::new(&mut s.break_up, 0.0..=1.0).text("Break up"))
-            .on_hover_text("Lines break into dashes, then dots, as they thin out toward their end, like light on an engraved form: 0 = solid lines, higher = the breaking reaches further along each line (further still with Fade)");
-        let hint = match (&self.hatch.rail_a, &self.hatch.last) {
-            (Some(_), _) => "Now drag the second rail. (Esc starts over.)",
-            (None, Some(_)) => "Change a setting to redraw this hatch. Drag a new rail to start another.",
-            (None, None) => "Drag a guide curve along one side of the shape (e.g. a leaf's midrib), then another along the other side (its edge).",
+            .on_hover_text("Lines break into dashes, then dots, as they thin out toward their pointed end (both ends if the brush tapers at both), like light on an engraved form: 0 = solid lines, higher = the breaking reaches further along each line (further still with Fade)");
+        let hint = match (&self.hatch.rail_a, &self.hatch.rail_b, &self.hatch.last) {
+            (Some(_), Some(_), _) => "Now drag the edge (orange): the curve the lines start on, across from one rail to the other. (Esc starts over.)",
+            (Some(_), None, _) => "Now drag the second rail. (Esc starts over.)",
+            (None, _, Some(_)) => "Change a setting to redraw this hatch. Drag a new rail to start another.",
+            (None, _, None) => "Drag a guide curve along one side of the shape (e.g. a leaf's midrib), then another along the other side (its edge).",
         };
         ui.weak(hint);
+        // Start over: drop the rails drawn so far, or take back the last hatch.
+        let h = &self.hatch;
+        if h.rail_a.is_some() {
+            if ui.button("✖ Clear rails").on_hover_text("Drop the rails drawn so far and start again (Esc)").clicked() {
+                (self.hatch.rail_a, self.hatch.rail_b) = (None, None);
+            }
+        } else if h.last.is_some()
+            && ui.button("✖ Remove hatch").on_hover_text("Take back the hatch you just drew (like Undo)").clicked()
+        {
+            self.hatch.last = None;
+            self.document.undo();
+        }
     }
 }

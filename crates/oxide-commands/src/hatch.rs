@@ -61,6 +61,21 @@ pub const MAX_LINES: usize = 2000;
 /// carries the fade). `seed` picks the wobble, so the same seed redraws the
 /// same lines. Empty if either rail is a single point.
 pub fn hatch_lines(a: &[(f32, f32)], b: &[(f32, f32)], settings: &HatchSettings, seed: u32) -> Vec<Vec<StrokePoint>> {
+    hatch_lines_with_edge(a, b, None, settings, seed)
+}
+
+/// [`hatch_lines`], plus (Along only) a third rail, `edge`: a curve the lines
+/// start on (or end on, if it's drawn near the rails' other end) instead of
+/// the straight line between the rails' ends there, say the round edge of a
+/// form. Only the part of it between the two rails is used; the lines ease
+/// back into the rails' shape by their other end.
+pub fn hatch_lines_with_edge(
+    a: &[(f32, f32)],
+    b: &[(f32, f32)],
+    edge: Option<&[(f32, f32)]>,
+    settings: &HatchSettings,
+    seed: u32,
+) -> Vec<Vec<StrokePoint>> {
     let (len_a, len_b) = (path_length(a), path_length(b));
     if len_a < 1.0 || len_b < 1.0 {
         return Vec::new();
@@ -118,8 +133,23 @@ pub fn hatch_lines(a: &[(f32, f32)], b: &[(f32, f32)], settings: &HatchSettings,
             let n = ((gap / spacing).round() as usize).clamp(1, MAX_LINES - 1);
             // Points every ~3 px along the longer rail.
             let steps = ((len_a.max(len_b) / 3.0).ceil() as usize).max(2);
+            // The edge goes on whichever end of the rails it was drawn nearer.
+            let (first, last) = ((ra[0], rb[0]), (ra[samples - 1], rb[samples - 1]));
+            let edge = edge.filter(|e| e.len() >= 2).and_then(|e| {
+                let near = |p: (f32, f32)| e.iter().map(|q| dist(*q, p)).fold(f32::MAX, f32::min);
+                let at_end = near(last.0) + near(last.1) < near(first.0) + near(first.1);
+                let (p, q) = if at_end { last } else { first };
+                Some((edge_between(e, p, q, samples)?, p, q, at_end))
+            });
             for i in 0..=n {
                 let u = i as f32 / n as f32;
+                // With an edge: how far this line's end there moves onto it,
+                // easing to nothing at its other end (a Coons patch on three sides).
+                let shift = edge.as_ref().map_or((0.0, 0.0), |(e, p, q, _)| {
+                    let c = at(e, u);
+                    (c.0 - (p.0 + (q.0 - p.0) * u), c.1 - (p.1 + (q.1 - p.1) * u))
+                });
+                let edge_at_end = edge.as_ref().is_some_and(|e| e.3);
                 // A slow sideways drift (as a fraction of the spacing), and ragged ends.
                 let (phase, drift) = (rng.next() * std::f32::consts::TAU, (rng.next() - 0.5) * wobble * 0.5);
                 let start = rng.next() * wobble * 0.06;
@@ -130,7 +160,9 @@ pub fn hatch_lines(a: &[(f32, f32)], b: &[(f32, f32)], settings: &HatchSettings,
                         let (pa, pb) = (at(&ra, t), at(&rb, t));
                         let wave = drift * (phase + t * std::f32::consts::TAU).sin() / n as f32;
                         let v = (u + wave).clamp(0.0, 1.0);
-                        let (x, y) = (pa.0 + (pb.0 - pa.0) * v, pa.1 + (pb.1 - pa.1) * v);
+                        let ease = if edge_at_end { t } else { 1.0 - t };
+                        let x = pa.0 + (pb.0 - pa.0) * v + shift.0 * ease;
+                        let y = pa.1 + (pb.1 - pa.1) * v + shift.1 * ease;
                         StrokePoint { pressure: 1.0 - fade * t, ..StrokePoint::mouse(x, y) }
                     })
                     .collect();
@@ -165,7 +197,7 @@ fn paint_line(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[StrokeP
 }
 
 /// One line, broken up toward its thin end (its start if the taper is
-/// reversed): solid where it's full width, then dashes that get shorter with
+/// reversed, both ends if it tapers at both): solid where it's full width, then dashes that get shorter with
 /// wider gaps, then dots.
 ///
 /// The pieces are painted as short strokes without a taper of their own, each
@@ -192,13 +224,17 @@ fn paint_broken(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[Strok
         return paint_line(canvas, brush, mode, line);
     }
     // How broken up the line is at distance d (0 = solid, 1 = dots). The
-    // amount sets where it starts: over the last `0.9 × amount` of the line,
-    // and with a fade, wherever it has thinned past `0.6 × (1 − amount)`.
+    // amount sets where it starts: over the last `0.9 × amount` of the line
+    // (`0.45 × amount` at each end if it tapers at both), and with a fade,
+    // wherever it has thinned past `0.6 × (1 − amount)`.
     let (fade, amount) = (fade.clamp(0.0, 1.0), amount.clamp(0.0, 1.0));
     let (start, thinned) = (1.0 - 0.9 * amount, 0.6 * (1.0 - amount));
+    let both_ends = brush.taper > 0.0 && brush.taper_ends == TaperEnds::Both;
     let broken = |d: f32| {
         let s = d / total;
-        ((fade * s - thinned) / (1.0 - thinned)).max((s - start) / (1.0 - start).max(1e-3)).clamp(0.0, 1.0)
+        // How far toward a thin end: 0 → 1 (from the middle out, with both).
+        let toward = if both_ends { (2.0 * s - 1.0).abs() } else { s };
+        ((fade * s - thinned) / (1.0 - thinned)).max((toward - start) / (1.0 - start).max(1e-3)).clamp(0.0, 1.0)
     };
     let r = brush.radius.max(0.5);
     let mut d = 0.0;
@@ -245,6 +281,23 @@ fn paint_piece(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[Stroke
         stroke.line_to_point(canvas, &piece, point(b));
         stroke.finish(canvas, &piece);
     }
+}
+
+/// The stretch of `edge` from the point nearest `from` to the point nearest
+/// `to` (either way round), smoothed and resampled to `n` points; `None` if
+/// that's too short to use.
+fn edge_between(edge: &[(f32, f32)], from: (f32, f32), to: (f32, f32), n: usize) -> Option<Vec<(f32, f32)>> {
+    if path_length(edge) < 1.0 {
+        return None;
+    }
+    let fine = resample(edge, ((path_length(edge) / 2.0).ceil() as usize).clamp(8, 4000));
+    let nearest = |p: (f32, f32)| (0..fine.len()).min_by(|&i, &j| dist(fine[i], p).total_cmp(&dist(fine[j], p))).unwrap();
+    let (i, j) = (nearest(from), nearest(to));
+    let mut part: Vec<(f32, f32)> = if i <= j { fine[i..=j].to_vec() } else { fine[j..=i].iter().rev().copied().collect() };
+    // Join it to the rails' first points.
+    part[0] = from;
+    *part.last_mut().unwrap() = to;
+    (path_length(&part) >= 1.0).then(|| smooth(&resample(&part, n)))
 }
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -382,6 +435,40 @@ mod tests {
         assert!((150..205).all(inked), "solid at the end");
         let gaps = (12..90).filter(|&x| inked(x) && !inked(x + 1)).count();
         assert!(gaps >= 5, "broken up toward the start: {gaps} gaps");
+    }
+
+    #[test]
+    fn taper_at_both_ends_breaks_up_both_ends() {
+        use oxide_engine::Color;
+        let mut canvas = Canvas::new(220, 20, Color::TRANSPARENT);
+        let brush = Brush { radius: 2.0, hardness: 1.0, spacing: 0.05, taper: 0.5, ..Brush::default() };
+        let line: Vec<StrokePoint> = (0..=200).map(|x| StrokePoint::mouse(10.0 + x as f32, 10.0)).collect();
+        paint_hatch(&mut canvas, &brush, DabMode::Paint, &[line], &HatchSettings { break_up: 1.0, ..ruled() }, 3);
+        let inked = |x: usize| canvas.pixel(x, 10).is_some_and(|c| c.a > 0.3);
+        assert!((103..117).all(inked), "solid in the middle");
+        let gaps = |r: std::ops::Range<usize>| r.filter(|&x| inked(x) && !inked(x + 1)).count();
+        assert!(gaps(12..80) >= 5, "broken up toward the start: {} gaps", gaps(12..80));
+        assert!(gaps(140..208) >= 5, "broken up toward the end: {} gaps", gaps(140..208));
+    }
+
+    #[test]
+    fn along_lines_start_on_the_edge() {
+        let a = [(0.0, 0.0), (100.0, 0.0)];
+        let b = [(0.0, 40.0), (100.0, 40.0)];
+        // A curve bulging left between the rails' starts, running past both.
+        let edge: Vec<(f32, f32)> = (-10..=50).map(|y| (-30.0 * (1.0 - ((y as f32 - 20.0) / 20.0).powi(2)), y as f32)).collect();
+        let s = HatchSettings { direction: HatchDirection::Along, spacing: 10.0, ..ruled() };
+        let lines = hatch_lines_with_edge(&a, &b, Some(&edge), &s, 1);
+        assert_eq!(lines.len(), 5);
+        let (start, end) = (lines[2][0], *lines[2].last().unwrap());
+        assert!((start.x + 30.0).abs() < 2.0 && (start.y - 20.0).abs() < 2.0, "the middle line starts on the bulge: {start:?}");
+        assert!((end.x - 100.0).abs() < 0.5 && (end.y - 20.0).abs() < 0.5, "and ends where it would anyway: {end:?}");
+        assert!(lines[0][0].x.abs() < 0.5 && lines[4][0].x.abs() < 0.5, "the outer lines stay on the rails");
+        // The same curve at the other end bulges the ends instead.
+        let edge: Vec<(f32, f32)> = edge.iter().map(|p| (100.0 - p.0, p.1)).collect();
+        let lines = hatch_lines_with_edge(&a, &b, Some(&edge), &s, 1);
+        let (start, end) = (lines[2][0], *lines[2].last().unwrap());
+        assert!(start.x.abs() < 0.5 && (end.x - 130.0).abs() < 2.0, "{start:?} → {end:?}");
     }
 
     #[test]

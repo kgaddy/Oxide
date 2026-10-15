@@ -95,6 +95,10 @@ impl OxideApp {
         let mut toggle_visible = None;
         let mut toggle_group_open = None;
         let mut toggle_group_visible = None;
+        let mut rename = None;
+        if self.renaming_row.as_ref().is_some_and(|r| r.0 >= self.document.layers().len()) {
+            self.renaming_row = None;
+        }
 
         // Show the top layer first, like every paint app. A group's layers
         // sit together, under a header row for the group.
@@ -109,8 +113,7 @@ impl OxideApp {
                     let members = self.document.layers().iter().filter(|l| l.group == Some(group.id)).count();
                     let holds_active = self.document.layers()[self.document.active_index()].group == Some(group.id);
                     ui.horizontal(|ui| {
-                        let eye = if group.visible { "👁" } else { "  " };
-                        if ui.add(egui::Button::new(eye).min_size(Vec2::new(24.0, 0.0))).on_hover_text("Show/hide the group").clicked() {
+                        if eye_button(ui, group.visible).on_hover_text("Show/hide the group").clicked() {
                             toggle_group_visible = Some((group.id, !group.visible));
                         }
                         let arrow = if group.open { "▾" } else { "▸" };
@@ -134,8 +137,7 @@ impl OxideApp {
                 if layer.group.is_some() {
                     ui.add_space(14.0); // indent group members
                 }
-                let eye = if layer.visible { "👁" } else { "  " };
-                if ui.add(egui::Button::new(eye).min_size(Vec2::new(24.0, 0.0))).on_hover_text("Show/hide").clicked() {
+                if eye_button(ui, layer.visible).on_hover_text("Show/hide").clicked() {
                     toggle_visible = Some(i);
                 }
                 // Badges: T = tracing, 🔒 = locked, α = lock transparency.
@@ -159,9 +161,33 @@ impl OxideApp {
                 } else {
                     egui::RichText::new(label).weak()
                 };
+                // Renaming in place: Enter or clicking away keeps it, Esc doesn't.
+                if let Some((_, text, focused)) = self.renaming_row.as_mut().filter(|r| r.0 == i) {
+                    let response = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width()));
+                    if !*focused {
+                        response.request_focus();
+                        *focused = true;
+                    } else if response.lost_focus() {
+                        let keep = !ui.input(|inp| inp.key_pressed(egui::Key::Escape));
+                        rename = Some((i, keep.then(|| text.trim().to_string()).filter(|t| !t.is_empty())));
+                    }
+                    return;
+                }
                 let row = egui::Button::new(name).selected(active).min_size(Vec2::new(ui.available_width(), 0.0));
-                if ui.add(row).clicked() {
+                let response = ui.add(row).on_hover_text("Double-click to rename");
+                if response.clicked() {
                     select = Some(i);
+                }
+                let mut start_rename = response.double_clicked();
+                response.context_menu(|ui| {
+                    if ui.button("Rename…").clicked() {
+                        start_rename = true;
+                        ui.close();
+                    }
+                });
+                if start_rename {
+                    select = Some(i);
+                    self.renaming_row = Some((i, layer.name.clone(), false));
                 }
             });
         }
@@ -175,6 +201,12 @@ impl OxideApp {
 
         if let Some(i) = select {
             self.document.set_active(i);
+        }
+        if let Some((i, name)) = rename {
+            self.renaming_row = None;
+            if let Some(name) = name.filter(|n| *n != self.document.layers()[i].name) {
+                self.document.rename_layer(i, name);
+            }
         }
         if let Some(i) = toggle_visible {
             self.document.toggle_visible(i);
@@ -372,4 +404,17 @@ impl OxideApp {
             ui.colored_label(ui.visuals().warn_fg_color, text);
         }
     }
+}
+
+/// The show/hide button: an eye, or when hidden the same eye dimmed with a
+/// slash through it (so the button stays the same size).
+fn eye_button(ui: &mut egui::Ui, visible: bool) -> egui::Response {
+    let text = if visible { egui::RichText::new("👁") } else { egui::RichText::new("👁").weak() };
+    let response = ui.add(egui::Button::new(text).min_size(Vec2::new(24.0, 0.0)));
+    if !visible {
+        let r = response.rect.shrink2(Vec2::new(6.0, 3.0));
+        let color = ui.visuals().widgets.inactive.fg_stroke.color;
+        ui.painter().line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.5, color));
+    }
+    response
 }

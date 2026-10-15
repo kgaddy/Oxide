@@ -121,7 +121,7 @@ impl OxideServer {
         run(&self.session, Command::Stroke(a))
     }
 
-    #[tool(description = "Engraving-style hatching: evenly spaced, tapered lines fill the space between two guide curves (rail_a, rail_b), across or along them. Uses the current tool and brush (set_tool hatch first).")]
+    #[tool(description = "Engraving-style hatching: evenly spaced, tapered lines fill the space between two guide curves (rail_a, rail_b), across or along them; along, an optional edge curve sets where the lines start. Uses the current tool and brush (set_tool hatch first).")]
     async fn hatch(&self, Parameters(a): Parameters<HatchArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::Hatch(a))
     }

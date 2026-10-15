@@ -60,7 +60,7 @@ impl OxideApp {
             ui.strong(tool.label());
         });
         if tool == Tool::Picker {
-            ui.weak("Click the canvas to pick a color.");
+            ui.weak("Click the canvas to pick a color. (With any tool, hold ⌥ and click.)");
             return;
         }
         if tool == Tool::Select {
@@ -392,9 +392,14 @@ impl OxideApp {
             }
             ui.vertical(|ui| {
                 ui.monospace(oxide_commands::palette::to_hex(self.color));
-                if ui.small_button("⇄ Swap").on_hover_text("Swap primary and secondary colors (⌘\\)").clicked() {
-                    swap = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.small_button("⇄ Swap").on_hover_text("Swap primary and secondary colors (⌘\\)").clicked() {
+                        swap = true;
+                    }
+                    if ui.small_button("Pick").on_hover_text("Pick a color from the painting: click the canvas, then you're back to your tool. (Or hold ⌥ and click the canvas with any tool; the Picker tool, I, keeps picking.)").clicked() {
+                        self.pick_once();
+                    }
+                });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 let s = &mut self.app_settings.ryb_wheel;
