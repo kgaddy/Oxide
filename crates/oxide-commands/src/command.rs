@@ -246,6 +246,9 @@ pub struct HatchArgs {
     /// (default 0 = solid; 0.5 = the last ~half of each line). With fade, the
     /// breaking follows the thinning. Renders light on a form.
     pub break_up: Option<f32>,
+    /// How much each line's width varies, 0–1 (default 0 = even): some lines
+    /// thicker or thinner than others, each swelling and thinning along its length.
+    pub vary: Option<f32>,
     /// Picks the wobble's randomness (default 1); the same seed redraws the same lines.
     pub seed: Option<u32>,
 }

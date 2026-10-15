@@ -67,6 +67,11 @@ impl OxideApp {
             self.select_properties(ui);
             return;
         }
+        if tool == Tool::Hatch {
+            // The hatch's kind first, with which ends of its lines point.
+            self.hatch_mode(ui);
+            taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape);
+        }
         ui.add_space(4.0);
 
         let state = &mut self.tool_states[tool.index()];
@@ -80,7 +85,9 @@ impl OxideApp {
                 ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
             }
         }
-        if tool.paints() || tool == Tool::Eraser {
+        if tool == Tool::Hatch {
+            taper_slider(ui, &mut state.shape);
+        } else if tool.paints() || tool == Tool::Eraser {
             taper_controls(ui, &mut state.shape);
         }
 
@@ -549,15 +556,31 @@ fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
 
 /// The Taper slider, and which ends it points (Properties and Brush Creator).
 pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
-    use oxide_engine::TaperEnds;
+    taper_slider(ui, shape);
+    taper_ends_controls(ui, shape);
+}
+
+/// Just the Taper slider (Hatch shows the ends choice at the top instead).
+fn taper_slider(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
     ui.add(egui::Slider::new(&mut shape.taper, 0.0..=1.0).text("Taper"))
         .on_hover_text("Strokes come to a clean point, like an engraved line, even with a mouse (0 = off)");
-    if shape.taper <= 0.0 {
-        return;
-    }
+}
+
+/// Both ends / Reverse: which ends the taper points (greyed out while Taper
+/// is 0, so they don't come and go).
+fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
+    use oxide_engine::TaperEnds;
     ui.horizontal(|ui| {
+        if shape.taper <= 0.0 {
+            ui.disable();
+        }
         let mut both = shape.taper_ends == TaperEnds::Both;
-        if ui.checkbox(&mut both, "Both ends").on_hover_text("Point both ends of the stroke. Off: full size at one end, tapering to a point at the other").changed() {
+        if ui
+            .checkbox(&mut both, "Both ends")
+            .on_hover_text("Point both ends of the stroke. Off: full size at one end, tapering to a point at the other")
+            .on_disabled_hover_text("Turn Taper up above 0 to point the ends of the stroke")
+            .changed()
+        {
             shape.taper_ends = if both { TaperEnds::Both } else { TaperEnds::End };
         }
         if !both {

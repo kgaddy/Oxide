@@ -46,11 +46,15 @@ pub struct HatchSettings {
     /// the light), the way engravers render light on a form: 0 = solid lines,
     /// 0.5 = the last ~half of each line, 1 = most of it.
     pub break_up: f32,
+    /// How much each line's width varies, 0..=1: some lines a bit thicker or
+    /// thinner than others, and each one swelling and thinning along its
+    /// length (0 = even).
+    pub vary: f32,
 }
 
 impl Default for HatchSettings {
     fn default() -> Self {
-        HatchSettings { direction: HatchDirection::Across, spacing: 6.0, fade: 0.0, wobble: 0.25, slant: 0.0, bend: 0.0, break_up: 0.0 }
+        HatchSettings { direction: HatchDirection::Across, spacing: 6.0, fade: 0.0, wobble: 0.25, slant: 0.0, bend: 0.0, break_up: 0.0, vary: 0.0 }
     }
 }
 
@@ -178,13 +182,56 @@ pub fn hatch_lines_with_edge(
 /// thins; `seed` picks where the breaks fall.
 pub fn paint_hatch(canvas: &mut Canvas, brush: &Brush, mode: DabMode, lines: &[Vec<StrokePoint>], settings: &HatchSettings, seed: u32) {
     let mut rng = Rng(seed.wrapping_mul(0x85eb_ca6b) | 1);
+    // Its own randomness, so turning Vary up doesn't reshuffle the break-up.
+    let mut vary_rng = Rng(seed.wrapping_mul(0x27d4_eb2f) | 1);
+    let vary = settings.vary.clamp(0.0, 1.0);
     for line in lines {
+        let varied;
+        let (brush, line) = if vary > 0.0 {
+            varied = vary_width(brush, line, vary, &mut vary_rng);
+            (&varied.0, varied.1.as_slice())
+        } else {
+            (brush, line.as_slice())
+        };
         if settings.break_up > 0.0 {
             paint_broken(canvas, brush, mode, line, settings.fade, settings.break_up, &mut rng);
         } else {
             paint_line(canvas, brush, mode, line);
         }
     }
+}
+
+/// One line with its width varied by `vary` (0..=1): the whole line a bit
+/// thicker or thinner, times slow swells along it. The brush gets bigger by
+/// the most the line can swell, and the pressure thins it back down
+/// elsewhere (on top of the Fade it already carries).
+fn vary_width(brush: &Brush, line: &[StrokePoint], vary: f32, rng: &mut Rng) -> (Brush, Vec<StrokePoint>) {
+    let (along, whole) = (0.45 * vary, 0.25 * vary);
+    let line_scale = 1.0 + whole * (rng.next() * 2.0 - 1.0);
+    // Two slow waves (repeating every ~60–500 px) with random phases.
+    let tau = std::f32::consts::TAU;
+    let (w1, w2) = (30.0 + 50.0 * rng.next(), 10.0 + 15.0 * rng.next());
+    let (p1, p2) = (rng.next() * tau, rng.next() * tau);
+    let biggest = (1.0 + along) * (1.0 + whole);
+    let wide = Brush { radius: brush.radius * biggest, size_pressure: 1.0, ..brush.clone() };
+    // The size the brush's own pressure response would give (Fade lives there).
+    let own = |p: f32| 1.0 - brush.size_pressure.clamp(0.0, 1.0) * (1.0 - p.clamp(0.0, 1.0)) * 0.9;
+    let mut d = 0.0;
+    let mut prev = line.first().map(|p| (p.x, p.y));
+    let points = line
+        .iter()
+        .map(|p| {
+            if let Some(q) = prev {
+                d += (p.x - q.0).hypot(p.y - q.1);
+            }
+            prev = Some((p.x, p.y));
+            let wave = 0.65 * (d / w1 + p1).sin() + 0.35 * (d / w2 + p2).sin();
+            let size = own(p.pressure) * line_scale * (1.0 + along * wave) / biggest;
+            // Back to a pressure for the wide brush (size = 1 − 0.9 (1 − p)).
+            StrokePoint { pressure: (1.0 - (1.0 - size) / 0.9).clamp(0.0, 1.0), ..*p }
+        })
+        .collect();
+    (wide, points)
 }
 
 fn paint_line(canvas: &mut Canvas, brush: &Brush, mode: DabMode, line: &[StrokePoint]) {
@@ -469,6 +516,24 @@ mod tests {
         let lines = hatch_lines_with_edge(&a, &b, Some(&edge), &s, 1);
         let (start, end) = (lines[2][0], *lines[2].last().unwrap());
         assert!(start.x.abs() < 0.5 && (end.x - 130.0).abs() < 2.0, "{start:?} → {end:?}");
+    }
+
+    #[test]
+    fn vary_makes_lines_thicker_and_thinner() {
+        use oxide_engine::Color;
+        let width = |vary: f32| {
+            let mut canvas = Canvas::new(420, 30, Color::TRANSPARENT);
+            let brush = Brush { radius: 3.0, hardness: 1.0, spacing: 0.05, size_pressure: 1.0, ..Brush::default() };
+            let line: Vec<StrokePoint> = (0..=400).map(|x| StrokePoint::mouse(10.0 + x as f32, 15.0)).collect();
+            paint_hatch(&mut canvas, &brush, DabMode::Paint, &[line], &HatchSettings { vary, ..ruled() }, 5);
+            // The line's width at each x.
+            (20..400).map(|x| (0..30).filter(|&y| canvas.pixel(x, y).is_some_and(|c| c.a > 0.5)).count()).collect::<Vec<_>>()
+        };
+        let even = width(0.0);
+        assert!(even.iter().max().unwrap() - even.iter().min().unwrap() <= 1, "no vary: an even line");
+        let varied = width(1.0);
+        let (thin, thick) = (*varied.iter().min().unwrap(), *varied.iter().max().unwrap());
+        assert!(thick > even[0] && thin < even[0], "vary 1: {thin}..{thick} around {}", even[0]);
     }
 
     #[test]

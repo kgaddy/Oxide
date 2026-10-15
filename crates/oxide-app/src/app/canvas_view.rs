@@ -264,6 +264,8 @@ impl OxideApp {
             }
             let cursor = if space_down || r_down {
                 egui::CursorIcon::Grab
+            } else if self.hatch_moving() {
+                egui::CursorIcon::Move
             } else if blocked {
                 egui::CursorIcon::NotAllowed
             } else if matches!(self.tool, Tool::Picker | Tool::Select | Tool::Hatch) {
