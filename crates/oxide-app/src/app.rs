@@ -193,6 +193,7 @@ pub struct OxideApp {
     #[cfg(target_os = "macos")]
     native_menu: Option<menus::native::NativeMenu>,
     /// Tried to install the native menu bar already.
+    #[cfg(target_os = "macos")]
     menu_installed: bool,
     /// Stroke and pressure smoothing for the stroke being painted.
     stabilizer: crate::smoothing::Stabilizer,
@@ -435,6 +436,7 @@ impl OxideApp {
             mix_key: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
+            #[cfg(target_os = "macos")]
             menu_installed: false,
             reference: reference_image::ReferenceImage::new(reference_open),
             hatch: Default::default(),

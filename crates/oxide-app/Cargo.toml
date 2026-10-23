@@ -23,3 +23,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
 block2 = "0.6"
 muda = "0.21.2"
+
+# Linux needs a window system: eframe's defaults are off above, so turn X11 and Wayland back on.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["x11", "wayland"] }

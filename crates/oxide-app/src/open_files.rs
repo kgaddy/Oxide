@@ -28,6 +28,7 @@ pub fn set_wake(ctx: &eframe::egui::Context) {
     mac::register_handler();
 }
 
+#[cfg(target_os = "macos")]
 fn arrived(paths: Vec<PathBuf>) {
     QUEUE.lock().expect("open-files queue").extend(paths);
     if let Some(ctx) = &*WAKE.lock().expect("open-files wake") {

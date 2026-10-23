@@ -64,6 +64,7 @@ impl Default for PenState {
 
 impl PenState {
     /// Keep a pressure reading (dropping the oldest when full).
+    #[cfg(any(target_os = "macos", test))]
     fn push_sample(&mut self, pressure: f32) {
         if self.sample_count == MAX_SAMPLES {
             self.samples.copy_within(1.., 0);
@@ -91,6 +92,7 @@ pub struct PenInput {
 }
 
 impl PenInput {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     pub fn new(ctx: &eframe::egui::Context) -> Self {
         let state = Arc::new(Mutex::new(PenState::default()));
         PenInput {
@@ -163,6 +165,7 @@ pub fn adjust_rotation(degrees: f32, invert: bool) -> f32 {
 }
 
 /// Turn a value from the driver into a safe number (non-numbers become `fallback`).
+#[cfg(target_os = "macos")]
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }

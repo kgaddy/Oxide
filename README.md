@@ -1,8 +1,8 @@
 # Oxide
 
-A natural-media painting app for macOS, written in Rust. It focuses on **oils, acrylics and pen & ink**: paint that stays wet, smears and mixes like real pigment (blue + yellow = green), and builds up thick impasto that catches the light. AI agents such as Claude can paint in it too, through a built-in MCP server.
+A natural-media painting app written in Rust. It's developed on macOS and also builds for Windows and Linux. It focuses on **oils, acrylics and pen & ink**: paint that stays wet, smears and mixes like real pigment (blue + yellow = green), and builds up thick impasto that catches the light. AI agents such as Claude can paint in it too, through a built-in MCP server.
 
-> **Status:** early and in active development. The `.oxide` file format may still change.
+> **Status:** early and in active development. The `.oxide` file format may still change. macOS is the main, tested platform; Windows and Linux compile but haven't been tried on real machines yet (see [Platform support](#platform-support)).
 
 ## Features
 
@@ -11,7 +11,7 @@ A natural-media painting app for macOS, written in Rust. It focuses on **oils, a
 - **Impasto and surfaces:** thick paint keeps its height and is lit. Paper, canvas, linen and panel surfaces have adjustable depth and lighting.
 - **More tools:** Ink, Pencil, Marker, Airbrush, Eraser, Smudge, Palette Knife, Hatch (engraving-style line fills), Select and Picker.
 - **Layers:** groups, masks, blend modes, locks, a tracing layer, and a Reference Image window to paint from.
-- **Pen tablets:** pressure, tilt and barrel rotation on macOS, with a pressure curve and stroke smoothing.
+- **Pen tablets (macOS):** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing.
 - **Files:** a native `.oxide` format that keeps wet paint and impasto. Export to PNG, JPEG, BMP, TIFF, WebP and layered PSD.
 - **Scripting and AI agents:** an MCP server (`oxide-mcp`) and a JSON command runner (`oxide-run`). The app can also record what you paint as a replayable script.
 
@@ -19,8 +19,8 @@ A natural-media painting app for macOS, written in Rust. It focuses on **oils, a
 
 | What | Notes |
 |---|---|
-| **macOS** | The only platform Oxide is developed and tested on (Apple Silicon). It draws through wgpu on Metal. |
-| **Xcode Command Line Tools** | Provides the C linker and the tools the app bundle script uses (`sips`, `iconutil`, `codesign`). |
+| **macOS, Windows or Linux** | See [Platform support](#platform-support). The GPU drawing goes through wgpu (Metal on macOS, DirectX 12 or Vulkan on Windows, Vulkan on Linux). |
+| **A C linker** | macOS: Xcode Command Line Tools. Windows: Visual Studio Build Tools with the "Desktop development with C++" workload. Linux: your distribution's compiler package (for example `build-essential`). |
 | **Rust (stable, via rustup)** | The crates use the 2024 edition, so you need Rust 1.85 or newer. |
 | **Python 3** *(optional)* | Only for the generative painting scripts in `scripts/abstract/`. They use only the standard library. |
 | **A pen tablet** *(optional)* | A mouse works. For pressure, see [Pen tablets](#pen-tablets). |
@@ -29,10 +29,23 @@ A natural-media painting app for macOS, written in Rust. It focuses on **oils, a
 
 ### 1. Install the tools
 
+**macOS:**
+
 ```bash
 xcode-select --install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+**Linux** (Debian/Ubuntu shown; use your distribution's equivalents):
+
+```bash
+sudo apt install build-essential libxkbcommon0 xdg-desktop-portal
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+You also need a Vulkan-capable graphics driver, and an X11 or Wayland desktop. The file dialogs go through `xdg-desktop-portal`.
+
+**Windows:** install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, then run `rustup-init.exe` from [rustup.rs](https://rustup.rs).
 
 Then open a **new** terminal (or run `source ~/.cargo/env`) and check:
 
@@ -60,7 +73,7 @@ cargo run --release -p oxide-app
 
 The first build takes a minute or so; later builds are fast. Use `--release` for painting. A debug build (`cargo run -p oxide-app`) compiles faster but paints more slowly.
 
-### 4. (Optional) Build Oxide.app
+### 4. (Optional, macOS) Build Oxide.app
 
 `cargo run` shows "oxide-app" in the Dock. To get a real Mac app, with the name, icon and Finder integration, use the bundle script:
 
@@ -75,6 +88,19 @@ scripts/bundle-macos.sh --install
 - The app holds its own copy of the program, so **rerun the script after code changes**.
 - The app is ad-hoc signed, which works on the Mac that built it but isn't suitable for sharing.
 
+### Platform support
+
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| Builds | ✅ tested | ✅ compiles | ✅ compiles (X11 and Wayland) |
+| Run on a real machine | ✅ daily use | not yet tried | not yet tried |
+| Pen pressure, tilt, rotation | ✅ | ❌ the pen works as a mouse | ❌ the pen works as a mouse |
+| Menu bar | native Mac menu bar | menus inside the window | menus inside the window |
+| Open `.oxide` from the file manager | ✅ (with Oxide.app) | ❌ use File → Open or drag onto the window | ❌ use File → Open or drag onto the window |
+| App bundle / installer | `scripts/bundle-macos.sh` | none yet: run `cargo run` or `target\release\oxide-app.exe` | none yet: run `cargo run` or `target/release/oxide-app` |
+
+The headless tools (`oxide-mcp`, `oxide-run`) don't open a window, so they work the same everywhere. Pen support on Windows and Linux would need a new backend in `crates/oxide-app/src/pen.rs`.
+
 ## Quick Start
 
 1. Run `cargo run --release -p oxide-app`. The **New Artwork** dialog opens: pick a size and a surface.
@@ -88,7 +114,7 @@ scripts/bundle-macos.sh --install
 
 ### Pen tablets
 
-Oxide reads pressure, tilt and rotation straight from macOS tablet events.
+On macOS, Oxide reads pressure, tilt and rotation straight from the system's tablet events. On Windows and Linux a pen works like a mouse for now, and the **Pressure** slider sets a fixed pressure.
 
 - Install your tablet maker's macOS driver.
 - In **System Settings → Privacy & Security**, allow the driver under **Accessibility** and **Input Monitoring**. Without this, macOS's generic tablet support reports no pressure.
@@ -107,7 +133,7 @@ Build the headless tools:
 cargo build --release -p oxide-agent
 ```
 
-This builds `target/release/oxide-mcp`, the MCP server, and `target/release/oxide-run`, the JSON command runner.
+This builds `target/release/oxide-mcp`, the MCP server, and `target/release/oxide-run`, the JSON command runner. On Windows they end in `.exe`.
 
 **Claude Code:**
 
@@ -156,11 +182,13 @@ python3 scripts/abstract/abstract.py --count 5 --run --out <output-folder>
 
 ## Configuration
 
-Settings, saved brushes, brush tips, palettes and themes live in:
+Settings, saved brushes, brush tips, palettes and themes live in an `Oxide` folder in your system's app data folder:
 
-```text
-~/Library/Application Support/Oxide/
-```
+| Platform | Folder |
+|---|---|
+| macOS | `~/Library/Application Support/Oxide/` |
+| Windows | `%APPDATA%\Oxide\` |
+| Linux | `~/.local/share/Oxide/` (or `$XDG_DATA_HOME/Oxide/`) |
 
 Most preferences are set in the app (View → Theme, Window → Pen Settings, and so on) and saved there automatically.
 
