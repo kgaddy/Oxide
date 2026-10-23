@@ -122,6 +122,9 @@ pub struct Document {
     pub palette: Option<Box<Document>>,
     /// Free-text notes (e.g. the paints used on a mixing palette). Saved in the file.
     pub notes: String,
+    /// The photo to paint from (the app's Reference Image window), as the
+    /// image file's bytes. Saved in the file, so it stays with the painting.
+    pub reference: Option<Arc<Vec<u8>>>,
     /// Layer groups (see [`LayerGroup`]); layers point to them by id.
     groups: Vec<LayerGroup>,
     next_group_id: u32,
@@ -168,6 +171,7 @@ impl Document {
             dpi: DEFAULT_DPI,
             palette: None,
             notes: String::new(),
+            reference: None,
             groups: Vec::new(),
             next_group_id: 1,
             selection: None,
@@ -214,6 +218,7 @@ impl Document {
             dpi: DEFAULT_DPI,
             palette: None,
             notes: String::new(),
+            reference: None,
             groups: Vec::new(),
             next_group_id: 1,
             selection: None,

@@ -5,7 +5,7 @@ use eframe::egui::{self, CollapsingHeader, Rect, Sense, Stroke as LineStroke, St
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
-use super::{OxideApp, to_color32};
+use super::{Command, OxideApp, to_color32};
 use crate::color_wheel::color_wheel;
 use crate::presets::{THUMB_H, THUMB_W};
 use crate::tools::{FUTURE_TOOLS, SWATCHES, Tool};
@@ -50,7 +50,6 @@ impl OxideApp {
 
     fn properties_section(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        let mut clicked_mode = None;
         ui.horizontal(|ui| {
             if tool.paints() {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(40.0, 22.0), Sense::hover());
@@ -61,6 +60,21 @@ impl OxideApp {
         });
         if tool == Tool::Picker {
             ui.weak("Click the canvas to pick a color. (With any tool, hold ⌥ and click.)");
+            let label = |n: usize| if n == 1 { "Point".to_string() } else { format!("{n} x {n} average") };
+            let old = self.app_settings.picker_sample;
+            ui.horizontal(|ui| {
+                ui.label("Sample size:");
+                egui::ComboBox::from_id_salt("picker-sample").selected_text(label(old)).show_ui(ui, |ui| {
+                    for n in [1, 3, 5, 11, 31] {
+                        ui.selectable_value(&mut self.app_settings.picker_sample, n, label(n));
+                    }
+                });
+            })
+            .response
+            .on_hover_text("Average the pixels in a square around the cursor, so one brush streak or speck doesn't decide the color");
+            if self.app_settings.picker_sample != old {
+                self.save_app_settings();
+            }
             return;
         }
         if tool == Tool::Select {
@@ -73,6 +87,10 @@ impl OxideApp {
             taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape);
         }
         ui.add_space(4.0);
+        if tool.is_wet_medium() {
+            self.wet_media_properties(ui);
+            return;
+        }
 
         let state = &mut self.tool_states[tool.index()];
         ui.add(egui::Slider::new(&mut state.shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
@@ -91,6 +109,23 @@ impl OxideApp {
             taper_controls(ui, &mut state.shape);
         }
 
+        if tool == Tool::Hatch {
+            ui.add_space(4.0);
+            self.hatch_properties(ui);
+        }
+        if tool.paints() || tool == Tool::Smudge {
+            self.mouse_pressure_slider(ui);
+        }
+    }
+
+    /// Oils & Acrylics and the Knife: the choices (paint mode, taper ends,
+    /// checkboxes) at the top, then all the sliders together.
+    fn wet_media_properties(&mut self, ui: &mut egui::Ui) {
+        let tool = self.tool;
+        let mut clicked_mode = None;
+        let state = &mut self.tool_states[tool.index()];
+
+        // ----- Choices -----
         if tool == Tool::Knife {
             // The knife's two jobs instead of paint modes.
             ui.horizontal(|ui| {
@@ -99,8 +134,7 @@ impl OxideApp {
                 ui.selectable_value(&mut state.scrape, true, "Scrape")
                     .on_hover_text("An empty knife: scrapes wet paint off, leaving a thin smeared film (dried paint stays)");
             });
-        }
-        if tool.is_wet_medium() && tool != Tool::Knife {
+        } else {
             // Paint modes (keys 1–5; V toggles Blend, A toggles Erase).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -122,54 +156,59 @@ impl OxideApp {
                 }
             });
         }
-        if tool.is_wet_medium() {
-            // Combined Oils & Acrylics: oiliness is what makes it
-            // behave more like oil (blends, drags) or acrylic (covers).
-            ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
-                .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
-            ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
-                .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
-            ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
-                .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
-            ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
-                .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
-            ui.horizontal(|ui| {
-                if ui
-                    .checkbox(&mut self.dirty_brush, "Dirty brush")
-                    .on_hover_text("Start the next stroke with the paint left on the brush; it cleans up as you paint")
-                    .changed()
-                    && !self.dirty_brush
-                {
+        taper_ends_controls(ui, &mut state.shape);
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut self.dirty_brush, "Dirty brush")
+                .on_hover_text("Start the next stroke with the paint left on the brush; it cleans up as you paint")
+                .changed()
+                && !self.dirty_brush
+            {
+                self.carried_color = None;
+            }
+            if let Some(carried) = self.carried_color {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                ui.painter().rect_filled(rect, 2.0, to_color32(carried));
+                if ui.button("Clean").on_hover_text("Wipe the brush: back to the chosen color").clicked() {
                     self.carried_color = None;
                 }
-                if let Some(carried) = self.carried_color {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, to_color32(carried));
-                    if ui.button("Clean").on_hover_text("Wipe the brush: back to the chosen color").clicked() {
-                        self.carried_color = None;
-                    }
-                }
-            });
-            let mut placeholder = 0.0;
-            ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Impasto depth"))
-                .on_disabled_hover_text("Paint thickness: coming with impasto (milestone 6)");
-            ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Gloss"))
-                .on_disabled_hover_text("Shine on thick paint: coming with impasto (milestone 6)");
-            let mut off = false;
-            ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
-                .on_disabled_hover_text("Load several colors on the brush: coming later");
-        }
+            }
+        });
+        let mut off = false;
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
+            .on_disabled_hover_text("Load several colors on the brush: coming later");
+
+        // ----- Sliders -----
+        ui.add_space(4.0);
+        let state = &mut self.tool_states[tool.index()];
+        ui.add(egui::Slider::new(&mut state.shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
+        ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
+        taper_slider(ui, &mut state.shape);
+        // Combined Oils & Acrylics: oiliness is what makes it
+        // behave more like oil (blends, drags) or acrylic (covers).
+        ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
+            .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
+        ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
+            .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
+        ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
+            .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
+        ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
+            .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
+        let mut placeholder = 0.0;
+        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Impasto depth"))
+            .on_disabled_hover_text("Paint thickness: coming with impasto (milestone 6)");
+        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Gloss"))
+            .on_disabled_hover_text("Shine on thick paint: coming with impasto (milestone 6)");
+        self.mouse_pressure_slider(ui);
+
         if let Some(mode) = clicked_mode {
             self.set_paint_mode(mode);
         }
-        if tool == Tool::Hatch {
-            ui.add_space(4.0);
-            self.hatch_properties(ui);
-        }
-        if tool.paints() || tool == Tool::Smudge {
-            ui.add(egui::Slider::new(&mut self.mouse_pressure, 0.05..=1.0).text("Pressure"))
-                .on_hover_text("Pressure used when painting with a mouse (the pen uses its real pressure)");
-        }
+    }
+
+    fn mouse_pressure_slider(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.mouse_pressure, 0.05..=1.0).text("Pressure"))
+            .on_hover_text("Pressure used when painting with a mouse (the pen uses its real pressure)");
     }
 
     /// The brush in use, by preset name, with its size: "Bristle Flat · size 14".
@@ -525,13 +564,13 @@ impl OxideApp {
         ui.label(if wet_here { "This layer has wet paint." } else { "This layer is dry." });
         ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(wet_here, egui::Button::new("Dry layer")).on_hover_text("Lock the paint in (⌘D)").clicked() {
-                self.document.dry_layer();
+                self.run(Command::DryLayer, ui.ctx());
             }
             if ui.add_enabled(wet_anywhere, egui::Button::new("Dry all")).on_hover_text("Dry every layer (⇧⌘D)").clicked() {
-                self.document.dry_all();
+                self.run(Command::DryAll, ui.ctx());
             }
             if ui.button("Rewet").on_hover_text("Make this layer's paint wet again so it can be blended").clicked() {
-                self.document.rewet_layer();
+                self.run(Command::RewetLayer, ui.ctx());
             }
         });
         let mut show = self.document.show_wet();

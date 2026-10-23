@@ -125,7 +125,7 @@ impl OxideApp {
                         if p.x >= 0.0
                             && p.y >= 0.0
                             && (!self.mix_key || fresh_press)
-                            && let Some(c) = self.document.composite_pixel(p.x as usize, p.y as usize)
+                            && let Some(c) = self.document.composite_average(p.x as usize, p.y as usize, self.app_settings.picker_sample)
                         {
                             self.pick_color(c);
                         }
@@ -141,12 +141,19 @@ impl OxideApp {
                         match self.mask_last {
                             None => {
                                 if self.document.begin_mask_stroke() {
+                                    self.with_recorder(|r, hand, doc| {
+                                        r.begin_stroke(hand, doc, Some("mask"));
+                                        r.point(point);
+                                    });
                                     self.document.mask_dab(p.x, p.y, &brush, value);
                                     self.mask_last = Some((p.x, p.y));
                                 }
                             }
                             Some(last) => {
                                 self.document.mask_line(last, (p.x, p.y), &brush, value);
+                                if let Some(r) = &mut self.recorder {
+                                    r.point(point);
+                                }
                                 self.mask_last = Some((p.x, p.y));
                             }
                         }
@@ -166,6 +173,10 @@ impl OxideApp {
                         match &mut self.stroke {
                             None => {
                                 let point = self.stabilizer.start(point);
+                                self.with_recorder(|r, hand, doc| {
+                                    r.begin_stroke(hand, doc, None);
+                                    r.point(point);
+                                });
                                 self.document.begin_stroke();
                                 let tip = self.dirty_tip();
                                 let canvas = self.document.active_canvas();
@@ -187,6 +198,9 @@ impl OxideApp {
                                 for point in path {
                                     if let Some(point) = self.stabilizer.follow(point, string, self.app_settings.pressure_smoothing) {
                                         stroke.line_to_point(canvas, &brush, point);
+                                        if let Some(r) = &mut self.recorder {
+                                            r.point(point);
+                                        }
                                     }
                                 }
                                 // ...and a new one shows the paint reaching the cursor.
@@ -211,6 +225,9 @@ impl OxideApp {
                         let last = StrokePoint { pressure: 0.0, ..StrokePoint::mouse(0.0, 0.0) };
                         for point in self.pen_path(ui, &xf, &pen_samples, None, last) {
                             stroke.line_to_point(self.document.active_canvas(), &brush, point);
+                            if let Some(r) = &mut self.recorder {
+                                r.point(point);
+                            }
                         }
                     }
                     stroke.finish(self.document.active_canvas(), &brush);
@@ -220,6 +237,9 @@ impl OxideApp {
                     }
                     // Pen up: record the whole stroke as one undo step.
                     self.document.end_stroke();
+                    if let Some(r) = &mut self.recorder {
+                        r.end_stroke();
+                    }
                 } else if self.tool == Tool::Picker && response.drag_stopped() {
                     self.remember_color(self.color);
                     // Picked with the Pick button: back to the tool you had.
@@ -231,6 +251,9 @@ impl OxideApp {
                 self.hatch_release();
                 if self.mask_last.take().is_some() {
                     self.document.end_mask_stroke();
+                    if let Some(r) = &mut self.recorder {
+                        r.end_stroke();
+                    }
                 }
             }
         }
@@ -310,7 +333,7 @@ impl OxideApp {
     }
 
     /// Paint left on a dirty brush from the last stroke, if it should be used.
-    fn dirty_tip(&self) -> Option<oxide_engine::Color> {
+    pub(super) fn dirty_tip(&self) -> Option<oxide_engine::Color> {
         // A MultiColored brush starts each stroke clean, with its colors side by side.
         self.carried_color.filter(|_| self.tool.is_wet_medium() && self.dirty_brush && !self.multicolor_active())
     }

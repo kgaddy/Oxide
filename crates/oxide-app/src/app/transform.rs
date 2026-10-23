@@ -153,8 +153,20 @@ impl OxideApp {
     }
 
     pub(super) fn apply_transform(&mut self) {
-        if self.transform.take().is_some() {
-            self.document.apply_transform();
+        if let Some(tool) = self.transform.take()
+            && self.document.apply_transform()
+        {
+            let t = tool.t;
+            self.record(oxide_commands::Command::TransformLayer(oxide_commands::command::TransformLayerArgs {
+                move_x: Some(t.dx),
+                move_y: Some(t.dy),
+                scale_x: Some(t.sx.abs()),
+                scale_y: Some(t.sy.abs()),
+                rotation: Some(t.rotation),
+                flip_horizontal: Some(t.sx < 0.0),
+                flip_vertical: Some(t.sy < 0.0),
+                ..Default::default()
+            }));
         }
     }
 

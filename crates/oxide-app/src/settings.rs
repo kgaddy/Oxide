@@ -119,8 +119,8 @@ pub struct AppSettings {
     pub last_folders: std::collections::BTreeMap<String, PathBuf>,
     /// Mix colors like real paint (blue + yellow = green) instead of like light.
     pub natural_colors: bool,
-    /// The photo in the Reference Image window, and whether the window is open.
-    pub reference_image: Option<PathBuf>,
+    /// Whether the Reference Image window is open (the photo itself is saved
+    /// in each painting).
     pub reference_open: bool,
     /// Stroke smoothing 0..=1 (the stabilizer's string length).
     pub stroke_smoothing: f32,
@@ -133,6 +133,8 @@ pub struct AppSettings {
     pub invert_rotation: bool,
     /// Show the color wheel as a painter's RYB wheel instead of RGB.
     pub ryb_wheel: bool,
+    /// The Picker averages a square this many pixels wide (1 = one pixel).
+    pub picker_sample: usize,
     /// The UI theme's name (View → Theme).
     pub theme: String,
 }
@@ -150,7 +152,6 @@ impl Default for AppSettings {
             last_folders: std::collections::BTreeMap::new(),
             export: crate::export::ExportOptions::default(),
             natural_colors: true,
-            reference_image: None,
             reference_open: false,
             stroke_smoothing: 0.0,
             pressure_smoothing: 0.0,
@@ -158,6 +159,7 @@ impl Default for AppSettings {
             tilt_offset: 0.0,
             invert_rotation: false,
             ryb_wheel: false,
+            picker_sample: 1,
             theme: crate::theme::DEFAULT_THEME.into(),
         }
     }
@@ -212,6 +214,8 @@ pub enum DialogFolder {
     Images,
     /// Import brush tips (.abr, .gbr, .gih, images).
     Tips,
+    /// Recorded actions (.jsonl scripts for oxide-run).
+    Recordings,
 }
 
 impl DialogFolder {
@@ -221,13 +225,14 @@ impl DialogFolder {
             DialogFolder::Exports => "exports",
             DialogFolder::Images => "images",
             DialogFolder::Tips => "tips",
+            DialogFolder::Recordings => "recordings",
         }
     }
 
     /// Where a dialog of this kind starts the very first time.
     fn default_folder(self) -> Option<PathBuf> {
         match self {
-            DialogFolder::Paintings => dirs::document_dir(),
+            DialogFolder::Paintings | DialogFolder::Recordings => dirs::document_dir(),
             DialogFolder::Exports | DialogFolder::Images => dirs::picture_dir(),
             DialogFolder::Tips => dirs::download_dir(),
         }

@@ -7,6 +7,8 @@
 //! document.toml       size, paper color, layer list
 //! layers/0.f32        raw pixels for each layer: little-endian f32
 //! layers/1.f32        premultiplied RGBA, row by row (compressed by zip)
+//! palette.oxide       the mixing palette, if any
+//! reference           the reference photo's image file, if any
 //! ```
 //!
 //! Keeping full float precision means nothing is lost when you save and
@@ -219,6 +221,12 @@ impl Document {
             zip.write_all(bytes.get_ref())?;
         }
 
+        // The reference photo, as its original image file (already compressed).
+        if let Some(reference) = &self.reference {
+            zip.start_file("reference", stored)?;
+            zip.write_all(reference)?;
+        }
+
         zip.finish()?;
         Ok(())
     }
@@ -307,6 +315,12 @@ impl Document {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             doc.palette = Document::load(std::io::Cursor::new(bytes)).ok().map(Box::new);
+        }
+        // Optional reference photo.
+        if let Ok(mut entry) = zip.by_name("reference") {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            doc.reference = Some(std::sync::Arc::new(bytes));
         }
         Ok(doc)
     }
@@ -404,6 +418,7 @@ mod tests {
         assert_eq!(loaded.layers()[1].impasto, Some(0.2), "per-layer impasto saved");
         assert_eq!(loaded.layers()[0].impasto, None);
         assert!(loaded.palette.is_none(), "no palette saved, none loaded");
+        assert!(loaded.reference.is_none(), "no reference saved, none loaded");
         assert_eq!(loaded.layers().len(), 2);
         assert_eq!(loaded.active_index(), 1);
         let ink = &loaded.layers()[1];
@@ -436,6 +451,19 @@ mod tests {
         assert_eq!((palette.width(), palette.height()), (16, 8));
         assert!(palette.layers()[0].canvas.has_wet_paint(), "palette paint stays wet");
         assert!(palette.notes.contains("Ultramarine Blue (#1C2A6B)") && palette.notes.contains("\"quoted\" — ok"), "notes survive");
+    }
+
+    #[test]
+    fn reference_photo_is_saved_inside_the_painting() {
+        let mut doc = Document::new(8, 8, Color::WHITE);
+        let photo = b"\x89PNG not really, but any bytes come back as they were".to_vec();
+        doc.reference = Some(std::sync::Arc::new(photo.clone()));
+
+        let mut file = Cursor::new(Vec::new());
+        doc.save(&mut file).unwrap();
+        file.set_position(0);
+        let loaded = Document::load(file).unwrap();
+        assert_eq!(loaded.reference.as_deref(), Some(&photo));
     }
 
     #[test]

@@ -30,6 +30,24 @@ pub(super) fn check(label: impl Into<String>, command: Command, checked: bool, e
     Entry::Item { label: label.into(), command, enabled, checked: Some(checked) }
 }
 
+/// Gray out every item, submenus included (menu picks are ignored while a
+/// dialog is up, so they shouldn't look clickable).
+#[cfg(target_os = "macos")]
+pub(super) fn disable_all(menus: &mut [Menu]) {
+    fn disable(entries: &mut [Entry]) {
+        for entry in entries {
+            match entry {
+                Entry::Item { enabled, .. } => *enabled = false,
+                Entry::Submenu { entries, .. } => disable(entries),
+                Entry::Separator => {}
+            }
+        }
+    }
+    for menu in menus {
+        disable(&mut menu.entries);
+    }
+}
+
 /// The keyboard shortcuts that aren't in a menu (single keys and gestures).
 pub const OTHER_SHORTCUTS: &[(&str, &str)] = &[
     ("Tools", "B oils & acrylics · N ink · P pencil · M marker · U airbrush · E eraser · S smudge · K palette knife · L select · I picker"),
@@ -71,8 +89,11 @@ impl OxideApp {
                     item("Save Iteration", SaveIteration),
                     Entry::Separator,
                     item("Import Image as Layer…", ImportImage),
+                    item("Import Script as Layer…", ImportScript),
                     item("Open Reference Image…", OpenReference),
                     item("Export…", Export),
+                    Entry::Separator,
+                    check(if self.recorder.is_some() { "Stop Recording and Save…" } else { "Record Actions" }, Record, self.recorder.is_some(), true),
                 ],
             },
             Menu {

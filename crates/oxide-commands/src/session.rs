@@ -15,6 +15,7 @@ use crate::command::*;
 use crate::export::{ExportFormat, ExportOptions, export};
 use crate::hatch::{HatchDirection, HatchSettings, hatch_lines_with_edge, paint_hatch};
 use crate::palette::{add_note_line, add_paint_swatch, new_palette, parse_hex, to_hex};
+use crate::presets::{self, BrushPreset};
 use crate::tools::{SWATCHES, Tool, ToolState};
 
 /// Safety limits so a runaway caller can't freeze or exhaust the machine.
@@ -96,6 +97,7 @@ impl Session {
             Command::ListPigments(_) => Ok(Output::Json(
                 SWATCHES.iter().map(|(name, c)| json!({"name": name, "hex": to_hex(*c)})).collect(),
             )),
+            Command::ListBrushes(_) => Ok(Output::Json(presets::all().iter().map(|(p, saved)| preset_json(p, *saved)).collect())),
             Command::SetColor(a) => {
                 self.color = color_from(a.hex.as_deref(), a.pigment.as_deref())?;
                 self.carried = None; // fresh paint
@@ -464,8 +466,15 @@ impl Session {
                 })
             })
             .transpose()?;
+        let preset = a
+            .preset
+            .as_deref()
+            .map(|name| presets::find(name).ok_or_else(|| format!("No brush named \"{name}\" (see list_brushes).")))
+            .transpose()?;
         let s = self.state_mut();
         let unit = |v: f32| v.clamp(0.0, 1.0);
+        // The preset goes first, so the settings in this same command override it.
+        if let Some(p) = &preset { s.shape = p.apply_to(&s.shape) }
         if let Some(t) = tip { s.shape.tip = t }
         if let Some(v) = a.spacing { s.shape.spacing = v.clamp(0.02, 1.0) }
         if let Some(v) = a.jitter_angle { s.shape.jitter_angle = unit(v) }
@@ -869,6 +878,22 @@ impl Session {
     }
 }
 
+/// One brush for `list_brushes`. The setting names match `set_brush`, so a
+/// caller can pass them back as they are (`size` is the radius).
+fn preset_json(p: &BrushPreset, saved: bool) -> Value {
+    json!({
+        "name": p.name,
+        "group": if p.group.is_empty() { presets::MY_BRUSHES } else { &p.group },
+        "saved": saved,
+        "size": p.radius, "hardness": p.hardness, "spacing": p.spacing, "roundness": p.roundness, "angle": p.angle,
+        "rotation": match p.rotation { Rotation::None => "none", Rotation::FollowStroke => "follow_stroke", Rotation::PenTilt => "pen_tilt", Rotation::PenRotation => "pen_rotation" },
+        "roughness": p.roughness, "streaks": p.streaks, "lift_off": p.lift_off,
+        "taper": p.taper, "taper_ends": format!("{:?}", p.taper_ends).to_lowercase(),
+        "tip": p.tip.key(), "jitter_angle": p.jitter_angle, "jitter_size": p.jitter_size, "scatter": p.scatter,
+        "bristles": p.bristles.map(|b| json!({"count": b.count, "thickness": b.thickness, "spread": b.spread, "stiffness": b.stiffness})),
+    })
+}
+
 fn color_from(hex: Option<&str>, pigment: Option<&str>) -> Result<Color, String> {
     if let Some(h) = hex {
         return parse_hex(h).ok_or(format!("Not a hex color: \"{h}\" (use e.g. #1C2A6B)."));
@@ -946,6 +971,7 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Paint behaves like real paint: colors mix as pigments (blue + yellow = green; ultramarine + burnt umber = near-black). Set colors by hex or by pigment name (list_pigments).
 - Tools are media. \"oils\" paints WET paint that can be picked up, blended and smeared until it is dried (dry). Ink, pencil, marker and airbrush are dry media.
 - Oils paint modes (set_paint_mode): paint (pure color), paint_mix (default; light pressure mixes more), paint_blend (light pressure only blends), blend (no paint; moves wet paint), erase.
+- Brushes: list_brushes lists every brush in the app (built-in and saved by the user) with its shape settings; set_brush preset: \"<name>\" selects one (other settings in the same call override it). A preset sets the brush shape only.
 - Oils settings (set_brush): loading (how much paint), length (how long it lasts), oiliness (0 acrylic-like covers, 1 oily blends), thickness (impasto: 0 flat … 1 thick, default 0.5; brush marks show as lit ridges; set_paper impasto_depth / gloss 0–10 set how strongly they're lit). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
 - Imported tips: import_tip with a Photoshop .abr (brush packs; can hold many tips), a GIMP .gbr/.gih, or an image (PNG/JPEG: black-on-white, white-on-black or transparent). They're saved in Oxide's tip library and used as set_brush tip: \"image:<name>\" (info lists the current tip).
 - Texture tips (set_brush tip: sponge / chalk / splatter / dry_brush / rag / speckle, with spacing 0.25–0.7, jitter_angle ~1 and some jitter_size / scatter so the stamps don't fill in or repeat; round = back to normal). Good for foliage, texture, broken color.
@@ -1113,6 +1139,26 @@ mod tests {
         run(&mut s, r##"{"command": "mask", "action": "off"}"##);
         let Output::Text(t) = run(&mut s, r##"{"command": "stroke", "points": [[35, 20], [45, 20]], "target": "mask"}"##) else { panic!() };
         assert!(t.contains("the mask is off"), "{t}");
+    }
+
+    #[test]
+    fn brush_presets_can_be_listed_and_selected() {
+        let mut s = Session::new(Document::new(200, 80, Color::WHITE));
+        let Output::Json(list) = run(&mut s, r##"{"command": "list_brushes"}"##) else { panic!() };
+        let brushes = list.as_array().unwrap();
+        assert!(brushes.len() >= 30, "the built-in set is listed");
+        let flat = brushes.iter().find(|b| b["name"] == "Bristle Flat").expect("a built-in bristle brush");
+        assert_eq!(flat["group"], "Bristle");
+        assert_eq!(flat["saved"], false);
+        assert_eq!(flat["rotation"], "follow_stroke");
+        assert_eq!(flat["bristles"]["count"], 56);
+        // Selecting it sets the shape, and a setting in the same command wins.
+        let Output::Json(brush) = run(&mut s, r##"{"command": "set_brush", "preset": "bristle flat", "size": 30}"##) else { panic!() };
+        assert_eq!(brush["bristles"]["count"], 56);
+        assert_eq!(brush["rotation"], "FollowStroke");
+        assert_eq!(brush["size"], 30.0);
+        let e = s.execute(serde_json::from_str(r##"{"command": "set_brush", "preset": "No Such Brush"}"##).unwrap()).unwrap_err();
+        assert!(e.contains("list_brushes"), "{e}");
     }
 
     #[test]

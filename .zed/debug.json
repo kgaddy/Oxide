@@ -1,0 +1,13 @@
+[
+  {
+    "label": "Debug Oxide",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "oxide-app"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/oxide-app",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
+]

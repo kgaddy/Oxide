@@ -174,6 +174,30 @@ impl Document {
         Some(Color { r: p[0], g: p[1], b: p[2], a: 1.0 })
     }
 
+    /// The average finished color of a `size` x `size` square centered on
+    /// (x, y), cut off at the edges of the painting. A size of 1 is
+    /// [`Document::composite_pixel`].
+    pub fn composite_average(&self, x: usize, y: usize, size: usize) -> Option<Color> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let half = size.max(1) / 2;
+        let (x0, x1) = (x.saturating_sub(half), (x + half).min(self.width - 1));
+        let (y0, y1) = (y.saturating_sub(half), (y + half).min(self.height - 1));
+        let plan = self.plan();
+        let mut sum = [0.0f32; 3];
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let p = self.composite_and_coverage(&plan, py * self.width + px).0;
+                for c in 0..3 {
+                    sum[c] += p[c];
+                }
+            }
+        }
+        let n = ((x1 - x0 + 1) * (y1 - y0 + 1)) as f32;
+        Some(Color { r: sum[0] / n, g: sum[1] / n, b: sum[2] / n, a: 1.0 })
+    }
+
     /// How the visible layers combine, worked out once per redraw.
     pub(super) fn plan(&self) -> Vec<Step> {
         let mut steps = Vec::new();

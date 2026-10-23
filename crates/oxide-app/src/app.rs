@@ -16,6 +16,7 @@ mod select_canvas;
 mod select_tool;
 mod transform;
 mod panels;
+mod recording;
 mod reference_image;
 
 use std::path::PathBuf;
@@ -129,6 +130,8 @@ pub struct OxideApp {
     file_path: Option<PathBuf>,
     /// `document.state_id()` when last saved/opened; different = unsaved changes.
     saved_state: u64,
+    /// `document.reference` when last saved/opened (a different photo = unsaved changes).
+    saved_reference: Option<std::sync::Arc<Vec<u8>>>,
     /// An action waiting on the "Save changes?" dialog.
     pending: Option<PendingAction>,
     /// Set once the user confirmed quitting, so the close isn't intercepted again.
@@ -204,6 +207,8 @@ pub struct OxideApp {
     bench: Option<bench::Bench>,
     /// The Hatch tool: its settings and the rails being drawn.
     hatch: hatch::HatchTool,
+    /// File → Record Actions: what you do, written down as an oxide-run script.
+    recorder: Option<oxide_commands::recorder::Recorder>,
 }
 
 /// Everything you can do from a menu or keyboard shortcut.
@@ -215,6 +220,8 @@ enum Command {
     SaveAs,
     SaveIteration,
     ImportImage,
+    /// File → Import Script as Layer: paint an oxide-run .jsonl onto a new layer.
+    ImportScript,
     OpenReference,
     Export,
     Quit,
@@ -279,6 +286,8 @@ enum Command {
     OpenThemesFolder,
     ReloadThemes,
     ClearRecent,
+    /// File → Record Actions: start recording, or stop and save the script.
+    Record,
 }
 
 impl Command {
@@ -289,7 +298,7 @@ impl Command {
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
                 | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
-                | Theme(_) | OpenThemesFolder | ReloadThemes
+                | Theme(_) | OpenThemesFolder | ReloadThemes | Record
         )
     }
 }
@@ -355,6 +364,7 @@ impl OxideApp {
         // Brush tips imported earlier (Photoshop, GIMP, images).
         oxide_commands::tip_import::load_library();
         let new_artwork = new_artwork::NewArtwork::from_settings(&app_settings);
+        let reference_open = app_settings.reference_open;
         // Behind the New Artwork dialog: the last-used (or default) canvas,
         // so there's something to paint on if you cancel or turn the dialog off.
         let mut document = new_artwork.spec().create();
@@ -363,6 +373,7 @@ impl OxideApp {
         let c = Color::BLACK;
         OxideApp {
             saved_state: document.state_id(),
+            saved_reference: None,
             document,
             hsv: hsv_from_rgb([c.r, c.g, c.b]),
             color: c,
@@ -425,8 +436,9 @@ impl OxideApp {
             #[cfg(target_os = "macos")]
             native_menu: None,
             menu_installed: false,
-            reference: reference_image::ReferenceImage::default(),
+            reference: reference_image::ReferenceImage::new(reference_open),
             hatch: Default::default(),
+            recorder: None,
         }
     }
 
@@ -477,6 +489,7 @@ impl OxideApp {
             Err(e) => self.error(format!("{verb} inside Oxide, but not to the Mac clipboard: {e}")),
         }
         self.clip = Some((clip, fingerprint));
+        self.record(if cut { oxide_commands::Command::Cut(Default::default()) } else { oxide_commands::Command::Copy(Default::default()) });
     }
 
     /// ⌘V: paste on a new layer, then Transform to place it. Our own copy
@@ -496,11 +509,20 @@ impl OxideApp {
         // goes Transform → Paste → Deselect.
         self.document.deselect();
         match (ours, system) {
-            (Some(clip), _) => self.document.paste(&clip),
+            (Some(clip), _) => {
+                self.document.paste(&clip);
+                let deselect = oxide_commands::command::SelectionArgs { action: "none".into(), radius: None };
+                self.record(oxide_commands::Command::Selection(deselect));
+                self.record(oxide_commands::Command::Paste(Default::default()));
+            }
             (None, Some(img)) => {
                 if !self.document.paste_image(img.width, img.height, &img.bytes) {
                     return self.error("The clipboard image couldn't be read.");
                 }
+                self.with_recorder(|r, _, doc| {
+                    r.comment("(an image from another app was pasted here; not recorded)");
+                    r.snapshot(doc);
+                });
             }
             (None, None) => unreachable!("checked above"),
         }
@@ -632,7 +654,9 @@ impl OxideApp {
                 return;
             }
         }
+        let state_before = self.document.state_id();
         match command {
+            Command::Record => self.toggle_recording(),
             Command::New => self.new_artwork.open = true,
             Command::Open => self.request(PendingAction::Open, ctx),
             Command::Quit => self.request(PendingAction::Quit, ctx),
@@ -646,7 +670,8 @@ impl OxideApp {
                 self.save_iteration();
             }
             Command::ImportImage => self.import_image(),
-            Command::OpenReference => self.open_reference_image(ctx),
+            Command::ImportScript => self.import_script(),
+            Command::OpenReference => self.open_reference_image(),
             Command::Export => self.export_dialog.open = true,
             Command::Undo => self.document.undo(),
             Command::Redo => self.document.redo(),
@@ -779,6 +804,7 @@ impl OxideApp {
                 self.document.set_tracing(i, on);
             }
         }
+        self.record_command(command, state_before);
     }
 
     /// Install (first frame) and run the macOS menu bar. Returns false if
@@ -798,7 +824,11 @@ impl OxideApp {
                 self.run(command, ctx);
             }
         }
-        let spec = self.menu_spec();
+        // (Checked again: a command above may have opened a dialog.)
+        let mut spec = self.menu_spec();
+        if self.pending.is_some() || self.new_artwork.open || self.select_canvas.open || self.export_dialog.open {
+            menus::disable_all(&mut spec);
+        }
         if let Some(menu) = &mut self.native_menu {
             menu.sync(&spec);
         }
@@ -1033,6 +1063,21 @@ impl OxideApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            match self.recorder.as_ref().map(|r| r.strokes()) {
+                Some(strokes) => {
+                    let stop = egui::Button::new(egui::RichText::new("⏹ Stop").color(ui.visuals().error_fg_color));
+                    if ui.add(stop).on_hover_text("Stop recording and save the script (.jsonl)").clicked() {
+                        self.run(Command::Record, ui.ctx());
+                    }
+                    ui.colored_label(ui.visuals().error_fg_color, format!("⏺ REC · {strokes} strokes"));
+                }
+                None => {
+                    if ui.button("⏺ Record").on_hover_text("Write down what you paint and do as an oxide-run script (.jsonl), to replay or build on").clicked() {
+                        self.run(Command::Record, ui.ctx());
+                    }
+                }
+            }
+            ui.separator();
             ui.label(format!(
                 "{} × {} px · {:.0}% · {}",
                 self.document.width(),
@@ -1150,9 +1195,11 @@ impl eframe::App for OxideApp {
 
         // Slider drags (opacity, paper color) become one undo step: close the
         // step once the mouse button is up.
-        if !ctx.input(|i| i.pointer.any_down()) {
+        let pointer_down = ctx.input(|i| i.pointer.any_down());
+        if !pointer_down {
             self.document.seal_history();
         }
+        self.recording_frame(pointer_down);
         // Undo/redo/opening change pixels outside of painting: show them.
         self.upload_changes();
         self.update_title(&ctx);

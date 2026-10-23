@@ -1,11 +1,12 @@
 //! Window → Reference Image: a floating window with a photo to paint from,
 //! like a reference photo pinned beside an easel. It's only for looking at (and
-//! picking colors from); it's not part of the painting.
+//! picking colors from); it's not part of the image, but it's saved in the
+//! painting's file, so each painting keeps its own photo.
 //!
 //! Scroll or pinch to zoom, drag to pan, double-click to fit. With the
 //! Picker tool (I), or while holding ⌥, click to pick a color.
 
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui::{self, Color32, CursorIcon, Rect, Sense, Vec2};
 use oxide_engine::Color;
@@ -27,13 +28,32 @@ pub struct ReferenceImage {
     /// 1 = fit to the window.
     zoom: f32,
     pan: Vec2,
-    /// The settings' last reference has been loaded (or tried).
-    restored: bool,
+    /// The document's photo bytes that `image` was decoded from, to notice
+    /// when the painting (or its photo) changes.
+    shown: Option<Arc<Vec<u8>>>,
 }
 
 impl ReferenceImage {
-    fn load(&mut self, ctx: &egui::Context, path: &Path) -> Result<(), String> {
-        let img = image::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    pub fn new(open: bool) -> Self {
+        ReferenceImage { open, ..Default::default() }
+    }
+
+    /// Show the painting's photo, if it isn't already showing.
+    fn sync(&mut self, ctx: &egui::Context, reference: Option<&Arc<Vec<u8>>>) -> Result<(), String> {
+        if self.shown.as_ref().map(Arc::as_ptr) == reference.map(Arc::as_ptr) {
+            return Ok(());
+        }
+        self.shown = reference.cloned();
+        self.image = None;
+        self.texture = None;
+        match reference {
+            Some(bytes) => self.load(ctx, bytes),
+            None => Ok(()),
+        }
+    }
+
+    fn load(&mut self, ctx: &egui::Context, bytes: &[u8]) -> Result<(), String> {
+        let img = image::load_from_memory(bytes).map_err(|e| format!("Couldn't show the reference photo: {e}"))?;
         let img = if img.width().max(img.height()) > MAX_SIDE {
             img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::CatmullRom)
         } else {
@@ -75,8 +95,8 @@ impl ReferenceImage {
 }
 
 impl OxideApp {
-    /// File → Open Reference Image…: pick a photo and show it in the window.
-    pub(super) fn open_reference_image(&mut self, ctx: &egui::Context) {
+    /// File → Open Reference Image…: pick a photo for this painting and show it.
+    pub(super) fn open_reference_image(&mut self) {
         let Some(path) = self
             .dialog(DialogFolder::Images)
             .add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"])
@@ -85,37 +105,31 @@ impl OxideApp {
             return;
         };
         self.remember_folder(DialogFolder::Images, &path);
-        self.show_reference(ctx, path);
-    }
-
-    fn show_reference(&mut self, ctx: &egui::Context, path: PathBuf) {
-        match self.reference.load(ctx, &path) {
-            Ok(()) => {
-                self.reference.open = true;
-                self.reference.restored = true;
-                self.app_settings.reference_image = Some(path);
-                self.app_settings.reference_open = true;
-                self.save_app_settings();
-            }
-            Err(e) => self.error(e),
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => return self.error(format!("Couldn't open {}: {e}", path.display())),
+        };
+        if let Err(e) = image::guess_format(&bytes) {
+            return self.error(format!("Couldn't open {}: {e}", path.display()));
         }
+        self.document.reference = Some(Arc::new(bytes));
+        self.reference.open = true;
+        self.app_settings.reference_open = true;
+        self.save_app_settings();
     }
 
     pub(super) fn reference_window(&mut self, ctx: &egui::Context) {
-        // Bring back last session's reference photo.
-        if !self.reference.restored {
-            self.reference.restored = true;
-            self.reference.open = self.app_settings.reference_open;
-            if let Some(path) = self.app_settings.reference_image.clone().filter(|p| p.is_file()) {
-                self.reference.load(ctx, &path).ok();
-            }
-        }
         if !self.reference.open {
             return;
+        }
+        // Follow the painting: a different file brings its own photo (or none).
+        if let Err(e) = self.reference.sync(ctx, self.document.reference.as_ref()) {
+            self.error(e);
         }
 
         let mut open = true;
         let mut pick_file = false;
+        let mut remove = false;
         let mut picked = None;
         egui::Window::new("Reference Image")
             .open(&mut open)
@@ -126,7 +140,7 @@ impl OxideApp {
             .show(ctx, |ui| {
                 let r = &mut self.reference;
                 ui.horizontal(|ui| {
-                    pick_file = ui.button("Open…").on_hover_text("Choose a reference photo").clicked();
+                    pick_file = ui.button("Open…").on_hover_text("Choose a reference photo for this painting").clicked();
                     if ui.add_enabled(r.image.is_some(), egui::Button::new("Fit")).on_hover_text("Fit to the window (or double-click the photo)").clicked() {
                         r.zoom = 1.0;
                         r.pan = Vec2::ZERO;
@@ -135,6 +149,7 @@ impl OxideApp {
                         r.greyscale = !r.greyscale;
                         r.update_texture(ui.ctx());
                     }
+                    remove = ui.add_enabled(r.shown.is_some(), egui::Button::new("Remove")).on_hover_text("Take the photo off this painting").clicked();
                     if r.image.is_some() {
                         ui.weak(format!("{:.0}%", r.zoom * 100.0));
                     }
@@ -185,7 +200,10 @@ impl OxideApp {
             self.remember_color(self.color);
         }
         if pick_file {
-            self.open_reference_image(ctx);
+            self.open_reference_image();
+        }
+        if remove {
+            self.document.reference = None;
         }
         if open != self.reference.open || open != self.app_settings.reference_open {
             self.reference.open = open;

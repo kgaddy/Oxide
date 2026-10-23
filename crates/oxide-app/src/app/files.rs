@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui;
 use oxide_engine::{Color, Document, PaperSettings};
@@ -54,6 +55,7 @@ impl OxideApp {
         self.document.state_id() != self.saved_state
             || self.palette_state() != self.mixing_palette.saved_state
             || self.palette_notes() != self.mixing_palette.saved_notes
+            || self.document.reference.as_ref().map(Arc::as_ptr) != self.saved_reference.as_ref().map(Arc::as_ptr)
     }
 
     fn palette_notes(&self) -> String {
@@ -114,9 +116,13 @@ impl OxideApp {
 
     fn replace_document(&mut self, document: Document, path: Option<PathBuf>) {
         self.document = document;
+        if let Some(r) = &mut self.recorder {
+            r.document_replaced(&self.document, path.as_deref());
+        }
         self.stroke = None;
         self.stroke_preview = None; // (it belonged to the old document)
         self.saved_state = self.document.state_id();
+        self.saved_reference = self.document.reference.clone();
         self.mixing_palette.reset_view();
         self.mixing_palette.saved_state = self.palette_state();
         self.mixing_palette.saved_notes = self.palette_notes();
@@ -191,6 +197,7 @@ impl OxideApp {
             Ok(()) => {
                 self.file_path = Some(path.to_path_buf());
                 self.saved_state = self.document.state_id();
+                self.saved_reference = self.document.reference.clone();
                 self.mixing_palette.saved_state = self.palette_state();
                 self.mixing_palette.saved_notes = self.palette_notes();
                 self.info(format!("Saved {}", path.display()));
@@ -249,13 +256,59 @@ impl OxideApp {
         let mut layer = self.document.new_layer(&name);
         layer.canvas.set_pixels(pixels, None);
         self.document.insert_layer(layer);
+        self.record(oxide_commands::Command::ImportImage(oxide_commands::command::ImportImageArgs {
+            path: path.display().to_string(),
+            reference: None,
+            name: Some(name),
+        }));
         self.start_transform();
         self.info(format!("Imported {}. Drag the handles to size and place it, then press Enter.", path.display()));
     }
 
+    /// File → Import Script as Layer: paint an oxide-run script (.jsonl)
+    /// off to the side and add what it painted as a new layer.
+    pub(super) fn import_script(&mut self) {
+        let Some(path) = self.dialog(DialogFolder::Recordings).add_filter("oxide-run script", &["jsonl"]).pick_file() else {
+            return;
+        };
+        self.remember_folder(DialogFolder::Recordings, &path);
+        self.import_script_file(&path);
+    }
+
+    /// Paint the script at `path` onto a new layer above the current one.
+    pub(super) fn import_script_file(&mut self, path: &Path) {
+        let (w, h) = (self.document.width(), self.document.height());
+        let mut painted = match oxide_commands::script_layer::paint_script(path, w, h) {
+            Ok(painted) => painted,
+            Err(e) => return self.error(e),
+        };
+        let name = path.file_stem().map_or("Script".into(), |s| s.to_string_lossy().into_owned());
+        let mut layer = self.document.new_layer(&name);
+        layer.canvas.swap_buffers(&mut painted.buffers);
+        self.document.insert_layer(layer);
+        self.document.seal_history();
+        self.with_recorder(|r, _, doc| {
+            r.comment(&format!("(the script {} was painted onto a new layer here; not recorded)", path.display()));
+            r.snapshot(doc);
+        });
+        let mut notes = Vec::new();
+        if let Some((sw, sh)) = painted.other_size {
+            notes.push(format!("it paints a {sw} × {sh} canvas, so it's centered"));
+        }
+        if painted.skipped > 0 {
+            notes.push(format!("skipped {} export/save line(s)", painted.skipped));
+        }
+        let notes = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+        match painted.errors.first() {
+            Some(first) => self.error(format!("Imported {name}{notes}, but {} line(s) failed. First: {first}", painted.errors.len())),
+            None => self.info(format!("Imported {name} as a new layer{notes}")),
+        }
+    }
+
     /// Files dropped on the window, or sent by Finder (double-clicking a
     /// .oxide, "Open With", dragging onto the Dock icon): paintings open,
-    /// images become layers, brush files add tips.
+    /// images and oxide-run scripts (.jsonl) become layers, brush files add
+    /// tips.
     pub(super) fn open_files(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
         let ext = |p: &PathBuf| p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         let mut tips = Vec::new();
@@ -265,7 +318,8 @@ impl OxideApp {
                 "oxide" => painting = painting.or(Some(path)),
                 "abr" | "gbr" | "gih" => tips.push(path),
                 "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp" | "bmp" => self.import_image_file(&path),
-                _ => self.error(format!("Oxide can't open {} (paintings: .oxide; images; brushes: .abr, .gbr, .gih)", path.display())),
+                "jsonl" => self.import_script_file(&path),
+                _ => self.error(format!("Oxide can't open {} (paintings: .oxide; images; scripts: .jsonl; brushes: .abr, .gbr, .gih)", path.display())),
             }
         }
         if !tips.is_empty() {

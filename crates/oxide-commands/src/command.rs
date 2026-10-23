@@ -18,6 +18,7 @@ pub enum Command {
     Info(NoArgs),
     Describe(NoArgs),
     ListPigments(NoArgs),
+    ListBrushes(NoArgs),
     SetColor(SetColorArgs),
     SetMulticolor(SetMulticolorArgs),
     SetTool(SetToolArgs),
@@ -139,6 +140,10 @@ pub struct SetPaintModeArgs {
 /// Any brush setting; omitted ones stay as they are.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SetBrushArgs {
+    /// A brush by name from list_brushes, e.g. "Bristle Flat". Applied first, so
+    /// any other setting in the same command overrides it. A preset sets the
+    /// brush shape only (not opacity, loading, oiliness or thickness).
+    pub preset: Option<String>,
     /// Radius in canvas pixels (0.5–200).
     pub size: Option<f32>,
     /// 0–1.

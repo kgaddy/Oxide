@@ -6,7 +6,9 @@
 use eframe::egui::{self, Color32, Pos2, Stroke as LineStroke, Vec2};
 use oxide_engine::{SelectMode, SelectShape};
 
-use super::{OxideApp, ViewXform};
+use oxide_commands::command::{SelectArgs, SelectionArgs};
+
+use super::{Command, OxideApp, ViewXform};
 
 /// Which shape the Select tool draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,8 +76,9 @@ impl OxideApp {
         let Some(drag) = self.select_drag.take() else { return };
         let moved = (drag.current - drag.start).length();
         if moved < 2.0 {
-            if drag.mode == SelectMode::Replace {
+            if drag.mode == SelectMode::Replace && self.document.selection().is_some() {
                 self.document.deselect();
+                self.record(oxide_commands::Command::Selection(SelectionArgs { action: "none".into(), radius: None }));
             }
             return;
         }
@@ -87,6 +90,7 @@ impl OxideApp {
             SelectKind::Lasso => return,
         };
         self.document.select(&shape, drag.mode);
+        self.record(oxide_commands::Command::Select(select_args(&shape, drag.mode)));
     }
 
     /// Draw the selection's edge, and the shape being dragged out.
@@ -138,27 +142,28 @@ impl OxideApp {
         let has = self.document.selection().is_some();
         ui.horizontal_wrapped(|ui| {
             if ui.button("All").on_hover_text("⌘A").clicked() {
-                self.document.select_all();
+                self.run(Command::SelectAll, ui.ctx());
             }
             if ui.add_enabled(has, egui::Button::new("Deselect")).on_hover_text("⇧⌘A").clicked() {
-                self.document.deselect();
+                self.run(Command::Deselect, ui.ctx());
             }
             if ui.add_enabled(has, egui::Button::new("Invert")).on_hover_text("⌘I").clicked() {
-                self.document.invert_selection();
+                self.run(Command::InvertSelection, ui.ctx());
             }
         });
         ui.horizontal(|ui| {
             ui.add(egui::Slider::new(&mut self.feather_radius, 1.0..=50.0).max_decimals(0).suffix(" px"));
             if ui.add_enabled(has, egui::Button::new("Feather")).on_hover_text("Soften the selection's edge").clicked() {
                 self.document.feather_selection(self.feather_radius);
+                self.record(oxide_commands::Command::Selection(SelectionArgs { action: "feather".into(), radius: Some(self.feather_radius) }));
             }
         });
         ui.horizontal(|ui| {
             if ui.add_enabled(has, egui::Button::new("Fill")).on_hover_text("Fill the selection with the current color (⌥⌫)").clicked() {
-                self.document.fill_selection(self.color);
+                self.run(Command::FillSelection, ui.ctx());
             }
             if ui.add_enabled(has, egui::Button::new("Clear")).on_hover_text("Erase what's selected on this layer (⌫)").clicked() {
-                self.document.clear_selected();
+                self.run(Command::ClearSelection, ui.ctx());
             }
         });
     }
@@ -170,4 +175,26 @@ fn ants(painter: &egui::Painter, points: &[Pos2]) {
     for shape in egui::Shape::dashed_line(points, LineStroke::new(1.0, Color32::WHITE), 4.0, 4.0) {
         painter.add(shape);
     }
+}
+
+/// The `select` command that makes the same selection.
+fn select_args(shape: &SelectShape, mode: SelectMode) -> SelectArgs {
+    let mode = match mode {
+        SelectMode::Replace => "replace",
+        SelectMode::Add => "add",
+        SelectMode::Subtract => "subtract",
+        SelectMode::Intersect => "intersect",
+    };
+    let mut args = SelectArgs { mode: Some(mode.into()), ..SelectArgs::default() };
+    match shape {
+        SelectShape::Rect { x0, y0, x1, y1 } | SelectShape::Ellipse { x0, y0, x1, y1 } => {
+            args.shape = Some(if matches!(shape, SelectShape::Rect { .. }) { "rect" } else { "ellipse" }.into());
+            (args.x0, args.y0, args.x1, args.y1) = (Some(*x0), Some(*y0), Some(*x1), Some(*y1));
+        }
+        SelectShape::Polygon(points) => {
+            args.shape = Some("lasso".into());
+            args.points = Some(points.iter().map(|&(x, y)| [x, y]).collect());
+        }
+    }
+    args
 }

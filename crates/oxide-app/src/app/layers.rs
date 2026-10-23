@@ -4,7 +4,7 @@
 use eframe::egui::{self, Vec2};
 use oxide_engine::{Color, PaperKind};
 
-use super::{OxideApp, to_color32};
+use super::{Command, OxideApp, to_color32};
 
 impl OxideApp {
     /// Choose the surface: paper/canvas type, texture size and depth, light, color.
@@ -221,33 +221,33 @@ impl OxideApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.button("+").on_hover_text("New layer").clicked() {
-                self.document.add_layer();
+                self.run(Command::NewLayer, ui.ctx());
             }
             let can_delete = count > 1;
             if ui.add_enabled(can_delete, egui::Button::new("🗑")).on_hover_text("Delete layer").clicked() {
-                self.document.delete_active_layer();
+                self.run(Command::DeleteLayer, ui.ctx());
             }
             if ui.button("⏶").on_hover_text("Move up").clicked() {
-                self.document.move_active_layer(1);
+                self.run(Command::MoveLayerUp, ui.ctx());
             }
             if ui.button("⏷").on_hover_text("Move down").clicked() {
-                self.document.move_active_layer(-1);
+                self.run(Command::MoveLayerDown, ui.ctx());
             }
         });
         let active = self.document.active_index();
         ui.horizontal(|ui| {
             if ui.button("Duplicate").on_hover_text("Copy this layer (⌘J)").clicked() {
-                self.document.duplicate_active_layer();
+                self.run(Command::DuplicateLayer, ui.ctx());
             }
             if ui.add_enabled(active > 0, egui::Button::new("Merge ⏷")).on_hover_text("Merge into the layer below (⌘E). The merged paint is dried.").clicked() {
-                self.merge_down();
+                self.run(Command::MergeDown, ui.ctx());
             }
             if ui.button("Clear").on_hover_text("Erase everything on this layer (⌘⌫)").clicked() {
-                self.document.clear_active_layer();
+                self.run(Command::ClearLayer, ui.ctx());
             }
             let in_group = self.document.layers()[active].group.is_some();
             if ui.add_enabled(!in_group, egui::Button::new("Group")).on_hover_text("Put this layer in a new group (⌥⌘G). Move other layers into it with ⏶/⏷.").clicked() {
-                self.document.group_active_layer();
+                self.run(Command::GroupLayer, ui.ctx());
             }
         });
         let layer = &self.document.layers()[active];
@@ -335,9 +335,8 @@ impl OxideApp {
             None => {
                 let label = if self.document.selection().is_some() { "Add mask from selection" } else { "Add mask" };
                 if ui.button(format!("◐ {label}")).on_hover_text("Hide parts of this layer without erasing them: paint on the mask with dark to hide, light to reveal").clicked()
-                    && self.document.add_mask()
                 {
-                    self.editing_mask = true;
+                    self.run(Command::AddMask, ui.ctx());
                 }
             }
             Some(enabled) => {
@@ -352,10 +351,10 @@ impl OxideApp {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Apply").on_hover_text("Erase the hidden paint for good and remove the mask").clicked() {
-                        self.document.apply_mask();
+                        self.run(Command::ApplyMask, ui.ctx());
                     }
                     if ui.button("Delete").on_hover_text("Remove the mask (nothing is erased)").clicked() {
-                        self.document.delete_mask();
+                        self.run(Command::DeleteMask, ui.ctx());
                     }
                 });
             }
@@ -386,7 +385,7 @@ impl OxideApp {
                 self.document.set_group_opacity(group.id, opacity / 100.0);
             }
             if ui.button("Ungroup").on_hover_text("Dissolve the group; its layers stay (⇧⌥⌘G)").clicked() {
-                self.document.ungroup(group.id);
+                self.run(Command::Ungroup, ui.ctx());
             }
         }
 

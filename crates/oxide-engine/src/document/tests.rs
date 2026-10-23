@@ -19,6 +19,23 @@ fn new_document_shows_paper() {
 }
 
 #[test]
+fn average_sample_mixes_neighbors() {
+    let mut doc = Document::new(20, 20, Color::WHITE);
+    // Black on the left half, white paper on the right.
+    doc.active_canvas().set_pixels(
+        (0..20 * 20).map(|i| if i % 20 < 10 { [0.0, 0.0, 0.0, 1.0] } else { [0.0; 4] }).collect(),
+        None,
+    );
+    assert_eq!(doc.composite_average(9, 5, 1), doc.composite_pixel(9, 5), "size 1 is one pixel");
+    // 3x3 on the last black column (x = 9) covers x = 8..=10: 2 black, 1 white.
+    let c = doc.composite_average(9, 5, 3).unwrap();
+    assert!((c.r - 1.0 / 3.0).abs() < 1e-5, "2/3 black + 1/3 white, got {}", c.r);
+    // At the corner the square is cut off, not padded.
+    assert_eq!(doc.composite_average(0, 0, 5), Some(Color::BLACK));
+    assert_eq!(doc.composite_average(20, 0, 3), None, "outside the painting");
+}
+
+#[test]
 fn hidden_layer_does_not_show() {
     let mut doc = Document::new(20, 20, Color::WHITE);
     paint_dot(&mut doc, 10.0, 10.0, Color::BLACK);

@@ -119,6 +119,8 @@ impl OxideApp {
         paint_hatch(self.document.active_canvas(), &brush, DabMode::Paint, &lines, &self.hatch.settings, seed);
         self.document.end_stroke();
         self.document.seal_history();
+        let settings = self.hatch.settings;
+        self.with_recorder(|r, hand, doc| r.hatch(hand, doc, (&rails.0, &rails.1, rails.2.as_deref()), &settings, seed));
         self.remember_color(self.color);
         self.hatch.last = Some(LastHatch {
             rails,
@@ -194,6 +196,7 @@ impl OxideApp {
         }
         let last = self.hatch.last.take().expect("checked above");
         self.document.undo();
+        self.with_recorder(|r, _, _| r.take_back_hatch());
         self.paint_hatch_now(last.rails, last.seed);
     }
 
@@ -284,6 +287,7 @@ impl OxideApp {
                 if ui.button("✖ Remove hatch").on_hover_text("Take back the hatch you just drew (like Undo)").clicked() {
                     self.hatch.last = None;
                     self.document.undo();
+                    self.with_recorder(|r, _, _| r.take_back_hatch());
                 }
             });
         }

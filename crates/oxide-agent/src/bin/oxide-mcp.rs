@@ -96,6 +96,11 @@ impl OxideServer {
         run(&self.session, Command::ListPigments(NoArgs {}))
     }
 
+    #[tool(description = "List every brush in the app (built-in and saved): name, group and shape settings. Select one with set_brush preset.")]
+    async fn list_brushes(&self) -> Result<CallToolResult, McpError> {
+        run(&self.session, Command::ListBrushes(NoArgs {}))
+    }
+
     #[tool(description = "Set the paint color by hex or pigment name. Cleans a dirty brush.")]
     async fn set_color(&self, Parameters(a): Parameters<SetColorArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetColor(a))
@@ -111,7 +116,7 @@ impl OxideServer {
         run(&self.session, Command::SetPaintMode(a))
     }
 
-    #[tool(description = "Change brush settings (size, opacity, loading, length, oiliness, shape, texture, pressure response).")]
+    #[tool(description = "Change brush settings (a named preset from list_brushes, size, opacity, loading, length, oiliness, shape, texture, pressure response).")]
     async fn set_brush(&self, Parameters(a): Parameters<SetBrushArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetBrush(a))
     }
