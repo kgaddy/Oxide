@@ -38,12 +38,12 @@ impl OxideApp {
     fn tools_section(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             for tool in Tool::ALL {
-                ui.selectable_value(&mut self.tool, tool, tool.label())
+                ui.selectable_value(&mut self.tool, tool, icon_text(tool_icon(tool)))
                     .on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()));
             }
             for name in FUTURE_TOOLS {
-                ui.add_enabled(false, egui::Button::new(name))
-                    .on_disabled_hover_text("Coming later");
+                ui.add_enabled(false, egui::Button::new(icon_text(future_tool_icon(name))))
+                    .on_disabled_hover_text(format!("{name} (coming later)"));
             }
         });
     }
@@ -630,4 +630,38 @@ fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) 
             }
         }
     });
+}
+
+/// A tool button's icon, a little larger than the text so it reads at a glance.
+fn icon_text(icon: &str) -> egui::RichText {
+    egui::RichText::new(icon).size(18.0)
+}
+
+/// The Phosphor icon on each tool's button (the name is in its tooltip).
+fn tool_icon(tool: Tool) -> &'static str {
+    use egui_phosphor::regular as icon;
+    match tool {
+        Tool::OilsAcrylics => icon::PAINT_BRUSH_BROAD,
+        Tool::Ink => icon::PEN_NIB,
+        Tool::Pencil => icon::PENCIL_SIMPLE,
+        Tool::Marker => icon::HIGHLIGHTER,
+        Tool::Airbrush => icon::SPRAY_BOTTLE,
+        Tool::Eraser => icon::ERASER,
+        Tool::Smudge => icon::HAND_POINTING,
+        Tool::Knife => icon::KNIFE,
+        Tool::Hatch => icon::HASH,
+        Tool::Select => icon::SELECTION,
+        Tool::Picker => icon::EYEDROPPER,
+    }
+}
+
+/// Icons for the tools in [`FUTURE_TOOLS`].
+fn future_tool_icon(name: &str) -> &'static str {
+    use egui_phosphor::regular as icon;
+    match name {
+        "Pastel" => icon::SCRIBBLE,
+        "Blend" => icon::DROP_HALF,
+        "Fill" => icon::PAINT_BUCKET,
+        _ => icon::QUESTION,
+    }
 }

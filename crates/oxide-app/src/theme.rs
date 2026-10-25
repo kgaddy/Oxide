@@ -407,6 +407,8 @@ fn set_fonts(ctx: &egui::Context, font: &Font) {
         let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
         fonts.families.insert(FontFamily::Name(HEADING.into()), proportional);
     }
+    // Phosphor icons (tool buttons), as a fallback behind the text font.
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
 }
 
