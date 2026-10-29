@@ -137,6 +137,8 @@ pub struct AppSettings {
     pub picker_sample: usize,
     /// The UI theme's name (View → Theme).
     pub theme: String,
+    /// Which sections are in each side panel, in order (drag their titles).
+    pub panels: crate::panel_layout::PanelLayout,
 }
 
 impl Default for AppSettings {
@@ -161,6 +163,7 @@ impl Default for AppSettings {
             ryb_wheel: false,
             picker_sample: 1,
             theme: crate::theme::DEFAULT_THEME.into(),
+            panels: crate::panel_layout::PanelLayout::default(),
         }
     }
 }
@@ -168,10 +171,12 @@ impl Default for AppSettings {
 impl AppSettings {
     /// Load saved settings, or defaults if there are none (or they can't be read).
     pub fn load() -> Self {
-        settings_path()
+        let mut settings: AppSettings = settings_path()
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.panels.repair();
+        settings
     }
 
     pub fn save(&self) -> Result<(), String> {

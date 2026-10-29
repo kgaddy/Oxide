@@ -186,8 +186,9 @@ impl OxideApp {
             Menu {
                 title: "Window",
                 entries: vec![
-                    check("Tools & Brushes (left)", ToggleLeft, self.show_left, true),
-                    check("Navigator, Color & Layers (right)", ToggleRight, self.show_right, true),
+                    check("Left Panel", ToggleLeft, self.show_left, true),
+                    check("Right Panel", ToggleRight, self.show_right, true),
+                    item("Reset Panel Layout", ResetPanels),
                     Entry::Separator,
                     check("Mixing Palette", MixingPalette, self.mixing_palette.open, true),
                     check("Reference Image", ToggleReference, self.reference.open, true),

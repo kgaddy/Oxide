@@ -25,6 +25,7 @@ use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use eframe::egui::ecolor::{hsv_from_rgb, rgb_from_hsv};
 use oxide_engine::{Brush, Color, Document, Mixing, PaintMode, PaperKind, PaperSettings, Stroke};
 
+use crate::panel_layout::Side;
 use crate::presets::PresetLibrary;
 use crate::pen::{PenInput, apply_curve};
 use crate::settings::AppSettings;
@@ -117,6 +118,8 @@ pub struct OxideApp {
     cursor_dir: Option<(f32, f32)>,
     show_left: bool,
     show_right: bool,
+    /// Where the side panels' sections were drawn this frame (for drag and drop).
+    dock_frame: panels::DockFrame,
     /// The layer name being typed in the Layers panel (committed on Enter).
     renaming: Option<String>,
     /// A layer being renamed right in the list (double-click): its index,
@@ -257,6 +260,8 @@ enum Command {
     NaturalColors,
     ToggleLeft,
     ToggleRight,
+    /// Window → Reset Panel Layout: every section back where it started.
+    ResetPanels,
     ToggleReference,
     ToggleBrushCreator,
     TogglePenSettings,
@@ -298,7 +303,7 @@ impl Command {
         matches!(
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
-                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
+                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
                 | Theme(_) | OpenThemesFolder | ReloadThemes | Record
         )
     }
@@ -394,6 +399,7 @@ impl OxideApp {
             cursor_dir: None,
             show_left: true,
             show_right: true,
+            dock_frame: panels::DockFrame::default(),
             renaming: None,
             renaming_row: None,
             pick_return: None,
@@ -710,6 +716,10 @@ impl OxideApp {
             }
             Command::ToggleLeft => self.show_left = !self.show_left,
             Command::ToggleRight => self.show_right = !self.show_right,
+            Command::ResetPanels => {
+                self.app_settings.panels = Default::default();
+                self.save_app_settings();
+            }
             Command::ToggleReference => {
                 self.reference.open = !self.reference.open;
                 self.app_settings.reference_open = self.reference.open;
@@ -1170,14 +1180,15 @@ impl eframe::App for OxideApp {
             egui::Panel::left("left_panel")
                 .default_size(250.0)
                 .min_size(200.0)
-                .show(ui, |ui| self.left_panel(ui));
+                .show(ui, |ui| self.side_panel(ui, Side::Left));
         }
         if self.show_right {
             egui::Panel::right("right_panel")
                 .default_size(270.0)
                 .min_size(220.0)
-                .show(ui, |ui| self.right_panel(ui));
+                .show(ui, |ui| self.side_panel(ui, Side::Right));
         }
+        self.section_drop(&ctx);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(self.themes.theme.colors.workspace))

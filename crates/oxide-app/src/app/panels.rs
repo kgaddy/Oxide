@@ -1,38 +1,138 @@
-//! The side panels: Tools, Properties, Brush presets (left) and
-//! Navigator, Color, Layers (right).
+//! The side panels, each a column of sections (Tools, Properties, Brush
+//! presets, Navigator, Color, Wet Media, Layers, Paper). Drag a section's
+//! title to move it up or down, or over to the other side.
 
-use eframe::egui::{self, CollapsingHeader, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
+use eframe::egui::{self, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
+use eframe::egui::collapsing_header::{CollapsingState, paint_default_icon};
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
 use super::{Command, OxideApp, to_color32};
 use crate::color_wheel::color_wheel;
+use crate::panel_layout::{Section, Side};
 use crate::presets::{THUMB_H, THUMB_W};
 use crate::tools::{FUTURE_TOOLS, SWATCHES, Tool};
 
+/// Where the sections and columns were drawn this frame, for dropping a
+/// dragged section (see [`OxideApp::section_drop`]).
+#[derive(Default)]
+pub(super) struct DockFrame {
+    /// Each section drawn, top to bottom per side.
+    sections: Vec<(Side, Section, Rect)>,
+    columns: Vec<(Side, Rect)>,
+}
+
 impl OxideApp {
-    pub(super) fn left_panel(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui, side: Side) {
+        self.dock_frame.columns.push((side, ui.max_rect()));
         // Don't shrink to the content: lay everything out to the panel's width.
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            CollapsingHeader::new("Tools").default_open(true).show(ui, |ui| self.tools_section(ui));
-            self.current_brush_label(ui);
-            CollapsingHeader::new("Properties").default_open(true).show(ui, |ui| self.properties_section(ui));
-            CollapsingHeader::new("Brush presets").default_open(true).show(ui, |ui| {
-                ui.weak(format!("Shapes for {}", self.tool.label()));
-                self.presets_section(ui);
-            });
+            for section in self.app_settings.panels.side(side).to_vec() {
+                let rect = self.section(ui, section);
+                self.dock_frame.sections.push((side, section, rect));
+            }
         });
     }
 
-    pub(super) fn right_panel(&mut self, ui: &mut egui::Ui) {
-        // Don't shrink to the content: lay everything out to the panel's width.
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            CollapsingHeader::new("Navigator").default_open(true).show(ui, |ui| self.navigator_section(ui));
-            CollapsingHeader::new("Color").default_open(true).show(ui, |ui| self.color_section(ui));
-            CollapsingHeader::new("Wet Media").default_open(true).show(ui, |ui| self.wet_media_section(ui));
-            CollapsingHeader::new("Layers").default_open(true).show(ui, |ui| self.layers_section(ui));
-            CollapsingHeader::new("Paper").default_open(true).show(ui, |ui| self.paper_section(ui));
+    /// One section: a fold arrow and a title you can click (to fold it) or
+    /// drag (to move it), then its contents.
+    fn section(&mut self, ui: &mut egui::Ui, section: Section) -> Rect {
+        // Keyed by the section alone, so it stays folded or open when moved.
+        let id = egui::Id::new(("panel-section", section));
+        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        ui.scope(|ui| {
+            let header = ui.horizontal(|ui| {
+                state.show_toggle_button(ui, paint_default_icon);
+                let title = ui.add(egui::Label::new(section.title()).selectable(false));
+                let handle = egui::RichText::new(egui_phosphor::regular::DOTS_SIX_VERTICAL).weak();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.add(egui::Label::new(handle).selectable(false)));
+                let grab = Rect::from_min_max(title.rect.left_top(), egui::pos2(ui.max_rect().right(), title.rect.bottom()));
+                ui.interact(grab, id.with("grab"), Sense::click_and_drag())
+                    .on_hover_cursor(egui::CursorIcon::Grab)
+                    .on_hover_text("Drag to move this section (to the other side, too); click to fold it")
+            });
+            let grab = header.inner;
+            if grab.clicked() {
+                state.toggle(ui);
+            }
+            if grab.drag_started() {
+                egui::DragAndDrop::set_payload(ui.ctx(), section);
+            }
+            state.show_body_indented(&header.response, ui, |ui| self.section_contents(ui, section));
+        })
+        .response
+        .rect
+    }
+
+    fn section_contents(&mut self, ui: &mut egui::Ui, section: Section) {
+        match section {
+            Section::Tools => self.tools_section(ui),
+            Section::Properties => {
+                self.current_brush_label(ui);
+                self.properties_section(ui);
+            }
+            Section::BrushPresets => {
+                ui.weak(format!("Shapes for {}", self.tool.label()));
+                self.presets_section(ui);
+            }
+            Section::Navigator => self.navigator_section(ui),
+            Section::Color => self.color_section(ui),
+            Section::WetMedia => self.wet_media_section(ui),
+            Section::Layers => self.layers_section(ui),
+            Section::Paper => self.paper_section(ui),
+        }
+    }
+
+    /// While a section is dragged: show where it would land, and move it there
+    /// when the mouse is let go. Called after both side panels are drawn.
+    pub(super) fn section_drop(&mut self, ctx: &egui::Context) {
+        let frame = std::mem::take(&mut self.dock_frame);
+        let Some(dragged) = egui::DragAndDrop::payload::<Section>(ctx).map(|s| *s) else { return };
+        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        // The column under the pointer, and the gap between sections nearest it.
+        let target = frame.columns.iter().find(|(_, r)| r.contains(pos)).map(|&(side, column)| {
+            let rects: Vec<Rect> = frame.sections.iter().filter(|(s, ..)| *s == side).map(|(.., r)| *r).collect();
+            let index = rects.iter().filter(|r| r.center().y < pos.y).count();
+            let y = match (index.checked_sub(1).map(|i| rects[i]), rects.get(index)) {
+                (Some(above), Some(below)) => (above.bottom() + below.top()) / 2.0,
+                (Some(above), None) => above.bottom() + 2.0,
+                (None, Some(below)) => below.top() - 2.0,
+                (None, None) => column.top() + 4.0,
+            };
+            (side, index, column, y.clamp(column.top() + 1.0, column.bottom() - 1.0))
         });
+
+        if ctx.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ctx);
+            if let Some((side, index, ..)) = target
+                && self.app_settings.panels.move_section(dragged, side, index)
+            {
+                self.save_app_settings();
+            }
+            return;
+        }
+
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("section-drop")));
+        let accent = ctx.global_style().visuals.selection.bg_fill;
+        // Dim the section being moved, where it is now.
+        if let Some(&(side, _, rect)) = frame.sections.iter().find(|(_, s, _)| *s == dragged)
+            && let Some(&(_, column)) = frame.columns.iter().find(|(s, _)| *s == side)
+        {
+            painter.with_clip_rect(column).rect_filled(rect, 3.0, accent.gamma_multiply(0.15));
+        }
+        if let Some((_, _, column, y)) = target {
+            let line = Rect::from_x_y_ranges(column.x_range().shrink(4.0), (y - 1.5)..=(y + 1.5));
+            painter.rect_filled(line, 1.5, accent);
+        }
+        // The title, following the pointer.
+        let font = egui::TextStyle::Button.resolve(&ctx.global_style());
+        let text = ctx.global_style().visuals.strong_text_color();
+        let galley = painter.layout_no_wrap(dragged.title().to_string(), font, text);
+        let ghost = Rect::from_min_size(pos + Vec2::new(12.0, 4.0), galley.size()).expand2(Vec2::new(8.0, 4.0));
+        let ghost_painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("section-drag")));
+        ghost_painter.rect(ghost, 4.0, ctx.global_style().visuals.window_fill, LineStroke::new(1.0, accent), StrokeKind::Inside);
+        ghost_painter.galley(ghost.min + Vec2::new(8.0, 4.0), galley, text);
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     }
 
     fn tools_section(&mut self, ui: &mut egui::Ui) {

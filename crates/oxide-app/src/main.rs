@@ -5,6 +5,7 @@ mod app;
 use oxide_commands::{export, tools};
 mod color_wheel;
 mod palette_library;
+mod panel_layout;
 mod open_files;
 mod pen;
 mod presets;
