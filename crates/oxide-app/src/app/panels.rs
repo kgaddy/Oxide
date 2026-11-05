@@ -11,7 +11,7 @@ use super::{Command, OxideApp, to_color32};
 use crate::color_wheel::color_wheel;
 use crate::panel_layout::{Section, Side};
 use crate::presets::{THUMB_H, THUMB_W};
-use crate::tools::{FUTURE_TOOLS, SWATCHES, Tool};
+use crate::tools::{BrushShape, FUTURE_TOOLS, SWATCHES, Tool, ToolState};
 
 /// Where the sections and columns were drawn this frame, for dropping a
 /// dragged section (see [`OxideApp::section_drop`]).
@@ -39,14 +39,34 @@ impl OxideApp {
     fn section(&mut self, ui: &mut egui::Ui, section: Section) -> Rect {
         // Keyed by the section alone, so it stays folded or open when moved.
         let id = egui::Id::new(("panel-section", section));
-        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, true);
-        ui.scope(|ui| {
+        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, !self.app_settings.panels.is_folded(section));
+        let was_open = state.is_open();
+        // The Quick section says whose items it's showing.
+        let title = match section {
+            Section::Quick => format!("Quick · {}", self.tool.label()),
+            _ => section.title().to_string(),
+        };
+        let rect = ui.scope(|ui| {
             let header = ui.horizontal(|ui| {
                 state.show_toggle_button(ui, paint_default_icon);
-                let title = ui.add(egui::Label::new(section.title()).selectable(false));
+                let title = ui.add(egui::Label::new(title).selectable(false));
                 let handle = egui::RichText::new(egui_phosphor::regular::DOTS_SIX_VERTICAL).weak();
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.add(egui::Label::new(handle).selectable(false)));
-                let grab = Rect::from_min_max(title.rect.left_top(), egui::pos2(ui.max_rect().right(), title.rect.bottom()));
+                // The grip, and for Quick an Edit button, at the right; the
+                // title is draggable up to them (so the button stays clickable).
+                let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(handle).selectable(false));
+                    if section == Section::Quick {
+                        let editing = self.quick_editing;
+                        let text = if editing { "Done".to_string() } else { format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE) };
+                        let hint = format!("Choose what's in the Quick section for {}", self.tool.label());
+                        if ui.add(egui::Button::new(text).small().selected(editing)).on_hover_text(hint).clicked() {
+                            self.quick_editing = !editing;
+                            state.set_open(true);
+                        }
+                    }
+                    ui.min_rect().left()
+                });
+                let grab = Rect::from_min_max(title.rect.left_top(), egui::pos2(right.inner - 2.0, title.rect.bottom()));
                 ui.interact(grab, id.with("grab"), Sense::click_and_drag())
                     .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_hover_text("Drag to move this section (to the other side, too); click to fold it")
@@ -58,15 +78,22 @@ impl OxideApp {
             if grab.drag_started() {
                 egui::DragAndDrop::set_payload(ui.ctx(), section);
             }
+            let open = state.is_open();
             state.show_body_indented(&header.response, ui, |ui| self.section_contents(ui, section));
-        })
-        .response
-        .rect
+            open
+        });
+        // Remember folding between runs.
+        if rect.inner != was_open {
+            self.app_settings.panels.set_folded(section, !rect.inner);
+            self.save_app_settings();
+        }
+        rect.response.rect
     }
 
     fn section_contents(&mut self, ui: &mut egui::Ui, section: Section) {
         match section {
             Section::Tools => self.tools_section(ui),
+            Section::Quick => self.quick_section(ui),
             Section::Properties => {
                 self.current_brush_label(ui);
                 self.properties_section(ui);
@@ -160,21 +187,7 @@ impl OxideApp {
         });
         if tool == Tool::Picker {
             ui.weak("Click the canvas to pick a color. (With any tool, hold ⌥ and click.)");
-            let label = |n: usize| if n == 1 { "Point".to_string() } else { format!("{n} x {n} average") };
-            let old = self.app_settings.picker_sample;
-            ui.horizontal(|ui| {
-                ui.label("Sample size:");
-                egui::ComboBox::from_id_salt("picker-sample").selected_text(label(old)).show_ui(ui, |ui| {
-                    for n in [1, 3, 5, 11, 31] {
-                        ui.selectable_value(&mut self.app_settings.picker_sample, n, label(n));
-                    }
-                });
-            })
-            .response
-            .on_hover_text("Average the pixels in a square around the cursor, so one brush streak or speck doesn't decide the color");
-            if self.app_settings.picker_sample != old {
-                self.save_app_settings();
-            }
+            self.picker_sample(ui);
             return;
         }
         if tool == Tool::Select {
@@ -193,16 +206,8 @@ impl OxideApp {
         }
 
         let state = &mut self.tool_states[tool.index()];
-        ui.add(egui::Slider::new(&mut state.shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
-        match tool {
-            Tool::Smudge => {
-                ui.add(egui::Slider::new(&mut state.oiliness, 0.05..=1.0).text("Strength"))
-                    .on_hover_text("How far the smudge drags the paint");
-            }
-            _ => {
-                ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
-            }
-        }
+        size_slider(ui, state);
+        opacity_slider(ui, tool, state);
         if tool == Tool::Hatch {
             taper_slider(ui, &mut state.shape);
         } else if tool.paints() || tool == Tool::Eraser {
@@ -222,10 +227,59 @@ impl OxideApp {
     /// checkboxes) at the top, then all the sliders together.
     fn wet_media_properties(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        let mut clicked_mode = None;
-        let state = &mut self.tool_states[tool.index()];
 
         // ----- Choices -----
+        self.paint_mode_buttons(ui);
+        taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape);
+        self.dirty_brush_row(ui);
+        let mut off = false;
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
+            .on_disabled_hover_text("Load several colors on the brush: coming later");
+
+        // ----- Sliders -----
+        ui.add_space(4.0);
+        let state = &mut self.tool_states[tool.index()];
+        size_slider(ui, state);
+        opacity_slider(ui, tool, state);
+        taper_slider(ui, &mut state.shape);
+        // Combined Oils & Acrylics: oiliness is what makes it
+        // behave more like oil (blends, drags) or acrylic (covers).
+        loading_slider(ui, state);
+        length_slider(ui, state);
+        oiliness_slider(ui, state);
+        thickness_slider(ui, state);
+        let mut placeholder = 0.0;
+        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Impasto depth"))
+            .on_disabled_hover_text("Paint thickness: coming with impasto (milestone 6)");
+        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Gloss"))
+            .on_disabled_hover_text("Shine on thick paint: coming with impasto (milestone 6)");
+        self.mouse_pressure_slider(ui);
+    }
+
+    /// Picker: how many pixels it averages.
+    pub(super) fn picker_sample(&mut self, ui: &mut egui::Ui) {
+        let label = |n: usize| if n == 1 { "Point".to_string() } else { format!("{n} x {n} average") };
+        let old = self.app_settings.picker_sample;
+        ui.horizontal(|ui| {
+            ui.label("Sample size:");
+            egui::ComboBox::from_id_salt("picker-sample").selected_text(label(old)).show_ui(ui, |ui| {
+                for n in [1, 3, 5, 11, 31] {
+                    ui.selectable_value(&mut self.app_settings.picker_sample, n, label(n));
+                }
+            });
+        })
+        .response
+        .on_hover_text("Average the pixels in a square around the cursor, so one brush streak or speck doesn't decide the color");
+        if self.app_settings.picker_sample != old {
+            self.save_app_settings();
+        }
+    }
+
+    /// Oils: the paint modes (keys 1–5). Knife: Spread or Scrape.
+    pub(super) fn paint_mode_buttons(&mut self, ui: &mut egui::Ui) {
+        let tool = self.tool;
+        let mut clicked_mode = None;
+        let state = &mut self.tool_states[tool.index()];
         if tool == Tool::Knife {
             // The knife's two jobs instead of paint modes.
             ui.horizontal(|ui| {
@@ -256,7 +310,13 @@ impl OxideApp {
                 }
             });
         }
-        taper_ends_controls(ui, &mut state.shape);
+        if let Some(mode) = clicked_mode {
+            self.set_paint_mode(mode);
+        }
+    }
+
+    /// Dirty brush, with the paint left on it and a Clean button.
+    pub(super) fn dirty_brush_row(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
                 .checkbox(&mut self.dirty_brush, "Dirty brush")
@@ -274,39 +334,9 @@ impl OxideApp {
                 }
             }
         });
-        let mut off = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
-            .on_disabled_hover_text("Load several colors on the brush: coming later");
-
-        // ----- Sliders -----
-        ui.add_space(4.0);
-        let state = &mut self.tool_states[tool.index()];
-        ui.add(egui::Slider::new(&mut state.shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
-        ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
-        taper_slider(ui, &mut state.shape);
-        // Combined Oils & Acrylics: oiliness is what makes it
-        // behave more like oil (blends, drags) or acrylic (covers).
-        ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
-            .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
-        ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
-            .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
-        ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
-            .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
-        ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
-            .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
-        let mut placeholder = 0.0;
-        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Impasto depth"))
-            .on_disabled_hover_text("Paint thickness: coming with impasto (milestone 6)");
-        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Gloss"))
-            .on_disabled_hover_text("Shine on thick paint: coming with impasto (milestone 6)");
-        self.mouse_pressure_slider(ui);
-
-        if let Some(mode) = clicked_mode {
-            self.set_paint_mode(mode);
-        }
     }
 
-    fn mouse_pressure_slider(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn mouse_pressure_slider(&mut self, ui: &mut egui::Ui) {
         ui.add(egui::Slider::new(&mut self.mouse_pressure, 0.05..=1.0).text("Pressure"))
             .on_hover_text("Pressure used when painting with a mouse (the pen uses its real pressure)");
     }
@@ -521,8 +551,23 @@ impl OxideApp {
     }
 
     fn color_section(&mut self, ui: &mut egui::Ui) {
-        // Primary and secondary color: the big swatch is what
-        // you paint with; click the small one (or ⌘\\) to swap them.
+        self.current_colors(ui);
+        self.wheel(ui);
+        self.rgb_sliders(ui);
+        ui.add_space(6.0);
+        ui.label("Pigments");
+        self.pigment_swatches(ui);
+        self.recent_swatches(ui);
+        ui.add_space(6.0);
+        self.multicolor_controls(ui);
+        if self.mix_key {
+            ui.colored_label(ui.visuals().warn_fg_color, "Mix Color: picked colors mix into the current one");
+        }
+    }
+
+    /// Primary and secondary color: the big swatch is what you paint with;
+    /// click the small one (or ⌘\\) to swap them. Then the wheel's RYB/HSV.
+    pub(super) fn current_colors(&mut self, ui: &mut egui::Ui) {
         let mut swap = false;
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 44.0), Sense::hover());
@@ -559,7 +604,9 @@ impl OxideApp {
         if swap {
             self.swap_colors();
         }
+    }
 
+    pub(super) fn wheel(&mut self, ui: &mut egui::Ui) {
         let diameter = ui.available_width().min(220.0);
         let mut hsv = self.hsv;
         let ryb = self.app_settings.ryb_wheel;
@@ -568,8 +615,10 @@ impl OxideApp {
                 self.set_hsv(hsv);
             }
         });
+    }
 
-        // RGB sliders (0-255), like most paint apps.
+    /// RGB sliders (0-255), like most paint apps.
+    pub(super) fn rgb_sliders(&mut self, ui: &mut egui::Ui) {
         let mut rgb = [self.color.r, self.color.g, self.color.b].map(|v| (v * 255.0).round());
         let mut changed = false;
         for (value, name) in rgb.iter_mut().zip(["R", "G", "B"]) {
@@ -578,35 +627,55 @@ impl OxideApp {
         if changed {
             self.set_color(Color::rgb(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0));
         }
+    }
 
-        ui.add_space(6.0);
-        ui.label("Pigments");
-        let mut picked = None;
-        // ⌥-click a swatch: load it onto the MultiColored brush instead.
-        let mut load = None;
-        let alt = ui.input(|i| i.modifiers.alt);
+    pub(super) fn pigment_swatches(&mut self, ui: &mut egui::Ui) {
+        let mut clicked = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(3.0);
             for (name, color) in SWATCHES {
                 if swatch(ui, color).on_hover_text(format!("{name}\n⌥-click: add to the MultiColored brush")).clicked() {
-                    if alt { load = Some(color) } else { picked = Some(color) }
+                    clicked = Some(color);
                 }
             }
         });
-        if !self.recent_colors.is_empty() {
-            ui.label("Recent");
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::splat(3.0);
-                for &color in &self.recent_colors {
-                    if swatch(ui, color).clicked() {
-                        if alt { load = Some(color) } else { picked = Some(color) }
-                    }
-                }
-            });
-        }
+        self.swatch_clicked(clicked, ui);
+    }
 
-        // MultiColored brush (⌥M): several colors loaded side by side.
-        ui.add_space(6.0);
+    /// The last colors used, under a "Recent" label (nothing until there are some).
+    pub(super) fn recent_swatches(&mut self, ui: &mut egui::Ui) {
+        if self.recent_colors.is_empty() {
+            return;
+        }
+        let mut clicked = None;
+        ui.label("Recent");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(3.0);
+            for &color in &self.recent_colors {
+                if swatch(ui, color).clicked() {
+                    clicked = Some(color);
+                }
+            }
+        });
+        self.swatch_clicked(clicked, ui);
+    }
+
+    /// Paint with a clicked swatch, or ⌥-click: load it onto the MultiColored brush.
+    fn swatch_clicked(&mut self, color: Option<Color>, ui: &egui::Ui) {
+        let Some(color) = color else { return };
+        if ui.input(|i| i.modifiers.alt) {
+            self.add_multicolor(color);
+        } else {
+            self.pick_color(color);
+            if !self.tool.paints() {
+                self.tool = Tool::OilsAcrylics;
+            }
+        }
+    }
+
+    /// MultiColored brush (⌥M): several colors loaded side by side.
+    pub(super) fn multicolor_controls(&mut self, ui: &mut egui::Ui) {
+        let mut load = None;
         let mut on = self.multicolor_on;
         if ui
             .checkbox(&mut on, "MultiColored brush   ⌥M")
@@ -643,15 +712,6 @@ impl OxideApp {
         if let Some(color) = load {
             self.add_multicolor(color);
         }
-        if self.mix_key {
-            ui.colored_label(ui.visuals().warn_fg_color, "Mix Color: picked colors mix into the current one");
-        }
-        if let Some(color) = picked {
-            self.pick_color(color);
-            if !self.tool.paints() {
-                self.tool = Tool::OilsAcrylics;
-            }
-        }
     }
 }
 
@@ -660,8 +720,19 @@ impl OxideApp {
     fn wet_media_section(&mut self, ui: &mut egui::Ui) {
         let active = self.document.active_index();
         let wet_here = self.document.layers()[active].canvas.has_wet_paint();
-        let wet_anywhere = self.document.layers().iter().any(|l| l.canvas.has_wet_paint());
         ui.label(if wet_here { "This layer has wet paint." } else { "This layer is dry." });
+        self.dry_buttons(ui);
+        let mut show = self.document.show_wet();
+        if ui.checkbox(&mut show, "Show wet paint").on_hover_text("Tint wet areas blue").changed() {
+            self.document.set_show_wet(show);
+        }
+    }
+
+    /// Dry layer, Dry all, Rewet.
+    pub(super) fn dry_buttons(&mut self, ui: &mut egui::Ui) {
+        let active = self.document.active_index();
+        let wet_here = self.document.layers()[active].canvas.has_wet_paint();
+        let wet_anywhere = self.document.layers().iter().any(|l| l.canvas.has_wet_paint());
         ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(wet_here, egui::Button::new("Dry layer")).on_hover_text("Lock the paint in (⌘D)").clicked() {
                 self.run(Command::DryLayer, ui.ctx());
@@ -673,10 +744,6 @@ impl OxideApp {
                 self.run(Command::RewetLayer, ui.ctx());
             }
         });
-        let mut show = self.document.show_wet();
-        if ui.checkbox(&mut show, "Show wet paint").on_hover_text("Tint wet areas blue").changed() {
-            self.document.set_show_wet(show);
-        }
     }
 }
 
@@ -693,6 +760,62 @@ fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
     response
 }
 
+// The tool sliders, shared by Properties, the Quick section and Settings.
+
+pub(super) fn size_slider(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.add(egui::Slider::new(&mut state.shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
+}
+
+/// Opacity, or Strength for Smudge (kept in `oiliness`).
+pub(super) fn opacity_slider(ui: &mut egui::Ui, tool: Tool, state: &mut ToolState) {
+    if tool == Tool::Smudge {
+        ui.add(egui::Slider::new(&mut state.oiliness, 0.05..=1.0).text("Strength")).on_hover_text("How far the smudge drags the paint");
+    } else {
+        ui.add(egui::Slider::new(&mut state.opacity, 0.01..=1.0).text("Opacity"));
+    }
+}
+
+pub(super) fn loading_slider(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
+        .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
+}
+
+pub(super) fn length_slider(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
+        .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
+}
+
+pub(super) fn oiliness_slider(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
+        .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
+}
+
+pub(super) fn thickness_slider(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
+        .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
+}
+
+/// A drop-down of every brush preset, by group. Picking one sets `shape`
+/// (size too, as in Brush presets) and `brush` to its name.
+pub(super) fn brush_combo(ui: &mut egui::Ui, id: &str, presets: &crate::presets::PresetLibrary, shape: &mut BrushShape, brush: &mut Option<String>) {
+    let picked = brush.clone().unwrap_or_else(|| "Custom brush".into());
+    ui.horizontal(|ui| {
+        ui.label("Brush");
+        egui::ComboBox::from_id_salt(id).selected_text(picked).width(ui.available_width()).height(400.0).show_ui(ui, |ui| {
+            for group in presets.groups() {
+                ui.weak(&group);
+                for entry in presets.entries.iter().filter(|e| e.group() == group) {
+                    let name = &entry.preset.name;
+                    if ui.selectable_label(brush.as_deref() == Some(name.as_str()), name).clicked() {
+                        *shape = entry.preset.apply_to(shape);
+                        *brush = Some(name.clone());
+                    }
+                }
+            }
+        });
+    });
+}
+
 /// The Taper slider, and which ends it points (Properties and Brush Creator).
 pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
     taper_slider(ui, shape);
@@ -700,7 +823,7 @@ pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushS
 }
 
 /// Just the Taper slider (Hatch shows the ends choice at the top instead).
-fn taper_slider(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
+pub(super) fn taper_slider(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
     ui.add(egui::Slider::new(&mut shape.taper, 0.0..=1.0).text("Taper"))
         .on_hover_text("Strokes come to a clean point, like an engraved line, even with a mouse (0 = off)");
 }
@@ -733,12 +856,12 @@ fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) 
 }
 
 /// A tool button's icon, a little larger than the text so it reads at a glance.
-fn icon_text(icon: &str) -> egui::RichText {
+pub(super) fn icon_text(icon: &str) -> egui::RichText {
     egui::RichText::new(icon).size(18.0)
 }
 
 /// The Phosphor icon on each tool's button (the name is in its tooltip).
-fn tool_icon(tool: Tool) -> &'static str {
+pub(super) fn tool_icon(tool: Tool) -> &'static str {
     use egui_phosphor::regular as icon;
     match tool {
         Tool::OilsAcrylics => icon::PAINT_BRUSH_BROAD,

@@ -5,8 +5,12 @@
 use std::fs;
 use std::path::PathBuf;
 
-use oxide_engine::PaperSettings;
+use oxide_commands::presets::BrushPreset;
+use oxide_engine::{PaintMode, PaperSettings};
 use serde::{Deserialize, Serialize};
+
+use crate::quick_panel::QuickItem;
+use crate::tools::{Tool, ToolState};
 
 const MAX_RECENT: usize = 10;
 
@@ -139,6 +143,60 @@ pub struct AppSettings {
     pub theme: String,
     /// Which sections are in each side panel, in order (drag their titles).
     pub panels: crate::panel_layout::PanelLayout,
+    /// What tools start with when Oxide opens (Settings → Tools), by tool
+    /// name. Tools not listed start with their built-in values.
+    pub tool_starts: std::collections::BTreeMap<String, ToolStart>,
+    /// What the Quick section shows for each tool, by tool name. Tools not
+    /// listed show their default items.
+    pub quick_items: std::collections::BTreeMap<String, Vec<QuickItem>>,
+}
+
+/// A tool's starting values: its brush and medium settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolStart {
+    /// The brush preset it starts with (shown as "Brush …" in Properties).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<String>,
+    pub opacity: f32,
+    pub loading: f32,
+    pub oiliness: f32,
+    pub length: f32,
+    pub thickness: f32,
+    pub paint_mode: PaintMode,
+    #[serde(default)]
+    pub scrape: bool,
+    /// The brush shape (size, hardness, taper, pressure response, …).
+    pub shape: BrushPreset,
+}
+
+impl ToolStart {
+    pub fn new(state: &ToolState, brush: Option<String>) -> Self {
+        ToolStart {
+            brush,
+            opacity: state.opacity,
+            loading: state.loading,
+            oiliness: state.oiliness,
+            length: state.length,
+            thickness: state.thickness,
+            paint_mode: state.paint_mode,
+            scrape: state.scrape,
+            shape: BrushPreset::from_shape("", "", &state.shape),
+        }
+    }
+
+    pub fn state(&self) -> ToolState {
+        ToolState {
+            shape: self.shape.shape(),
+            opacity: self.opacity,
+            loading: self.loading,
+            oiliness: self.oiliness,
+            length: self.length,
+            paint_mode: self.paint_mode,
+            erase: false,
+            thickness: self.thickness,
+            scrape: self.scrape,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -164,6 +222,8 @@ impl Default for AppSettings {
             picker_sample: 1,
             theme: crate::theme::DEFAULT_THEME.into(),
             panels: crate::panel_layout::PanelLayout::default(),
+            tool_starts: std::collections::BTreeMap::new(),
+            quick_items: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -205,6 +265,38 @@ impl AppSettings {
         } else {
             self.favorite_sizes.push(name.to_string());
         }
+    }
+
+    /// What `tool` starts with: your saved values, or the built-in ones.
+    pub fn tool_start(&self, tool: Tool) -> (ToolState, Option<String>) {
+        match self.tool_starts.get(tool.label()) {
+            Some(start) => (start.state(), start.brush.clone()),
+            None => (tool.default_state(), None),
+        }
+    }
+
+    /// The Quick section's items for `tool`, top to bottom.
+    pub fn quick_items(&self, tool: Tool) -> Vec<QuickItem> {
+        match self.quick_items.get(tool.label()) {
+            Some(items) => items.iter().copied().filter(|i| i.applies(tool)).collect(),
+            None => QuickItem::defaults(tool),
+        }
+    }
+
+    /// Set the Quick section's items for `tool`; `None` goes back to the defaults.
+    pub fn set_quick_items(&mut self, tool: Tool, items: Option<Vec<QuickItem>>) {
+        match items {
+            Some(items) => self.quick_items.insert(tool.label().to_string(), items),
+            None => self.quick_items.remove(tool.label()),
+        };
+    }
+
+    /// Save `tool`'s starting values; `None` goes back to the built-in ones.
+    pub fn set_tool_start(&mut self, tool: Tool, start: Option<ToolStart>) {
+        match start {
+            Some(start) => self.tool_starts.insert(tool.label().to_string(), start),
+            None => self.tool_starts.remove(tool.label()),
+        };
     }
 }
 
@@ -352,5 +444,41 @@ mod tests {
         // Missing fields fall back to defaults.
         let empty: AppSettings = toml::from_str("").unwrap();
         assert!(empty.show_new_artwork_on_startup);
+    }
+
+    #[test]
+    fn tool_starts_round_trip_and_reset() {
+        let mut s = AppSettings::default();
+        assert_eq!(s.tool_start(Tool::Ink), (Tool::Ink.default_state(), None));
+        let mut ink = Tool::Ink.default_state();
+        ink.shape.radius = 7.5;
+        ink.opacity = 0.4;
+        s.set_tool_start(Tool::Ink, Some(ToolStart::new(&ink, Some("Fine Liner".into()))));
+        let back: AppSettings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.tool_start(Tool::Ink), (ink, Some("Fine Liner".into())));
+        // Other tools are untouched.
+        assert_eq!(back.tool_start(Tool::Pencil).0, Tool::Pencil.default_state());
+        s.set_tool_start(Tool::Ink, None);
+        assert_eq!(s.tool_start(Tool::Ink).0, Tool::Ink.default_state());
+    }
+
+    #[test]
+    fn quick_items_round_trip_and_reset() {
+        let mut s = AppSettings::default();
+        assert_eq!(s.quick_items(Tool::Ink), QuickItem::defaults(Tool::Ink));
+        // Items that don't fit the tool are left out (Loading means nothing for ink).
+        s.set_quick_items(Tool::Ink, Some(vec![QuickItem::Pigments, QuickItem::Size, QuickItem::Loading]));
+        let back: AppSettings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.quick_items(Tool::Ink), [QuickItem::Pigments, QuickItem::Size]);
+        s.set_quick_items(Tool::Ink, None);
+        assert_eq!(s.quick_items(Tool::Ink), QuickItem::defaults(Tool::Ink));
+    }
+
+    #[test]
+    fn every_tool_state_survives_a_tool_start() {
+        for tool in Tool::ALL {
+            let state = tool.default_state();
+            assert_eq!(ToolStart::new(&state, None).state(), state, "{}", tool.label());
+        }
     }
 }

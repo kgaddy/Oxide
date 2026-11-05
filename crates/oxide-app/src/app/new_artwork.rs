@@ -10,6 +10,7 @@ use super::select_canvas::CanvasTarget;
 use super::{OxideApp, PAPER, default_surface, to_color32};
 use crate::settings::{AppSettings, NewArtworkChoice, SizePreset, Unit, print_presets, screen_presets};
 
+/// Paper preview size in portrait; swapped for a landscape canvas.
 const PREVIEW: [usize; 2] = [110, 150];
 /// Width and body height of the dialog, in points.
 const DIALOG_SIZE: [f32; 2] = [980.0, 560.0];
@@ -40,7 +41,7 @@ pub struct NewArtwork {
     surface: PaperSettings,
     paper_color: Color,
     preview: Option<egui::TextureHandle>,
-    preview_for: Option<(PaperSettings, [u8; 3])>,
+    preview_for: Option<(PaperSettings, [u8; 3], [usize; 2])>,
 }
 
 impl NewArtwork {
@@ -415,10 +416,12 @@ impl OxideApp {
     fn paper_picker(&mut self, ui: &mut egui::Ui) {
         let na = &mut self.new_artwork;
         ui.strong("Canvas:");
-        // Re-render the preview only when the paper changes.
-        let key = (na.surface, to_color32(na.paper_color).to_array()[..3].try_into().expect("3 bytes"));
+        // The preview follows the canvas orientation.
+        let size = if na.width_px > na.height_px { [PREVIEW[1], PREVIEW[0]] } else { PREVIEW };
+        // Re-render the preview only when the paper or orientation changes.
+        let key = (na.surface, to_color32(na.paper_color).to_array()[..3].try_into().expect("3 bytes"), size);
         if na.preview_for != Some(key) {
-            let image = paper_preview(na.surface, na.paper_color);
+            let image = paper_preview(na.surface, na.paper_color, size);
             match &mut na.preview {
                 Some(texture) => texture.set(image, egui::TextureOptions::NEAREST),
                 None => na.preview = Some(ui.ctx().load_texture("paper-preview", image, egui::TextureOptions::NEAREST)),
@@ -429,9 +432,19 @@ impl OxideApp {
         let mut open_picker = false;
         if let Some(texture) = &na.preview {
             let image = egui::Image::new(texture)
-                .fit_to_exact_size(Vec2::new(PREVIEW[0] as f32, PREVIEW[1] as f32))
+                .fit_to_exact_size(Vec2::new(size[0] as f32, size[1] as f32))
                 .sense(egui::Sense::click());
-            if ui.add(image).on_hover_text("Click to choose the canvas").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            // A square slot as big as the long side, so flipping the orientation
+            // doesn't move the controls below it.
+            let slot = Vec2::splat(PREVIEW[0].max(PREVIEW[1]) as f32);
+            let clicked = ui
+                .allocate_ui_with_layout(slot, egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.set_min_size(slot);
+                    ui.add_space((slot.y - size[1] as f32) / 2.0);
+                    ui.add(image).on_hover_text("Click to choose the canvas").on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+                })
+                .inner;
+            if clicked {
                 open_picker = true;
             }
         }
@@ -453,9 +466,8 @@ impl OxideApp {
 }
 
 /// A small lit swatch of the paper, so you can see it before starting.
-fn paper_preview(settings: PaperSettings, color: Color) -> egui::ColorImage {
+fn paper_preview(settings: PaperSettings, color: Color, [w, h]: [usize; 2]) -> egui::ColorImage {
     let paper = Paper::new(settings);
-    let [w, h] = PREVIEW;
     let mut bytes = Vec::with_capacity(w * h * 4);
     for y in 0..h {
         for x in 0..w {

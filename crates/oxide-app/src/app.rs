@@ -14,8 +14,10 @@ mod mixing_palette;
 mod new_artwork;
 mod select_canvas;
 mod select_tool;
+mod settings_window;
 mod transform;
 mod panels;
+mod quick;
 mod recording;
 mod reference_image;
 
@@ -120,6 +122,8 @@ pub struct OxideApp {
     show_right: bool,
     /// Where the side panels' sections were drawn this frame (for drag and drop).
     dock_frame: panels::DockFrame,
+    /// The Quick section is showing its editor (choose its items).
+    quick_editing: bool,
     /// The layer name being typed in the Layers panel (committed on Enter).
     renaming: Option<String>,
     /// A layer being renamed right in the list (double-click): its index,
@@ -162,6 +166,8 @@ pub struct OxideApp {
     /// The drawing tablet: pressure, tilt, rotation.
     pen: PenInput,
     show_pen_settings: bool,
+    /// The Settings window (⌘,): tool starting values.
+    settings: settings_window::SettingsWindow,
     /// Window → Reference Image (a photo to look at while painting).
     reference: reference_image::ReferenceImage,
     /// Help → Keyboard Shortcuts window.
@@ -183,7 +189,7 @@ pub struct OxideApp {
     clip: Option<(oxide_engine::Clip, u64)>,
     /// The last point of a stroke on a mask.
     mask_last: Option<(f32, f32)>,
-    /// The preset picked last for each tool (for the brush name above Properties).
+    /// The preset picked last for each tool (for the brush name in Properties).
     brush_names: [Option<String>; Tool::COUNT],
     /// The secondary color (the second swatch; ⌘\\ swaps).
     secondary: Color,
@@ -266,6 +272,8 @@ enum Command {
     ToggleBrushCreator,
     TogglePenSettings,
     ShowShortcuts,
+    /// Settings… (⌘,).
+    Settings,
     MultiColor,
     SwapColors,
     GroupLayer,
@@ -303,7 +311,7 @@ impl Command {
         matches!(
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
-                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts
+                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts | Settings
                 | Theme(_) | OpenThemesFolder | ReloadThemes | Record
         )
     }
@@ -311,7 +319,7 @@ impl Command {
 
 /// Keyboard shortcuts. Order matters: egui ignores *extra* Shift/Alt when
 /// matching, so ⇧⌘S must be checked before ⌘S or it would trigger Save.
-const SHORTCUTS: [(Command, KeyboardShortcut); 40] = [
+const SHORTCUTS: [(Command, KeyboardShortcut); 41] = [
     // View: checked before ⌘0 (Fit), since extra modifiers would otherwise match it.
     (Command::ResetRotation, KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::Num0)),
     // ⇧⌥⌘G before ⌥⌘G.
@@ -351,6 +359,7 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 40] = [
     (Command::InvertSelection, KeyboardShortcut::new(Modifiers::COMMAND, Key::I)),
     (Command::FillSelection, KeyboardShortcut::new(Modifiers::ALT, Key::Backspace)),
     (Command::Quit, KeyboardShortcut::new(Modifiers::COMMAND, Key::Q)),
+    (Command::Settings, KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)),
     (Command::Fit, KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0)),
     (Command::ActualSize, KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1)),
     (Command::ZoomIn, KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals)),
@@ -371,6 +380,8 @@ impl OxideApp {
         oxide_commands::tip_import::load_library();
         let new_artwork = new_artwork::NewArtwork::from_settings(&app_settings);
         let reference_open = app_settings.reference_open;
+        // Each tool's starting values (Settings → Tools), else the built-in ones.
+        let starts = Tool::ALL.map(|tool| app_settings.tool_start(tool));
         // Behind the New Artwork dialog: the last-used (or default) canvas,
         // so there's something to paint on if you cancel or turn the dialog off.
         let mut document = new_artwork.spec().create();
@@ -384,7 +395,7 @@ impl OxideApp {
             hsv: hsv_from_rgb([c.r, c.g, c.b]),
             color: c,
             tool: Tool::OilsAcrylics,
-            tool_states: Tool::ALL.map(Tool::default_state),
+            tool_states: starts.clone().map(|(state, _)| state),
             recent_colors: Vec::new(),
             stroke: None,
             stroke_preview: None,
@@ -400,6 +411,7 @@ impl OxideApp {
             show_left: true,
             show_right: true,
             dock_frame: panels::DockFrame::default(),
+            quick_editing: false,
             renaming: None,
             renaming_row: None,
             pick_return: None,
@@ -423,6 +435,7 @@ impl OxideApp {
             last_paint_mode: PaintMode::PaintMix,
             adjust_drag: None,
             show_pen_settings: false,
+            settings: Default::default(),
             transform: None,
             stabilizer: Default::default(),
             show_shortcuts: false,
@@ -438,7 +451,7 @@ impl OxideApp {
             multicolor: Vec::new(),
             multicolor_on: false,
             secondary: Color::WHITE,
-            brush_names: Default::default(),
+            brush_names: starts.map(|(_, brush)| brush),
             mix_key: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
@@ -728,6 +741,7 @@ impl OxideApp {
             Command::ToggleBrushCreator => self.brush_creator.open = !self.brush_creator.open,
             Command::TogglePenSettings => self.show_pen_settings = !self.show_pen_settings,
             Command::ShowShortcuts => self.show_shortcuts = true,
+            Command::Settings => self.show_settings(),
             Command::SwapColors => self.swap_colors(),
             Command::AddMask => {
                 if self.document.add_mask() {
@@ -1196,6 +1210,7 @@ impl eframe::App for OxideApp {
 
         self.brush_creator_window(&ctx);
         self.pen_settings_window(&ctx);
+        self.settings_window(&ctx);
         self.mixing_palette_window(&ctx);
         self.transform_window(&ctx);
         self.reference_window(&ctx);

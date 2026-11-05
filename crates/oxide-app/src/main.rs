@@ -9,6 +9,7 @@ mod panel_layout;
 mod open_files;
 mod pen;
 mod presets;
+mod quick_panel;
 mod settings;
 mod smoothing;
 mod theme;

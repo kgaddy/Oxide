@@ -98,18 +98,25 @@ impl OxideApp {
             },
             Menu {
                 title: "Edit",
-                entries: vec![
-                    item_if(undo.map_or("Undo".into(), |d| format!("Undo {d}")), Undo, undo.is_some() || !free),
-                    item_if(redo.map_or("Redo".into(), |d| format!("Redo {d}")), Redo, redo.is_some()),
-                    Entry::Separator,
-                    item_if("Cut", Cut, free),
-                    item_if("Copy", Copy, free),
-                    item_if("Paste", Paste, free),
-                    Entry::Separator,
-                    check("Natural Colors (mix like paint)", NaturalColors, self.app_settings.natural_colors, true),
-                    check("MultiColored Brush", MultiColor, self.multicolor_on, true),
-                    item("Swap Primary/Secondary Color", SwapColors),
-                ],
+                entries: {
+                    let mut entries = vec![
+                        item_if(undo.map_or("Undo".into(), |d| format!("Undo {d}")), Undo, undo.is_some() || !free),
+                        item_if(redo.map_or("Redo".into(), |d| format!("Redo {d}")), Redo, redo.is_some()),
+                        Entry::Separator,
+                        item_if("Cut", Cut, free),
+                        item_if("Copy", Copy, free),
+                        item_if("Paste", Paste, free),
+                        Entry::Separator,
+                        check("Natural Colors (mix like paint)", NaturalColors, self.app_settings.natural_colors, true),
+                        check("MultiColored Brush", MultiColor, self.multicolor_on, true),
+                        item("Swap Primary/Secondary Color", SwapColors),
+                    ];
+                    // On macOS, Settings… is in the Oxide menu instead.
+                    if !cfg!(target_os = "macos") {
+                        entries.extend([Entry::Separator, item("Settings…", Settings)]);
+                    }
+                    entries
+                },
             },
             Menu {
                 title: "View",
@@ -399,6 +406,9 @@ pub mod native {
             let quit = MenuItem::with_id("Quit", "Quit Oxide", true, "cmd+q".parse().ok());
             commands.insert(quit.id().clone(), Command::Quit);
             handled_shortcuts.push(Command::Quit);
+            let settings = MenuItem::with_id("Settings", "Settings…", true, "cmd+comma".parse().ok());
+            commands.insert(settings.id().clone(), Command::Settings);
+            handled_shortcuts.push(Command::Settings);
             let about = PredefinedMenuItem::about(
                 Some("About Oxide"),
                 Some(AboutMetadata {
@@ -413,6 +423,8 @@ pub mod native {
                 true,
                 &[
                     &about,
+                    &PredefinedMenuItem::separator(),
+                    &settings,
                     &PredefinedMenuItem::separator(),
                     &PredefinedMenuItem::services(None),
                     &PredefinedMenuItem::separator(),
