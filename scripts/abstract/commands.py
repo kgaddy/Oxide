@@ -22,7 +22,7 @@ def brush_command(brush, **settings):
 
     `settings` are extra set_brush values applied after the brush, such as
     size=40 or oiliness=0.3. Only override size and paint settings (oiliness,
-    loading, length, thickness): shape settings like roundness or streaks
+    loading, thickness): shape settings like roundness or streaks
     would undo the brush you picked.
     """
     return {"command": "set_brush", "preset": brush["name"], **settings}

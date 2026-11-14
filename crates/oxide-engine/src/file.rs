@@ -378,7 +378,7 @@ mod tests {
         let mut doc = Document::new(30, 20, paper);
         doc.begin_stroke();
         let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
-        let relief = Some(crate::ReliefDab { build: 0.7, smear_to: 0.0, smear: 0.0, plow: 0.0, push: 0.0, flat: false, scrape: 0.0 });
+        let relief = Some(crate::ReliefDab { build: 0.7, smear_to: 0.0, smear: 0.0, plow: 0.0, push: 0.0, flat: false, scrape: 0.0, level: false });
         let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief, bands: None };
         doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
         doc.end_stroke();

@@ -313,7 +313,7 @@ fn transform_previews_applies_and_undoes() {
 #[test]
 fn impasto_is_lit_undoable_and_moves_with_transform() {
     let mut doc = Document::new(80, 40, Color::WHITE);
-    let oil = Brush { radius: 6.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+    let oil = Brush { radius: 6.0, impasto: 1.0, loading: 1.0, wet_medium: true, color: RED, ..Brush::default() };
     doc.begin_stroke();
     let mut stroke = Stroke::begin(doc.active_canvas(), &oil, DabMode::Paint, 10.0, 20.0);
     stroke.line_to(doc.active_canvas(), &oil, 40.0, 20.0);
@@ -347,7 +347,7 @@ fn impasto_is_lit_undoable_and_moves_with_transform() {
 
 #[test]
 fn a_stroke_plows_through_wet_impasto_but_not_dried_impasto() {
-    let oil = Brush { radius: 8.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, ..Brush::default() };
+    let oil = Brush { radius: 8.0, impasto: 1.0, loading: 1.0, wet_medium: true, ..Brush::default() };
     let crossing = Brush { impasto: 0.3, color: RED, ..oil.clone() };
     let paint = |doc: &mut Document, brush: &Brush, from: (f32, f32), to: (f32, f32)| {
         doc.begin_stroke();
@@ -388,7 +388,6 @@ fn palette_knife_spreads_flat_and_scrapes_only_wet_paint() {
         spacing: 0.03,
         rotation: crate::Rotation::FollowStroke,
         loading: 1.0,
-        length: 1.0,
         oiliness: 0.7,
         impasto: 0.9,
         wet_medium: true,
@@ -415,7 +414,7 @@ fn palette_knife_spreads_flat_and_scrapes_only_wet_paint() {
 
     // Scraping: wet paint comes off, dried paint stays.
     let scraper = Brush { loading: 0.0, paint_mode: PaintMode::Blend, ..knife.clone() };
-    let paint = Brush { radius: 12.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+    let paint = Brush { radius: 12.0, loading: 1.0, wet_medium: true, color: RED, ..Brush::default() };
     let mut doc = Document::new(120, 80, Color::WHITE);
     stroke(&mut doc, &paint, (10.0, 20.0), (110.0, 20.0));
     doc.dry_layer();
@@ -430,7 +429,7 @@ fn palette_knife_spreads_flat_and_scrapes_only_wet_paint() {
 fn thick_paint_casts_a_shadow_away_from_the_light() {
     let mut doc = Document::new(100, 100, Color::WHITE);
     doc.set_surface(PaperSettings { light_height: 20.0, shadows: 1.0, ..PaperSettings::flat() });
-    let blob = Brush { radius: 10.0, impasto: 1.0, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+    let blob = Brush { radius: 10.0, impasto: 1.0, loading: 1.0, wet_medium: true, color: RED, ..Brush::default() };
     doc.begin_stroke();
     let mut stroke = Stroke::begin(doc.active_canvas(), &blob, DabMode::Paint, 50.0, 50.0);
     stroke.finish(doc.active_canvas(), &blob);
@@ -447,7 +446,7 @@ fn thick_paint_casts_a_shadow_away_from_the_light() {
 fn each_layer_can_have_its_own_impasto_depth() {
     let mut doc = Document::new(80, 40, Color::WHITE);
     // Thin enough that stronger relief isn't already at the lighting's limits.
-    let oil = Brush { radius: 6.0, impasto: 0.15, loading: 1.0, length: 1.0, wet_medium: true, color: RED, ..Brush::default() };
+    let oil = Brush { radius: 6.0, impasto: 0.15, loading: 1.0, wet_medium: true, color: RED, ..Brush::default() };
     doc.begin_stroke();
     let mut stroke = Stroke::begin(doc.active_canvas(), &oil, DabMode::Paint, 10.0, 20.0);
     stroke.line_to(doc.active_canvas(), &oil, 70.0, 20.0);

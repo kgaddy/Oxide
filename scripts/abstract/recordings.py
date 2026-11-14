@@ -78,13 +78,13 @@ LAYER_SETUP = {"set_layer", "add_layer", "select_layer"}
 
 
 def _brush(size, hardness, spacing, grain, opacity, loading, oiliness, size_pressure, opacity_pressure,
-           length=1.0, thickness=0.0, **shape):
+           thickness=0.0, **shape):
     """Every set_brush setting of a tool as a fresh oxide-run session has it (see tools.rs, default_state)."""
     return {"size": size, "hardness": hardness, "spacing": spacing, "grain": grain, "opacity": opacity,
-            "loading": loading, "oiliness": oiliness, "length": length, "thickness": thickness,
+            "loading": loading, "oiliness": oiliness, "thickness": thickness,
             "size_pressure": size_pressure, "opacity_pressure": opacity_pressure,
             "roundness": 1.0, "angle": 0.0, "rotation": "none", "roughness": 0.0, "streaks": 0.0, "lift_off": 0.0,
-            "taper": 0.0, "taper_ends": "both", "tip": "round", "jitter_angle": 0.0, "jitter_size": 0.0,
+            "taper": 0.0, "taper_ends": "both", "rough_ends": 0.0, "tip": "round", "jitter_angle": 0.0, "jitter_size": 0.0,
             "scatter": 0.0, "bristles": 0, **shape}
 
 
@@ -92,15 +92,15 @@ def _brush(size, hardness, spacing, grain, opacity, loading, oiliness, size_pres
 # tool's own default brush. A converted function sets those first (for every tool it uses), so it
 # paints the same whatever the conductor painted before it.
 START_BRUSHES = {
-    "oils": _brush(14, 0.6, 0.04, 0.6, 1.0, 0.85, 0.4, 0.6, 0.3, length=0.75, thickness=0.5,
-                   roughness=0.35, streaks=0.45, lift_off=0.6),
+    "oils": _brush(14, 0.6, 0.04, 0.6, 1.0, 0.85, 0.4, 0.6, 0.3, thickness=0.5,
+                   roughness=0.35, streaks=0.45, taper=0.2, rough_ends=0.6),
     "ink": _brush(3, 0.95, 0.05, 0.2, 1.0, 1.0, 0.0, 1.0, 0.0),
     "pencil": _brush(1.5, 0.5, 0.1, 0.9, 0.6, 1.0, 0.0, 0.3, 0.8),
     "marker": _brush(12, 0.85, 0.05, 0.3, 0.35, 1.0, 0.0, 0.2, 0.4),
     "airbrush": _brush(40, 0.0, 0.05, 0.1, 0.06, 1.0, 0.0, 0.0, 1.0),
     "eraser": _brush(16, 0.8, 0.08, 0.0, 1.0, 1.0, 0.0, 0.6, 0.3),
     "smudge": _brush(14, 0.5, 0.05, 0.0, 1.0, 0.0, 0.8, 0.4, 0.6),
-    "knife": _brush(22, 1.0, 0.03, 0.5, 1.0, 0.9, 0.7, 0.2, 0.0, length=0.6, thickness=0.9,
+    "knife": _brush(22, 1.0, 0.03, 0.5, 1.0, 0.9, 0.7, 0.2, 0.0, thickness=0.9,
                     roundness=0.15, rotation="follow_stroke"),
     "hatch": _brush(2, 1.0, 0.05, 0.2, 1.0, 1.0, 0.0, 1.0, 0.0, taper=0.6),
 }
@@ -217,7 +217,7 @@ def _select(c, at, turned):
 
 # The set_brush settings that are about the paint, not the brush's shape: they stay as recorded
 # when a conductor sends another brush (a preset sets the shape only).
-PAINT_SETTINGS = ("opacity", "loading", "length", "oiliness", "thickness")
+PAINT_SETTINGS = ("opacity", "loading", "oiliness", "thickness")
 
 
 def with_brush(cmds, brush):
@@ -225,7 +225,7 @@ def with_brush(cmds, brush):
     instead of the brushes it was recorded with.
 
     Every set_brush becomes `preset: <brush>` plus the recorded size and paint settings
-    (opacity, loading, length, oiliness, thickness); the recorded shape settings (hardness,
+    (opacity, loading, oiliness, thickness); the recorded shape settings (hardness,
     roundness, bristles, ...) are dropped, as they'd undo the brush. A tool's starting brush
     (START_BRUSHES) is kept in front of it, so settings the preset doesn't set (grain, pressure)
     start from oxide-run's defaults, not from whatever the conductor painted last."""

@@ -483,9 +483,9 @@ impl Session {
         if let Some(v) = a.size { s.shape.radius = v.clamp(0.5, 200.0) }
         if let Some(v) = a.opacity { s.opacity = v.clamp(0.01, 1.0) }
         if let Some(v) = a.loading { s.loading = unit(v) }
-        if let Some(v) = a.length { s.length = unit(v) }
         if let Some(v) = a.oiliness { s.oiliness = unit(v) }
         if let Some(v) = a.thickness { s.thickness = unit(v) }
+        if let Some(v) = a.flat { s.flat = v }
         match a.bristles {
             Some(0) => s.shape.bristles = None,
             Some(n) => s.shape.bristles = Some(Bristles { count: n.clamp(4, 300), ..s.shape.bristles.unwrap_or_default() }),
@@ -509,6 +509,7 @@ impl Session {
         if let Some(v) = a.lift_off { s.shape.lift_off = unit(v) }
         if let Some(v) = a.taper { s.shape.taper = unit(v) }
         if let Some(v) = taper_ends { s.shape.taper_ends = v }
+        if let Some(v) = a.rough_ends { s.shape.rough_ends = unit(v) }
         if let Some(v) = a.grain { s.shape.grain = unit(v) }
         if let Some(v) = a.size_pressure { s.shape.size_pressure = unit(v) }
         if let Some(v) = a.opacity_pressure { s.shape.opacity_pressure = unit(v) }
@@ -869,9 +870,9 @@ impl Session {
         json!({
             "size": s.shape.radius, "opacity": s.opacity, "hardness": s.shape.hardness,
             "roundness": s.shape.roundness, "angle": s.shape.angle, "rotation": format!("{:?}", s.shape.rotation),
-            "loading": s.loading, "length": s.length, "oiliness": s.oiliness, "thickness": s.thickness,
+            "loading": s.loading, "oiliness": s.oiliness, "thickness": s.thickness, "flat": s.flat,
             "paint_mode": if s.erase { "Erase".to_string() } else { format!("{:?}", s.paint_mode) },
-            "roughness": s.shape.roughness, "streaks": s.shape.streaks, "lift_off": s.shape.lift_off, "taper": s.shape.taper, "taper_ends": format!("{:?}", s.shape.taper_ends).to_lowercase(), "grain": s.shape.grain,
+            "roughness": s.shape.roughness, "streaks": s.shape.streaks, "lift_off": s.shape.lift_off, "taper": s.shape.taper, "taper_ends": format!("{:?}", s.shape.taper_ends).to_lowercase(), "rough_ends": s.shape.rough_ends, "grain": s.shape.grain,
             "spacing": s.shape.spacing, "tip": s.shape.tip.key(), "jitter_angle": s.shape.jitter_angle, "jitter_size": s.shape.jitter_size, "scatter": s.shape.scatter,
             "bristles": s.shape.bristles.map(|b| json!({"count": b.count, "thickness": b.thickness, "spread": b.spread, "stiffness": b.stiffness})),
         })
@@ -888,7 +889,7 @@ fn preset_json(p: &BrushPreset, saved: bool) -> Value {
         "size": p.radius, "hardness": p.hardness, "spacing": p.spacing, "roundness": p.roundness, "angle": p.angle,
         "rotation": match p.rotation { Rotation::None => "none", Rotation::FollowStroke => "follow_stroke", Rotation::PenTilt => "pen_tilt", Rotation::PenRotation => "pen_rotation" },
         "roughness": p.roughness, "streaks": p.streaks, "lift_off": p.lift_off,
-        "taper": p.taper, "taper_ends": format!("{:?}", p.taper_ends).to_lowercase(),
+        "taper": p.taper, "taper_ends": format!("{:?}", p.taper_ends).to_lowercase(), "rough_ends": p.rough_ends,
         "tip": p.tip.key(), "jitter_angle": p.jitter_angle, "jitter_size": p.jitter_size, "scatter": p.scatter,
         "bristles": p.bristles.map(|b| json!({"count": b.count, "thickness": b.thickness, "spread": b.spread, "stiffness": b.stiffness})),
     })
@@ -972,13 +973,13 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Tools are media. \"oils\" paints WET paint that can be picked up, blended and smeared until it is dried (dry). Ink, pencil, marker and airbrush are dry media.
 - Oils paint modes (set_paint_mode): paint (pure color), paint_mix (default; light pressure mixes more), paint_blend (light pressure only blends), blend (no paint; moves wet paint), erase.
 - Brushes: list_brushes lists every brush in the app (built-in and saved by the user) with its shape settings; set_brush preset: \"<name>\" selects one (other settings in the same call override it). A preset sets the brush shape only.
-- Oils settings (set_brush): loading (how much paint), length (how long it lasts), oiliness (0 acrylic-like covers, 1 oily blends), thickness (impasto: 0 flat … 1 thick, default 0.5; brush marks show as lit ridges; set_paper impasto_depth / gloss 0–10 set how strongly they're lit). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
+- Oils settings (set_brush): loading (how much paint; the brush never runs out), oiliness (0 acrylic-like covers, 1 oily blends), thickness (impasto: 0 flat … 1 thick, default 0.5; brush marks show as lit ridges; set_paper impasto_depth / gloss 0–10 set how strongly they're lit). flat: true = flat paint: no thickness, and thick paint (wet or dried) under the brush is leveled, so going over an area again never builds it up (for blocking in). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
 - Imported tips: import_tip with a Photoshop .abr (brush packs; can hold many tips), a GIMP .gbr/.gih, or an image (PNG/JPEG: black-on-white, white-on-black or transparent). They're saved in Oxide's tip library and used as set_brush tip: \"image:<name>\" (info lists the current tip).
 - Texture tips (set_brush tip: sponge / chalk / splatter / dry_brush / rag / speckle, with spacing 0.25–0.7, jitter_angle ~1 and some jitter_size / scatter so the stamps don't fill in or repeat; round = back to normal). Good for foliage, texture, broken color.
 - Palette knife (set_tool knife): spreads thick, flat-topped paint with crisp edges and pushes wet paint into ridges; set_paint_mode scrape = an empty knife that scrapes wet paint off (dried paint stays). Long straight strokes work best.
 - Bristle brushes (set_brush bristles: 60, plus bristle_thickness / bristle_spread / bristle_stiffness): the tip is real hairs, each carrying, picking up and running out of paint on its own; the most realistic oil strokes. Light pressure = only the middle hairs touch; bristles: 0 = back to a stamped tip.
 - MultiColored brush (set_multicolor colors: [\"#C8553D\", \"Ultramarine Blue\"]): 2–6 colors loaded side by side across the brush; strokes start striped and the colors blend toward their average as you paint. Best with a flat brush following the stroke. Empty list = one color again.
-- Engraving / pen-and-ink hatching: set_tool hatch (crisp lines that taper to a point at both ends), then hatch with rail_a and rail_b (two guide curves, e.g. a leaf's midrib and edge): evenly spaced lines fill between them, direction across (rail to rail) or along (beside the rails, like down a stem; along can take an edge, a third curve across the gap that the lines start on, like the round edge of a form); spacing in px, fade thins each line from start to end (across: toward rail B; along: toward the rails' last points), wobble makes them hand-made, slant leans them toward the tip, bend curves them, break_up 0–1 breaks them into dashes then dots as they thin (light on a form), vary 0–1 makes line widths uneven (thicker and thinner, swelling along each line). Any brush can taper its strokes with set_brush taper 0–1 (taper_ends both / start / end: which end comes to a point; for hatch lines the end is rail B, or the rails' last points along). Build tone with denser spacing or a second, crossing hatch.
+- Engraving / pen-and-ink hatching: set_tool hatch (crisp lines that taper to a point at both ends), then hatch with rail_a and rail_b (two guide curves, e.g. a leaf's midrib and edge): evenly spaced lines fill between them, direction across (rail to rail) or along (beside the rails, like down a stem; along can take an edge, a third curve across the gap that the lines start on, like the round edge of a form); spacing in px, fade thins each line from start to end (across: toward rail B; along: toward the rails' last points), wobble makes them hand-made, slant leans them toward the tip, bend curves them, break_up 0–1 breaks them into dashes then dots as they thin (light on a form), vary 0–1 makes line widths uneven (thicker and thinner, swelling along each line). Any brush can taper its strokes with set_brush taper 0–1 (taper_ends both / start / end: which end comes to a point; for hatch lines the end is rail B, or the rails' last points along); rough_ends 0–1 breaks the tapered ends up into dry, streaky bristle marks (oils start at 0.5). Build tone with denser spacing or a second, crossing hatch.
 - Pressure (0–1) per point changes size/opacity/mixing like a pen. Use 3-value points [x, y, pressure] for tapered or expressive strokes; `smooth: true` draws a curve through sparse points.
 - The surface is textured paper/canvas (set_paper); grainy brushes catch its tooth.
 - Layers: add_layer, select_layer, set_layer (name, opacity, visible, locked, lock_transparency, tracing), move_layer, delete_layer, duplicate_layer, merge_down, merge_visible, clear_layer. dry locks wet paint so later strokes glide over it. Merging dries the merged paint.
@@ -1096,8 +1097,8 @@ mod tests {
         run(&mut s, r##"{"command": "set_multicolor", "colors": ["#E01010", "Ultramarine Blue"]}"##);
         run(&mut s, r##"{"command": "set_brush", "size": 14, "roundness": 0.4, "rotation": "follow_stroke"}"##);
         run(&mut s, r##"{"command": "stroke", "points": [[20, 30], [280, 30]]}"##);
-        let Output::Text(top) = run(&mut s, r##"{"command": "pick_color", "x": 40, "y": 24}"##) else { panic!() };
-        let Output::Text(bottom) = run(&mut s, r##"{"command": "pick_color", "x": 40, "y": 36}"##) else { panic!() };
+        let Output::Text(top) = run(&mut s, r##"{"command": "pick_color", "x": 150, "y": 24}"##) else { panic!() };
+        let Output::Text(bottom) = run(&mut s, r##"{"command": "pick_color", "x": 150, "y": 36}"##) else { panic!() };
         assert_ne!(top, bottom, "two colors side by side");
         let Output::Text(off) = run(&mut s, r##"{"command": "set_multicolor", "colors": []}"##) else { panic!() };
         assert!(off.contains("off"));

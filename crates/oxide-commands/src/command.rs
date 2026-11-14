@@ -150,8 +150,6 @@ pub struct SetBrushArgs {
     pub opacity: Option<f32>,
     /// Oils: how much paint goes down, 0–1.
     pub loading: Option<f32>,
-    /// Oils: how long paint lasts along a stroke, 0–1 (1 = never runs out).
-    pub length: Option<f32>,
     /// Oils: 0 = lean, covers (acrylic-like); 1 = oily, picks up and blends wet paint.
     pub oiliness: Option<f32>,
     /// Edge hardness 0 (soft) – 1 (crisp).
@@ -173,10 +171,16 @@ pub struct SetBrushArgs {
     /// Which ends the taper points: "both" (default), "start" (starts at a point,
     /// ends full size) or "end" (starts full size, ends at a point).
     pub taper_ends: Option<String>,
+    /// How much the tapered ends break up into dry, streaky bristle marks 0–1
+    /// (0 = clean points; only where the stroke tapers).
+    pub rough_ends: Option<f32>,
     /// How much the paper texture shows in the stroke 0–1.
     pub grain: Option<f32>,
     /// Oils: how thick the paint goes on (impasto), 0 = flat, 1 = very thick. Default 0.5.
     pub thickness: Option<f32>,
+    /// Oils: flat paint. true = no thickness at all, and thick paint (wet or dried)
+    /// the brush covers is leveled, so repainting an area never builds it up.
+    pub flat: Option<bool>,
     /// Distance between dabs as a fraction of the brush width (0.02–1). Texture
     /// tips need more (0.25–0.7) or their stamps fill each other's holes.
     pub spacing: Option<f32>,

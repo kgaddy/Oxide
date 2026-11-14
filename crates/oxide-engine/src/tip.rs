@@ -18,6 +18,10 @@ pub struct DabTexture {
     pub dab_seed: u32,
     /// 0 = full of paint; 1 = completely dry. Weak bristles drop out first.
     pub dryness: f32,
+    /// The radius the bristle pattern is laid out for: the stroke's full
+    /// size, so the streaks stay put where a taper or lift-off shrinks the
+    /// dabs (0 = this dab's own radius).
+    pub pattern_radius: f32,
 }
 
 impl Brush {
@@ -58,8 +62,9 @@ impl Brush {
         if streaks > 0.0 || tex.dryness > 0.0 {
             // Position across the stroke direction, -1..1.
             let (dcos, dsin) = tex.dir;
-            let across = (-dx * dsin + dy * dcos) / r;
-            let bristles = (r * 1.2).clamp(6.0, 48.0);
+            let pattern = if tex.pattern_radius > 0.0 { tex.pattern_radius } else { r };
+            let across = (-dx * dsin + dy * dcos) / pattern;
+            let bristles = (pattern * 1.2).clamp(6.0, 48.0);
             let strength = smooth_value_noise((across + 1.0) * 0.5 * bristles, tex.stroke_seed); // 0..1
             // Strong bristles carry more paint; weak ones less.
             coverage *= 1.0 - streaks * (1.0 - strength);
@@ -128,7 +133,7 @@ mod tests {
     use super::*;
 
     fn tex(seed: u32) -> DabTexture {
-        DabTexture { dir: (1.0, 0.0), stroke_seed: seed, dab_seed: seed, dryness: 0.0 }
+        DabTexture { dir: (1.0, 0.0), stroke_seed: seed, dab_seed: seed, dryness: 0.0, pattern_radius: 0.0 }
     }
 
     #[test]

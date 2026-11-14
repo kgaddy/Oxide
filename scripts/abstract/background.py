@@ -42,7 +42,7 @@ def background(color, width, height, brush, seed=0, kind="canvas", depth=0.45):
         # never runs out. Only the size and paint settings are set here: shape
         # settings (roundness, streaks, bristles...) would undo the brush.
         {"command": "set_brush", "preset": brush["name"], "size": round(radius, 1), "opacity": 1.0,
-         "loading": 1.0, "length": 1.0, "oiliness": 0.0, "thickness": 0.2},
+         "loading": 1.0, "oiliness": 0.0, "thickness": 0.2},
         {"command": "set_color", "hex": color},
     ]
 

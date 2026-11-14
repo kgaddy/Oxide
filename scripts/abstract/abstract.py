@@ -129,7 +129,7 @@ def generate(palette, seed, width, height, png_path, oxide_path, brush_list):
     ground_brush = brushes.random_brush(rng, brush_list)
     cmds += [f"# Ground (brush: {ground_brush['name']})", {"command": "add_layer", "name": "Ground"},
              {"command": "set_tool", "tool": "oils"},
-             brush_command(ground_brush, size=size(rng.uniform(0.09, 0.14)), oiliness=0.2, loading=0.9, length=0.7)]
+             brush_command(ground_brush, size=size(rng.uniform(0.09, 0.14)), oiliness=0.2, loading=0.9)]
     for _ in range(rng.randint(7, 11)):
         cmds.append(color_command(rng.choices(colors[:-1] or colors, weights[:-1] or weights)[0]))
         cmds.append({"command": "stroke", "smooth": True,

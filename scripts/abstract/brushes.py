@@ -59,7 +59,6 @@ def _jitter(rng, value, low, high, amount):
 PAINT_SETTINGS = {
     "opacity": (0.2, 1.0, 0.85),
     "loading": (0.2, 1.0, 0.75),
-    "length": (0.2, 1.0, 0.7),
     "oiliness": (0.0, 1.0, 0.4),
     "thickness": (0.0, 1.0, 0.5),
     "grain": (0.0, 1.0, 0.5),
@@ -128,7 +127,7 @@ def random_settings(rng, brush, amount=0.3, tuning=None):
         own values, so a Flat brush stays recognizably flat.
         taper, jitter_angle, jitter_size and scatter only move when the brush
         already uses them (a round brush doesn't suddenly scatter).
-      - Paint settings (opacity, loading, length, oiliness, thickness, grain) are
+      - Paint settings (opacity, loading, oiliness, thickness, grain) are
         drawn from their range (PAINT_SETTINGS, shrunk by SETTING_WEIGHTS), since the brush list doesn't
         carry them. `amount` doesn't narrow these; only 0 (no variation) skips them.
     Not varied: the tip (texture), the rotation mode and which ends taper,

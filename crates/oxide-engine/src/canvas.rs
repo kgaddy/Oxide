@@ -124,6 +124,9 @@ pub struct ReliefDab {
     pub flat: bool,
     /// A knife scraping: how much of the *wet* paint under it comes off (0..=1).
     pub scrape: f32,
+    /// Flat paint: level the surface under the brush, wet and dried paint
+    /// alike, instead of building on it.
+    pub level: bool,
 }
 
 /// MultiColored brush: the colors loaded across the tip for one dab.
@@ -538,7 +541,7 @@ impl Canvas {
                 // Impasto: dragged paint levels the surface, fresh paint piles up.
                 // Only the wet part moves; dried thickness is a base the new paint sits on.
                 if let (DabMode::Paint, Some(r)) = (style.mode, style.relief) {
-                    let dry_h = (self.relief[i] - self.wet_relief[i]).max(0.0);
+                    let mut dry_h = (self.relief[i] - self.wet_relief[i]).max(0.0);
                     let mut h = self.wet_relief[i];
                     let c = coverage.clamp(0.0, 1.0);
                     if r.plow > 0.0 {
@@ -562,6 +565,12 @@ impl Canvas {
                     let target = if r.flat { r.build * (c / 0.35).min(1.0) } else { r.build * c.sqrt() };
                     if target > h {
                         h += (target - h) * strength;
+                    }
+                    if r.level {
+                        // Flat paint: whatever was here sinks flat where the brush covers.
+                        let k = strength.min(1.0);
+                        h *= 1.0 - k;
+                        dry_h *= 1.0 - k;
                     }
                     let h = h.clamp(0.0, (MAX_RELIEF - dry_h).max(0.0));
                     self.wet_relief[i] = h;

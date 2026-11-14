@@ -5,7 +5,7 @@ use oxide_engine::PaintMode;
 
 use super::OxideApp;
 use super::panels::{
-    brush_combo, icon_text, length_slider, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, tool_icon,
+    brush_combo, icon_text, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, flat_checkbox, tool_icon,
 };
 use crate::settings::ToolStart;
 use crate::tools::{Tool, ToolState};
@@ -110,6 +110,9 @@ impl OxideApp {
 /// The starting values a tool has: like its Properties, plus pressure response
 /// and paper grain.
 fn start_controls(ui: &mut egui::Ui, tool: Tool, state: &mut ToolState) {
+    if tool.is_wet_medium() {
+        flat_checkbox(ui, state);
+    }
     size_slider(ui, state);
     opacity_slider(ui, tool, state);
     taper_controls(ui, &mut state.shape);
@@ -135,7 +138,6 @@ fn start_controls(ui: &mut egui::Ui, tool: Tool, state: &mut ToolState) {
     }
     if tool.is_wet_medium() {
         loading_slider(ui, state);
-        length_slider(ui, state);
         oiliness_slider(ui, state);
         thickness_slider(ui, state);
     }

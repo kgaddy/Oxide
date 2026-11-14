@@ -27,8 +27,6 @@ pub(super) struct Bristle {
     thickness: f32,
     /// Relative stiffness (around 1).
     stiffness: f32,
-    /// How fast it runs dry relative to the brush (above 1 = sooner).
-    drain: f32,
     /// The paint on this hair.
     color: Color,
     /// The fresh paint the brush feeds this hair (a MultiColored brush loads
@@ -45,7 +43,7 @@ fn rand01(h: u32) -> f32 {
 /// Lay out `count` hairs evenly over the tip (a sunflower spiral with a
 /// little jitter). The layout depends only on the count, so a brush keeps
 /// the same hairs from stroke to stroke; how fast each runs dry varies per stroke.
-pub(super) fn make_bristles(set: Bristles, stroke_seed: u32, color: Color, loaded: Color, colors: &[Color]) -> Vec<Bristle> {
+pub(super) fn make_bristles(set: Bristles, color: Color, loaded: Color, colors: &[Color]) -> Vec<Bristle> {
     let n = set.count.clamp(4, 300);
     let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
     (0..n)
@@ -68,7 +66,6 @@ pub(super) fn make_bristles(set: Bristles, stroke_seed: u32, color: Color, loade
                 reach: (r * 0.85 + rand01(h ^ 2) * 0.2).min(1.0),
                 thickness: 0.7 + 0.6 * rand01(h ^ 3),
                 stiffness: 0.7 + 0.3 * rand01(h ^ 4),
-                drain: 0.5 + 1.1 * rand01(hash2(stroke_seed, i)),
                 color,
                 loaded,
                 pigment: None,
@@ -95,12 +92,14 @@ impl Stroke {
         let start_color = self.wet.as_ref().map_or(brush.color, |w| w.color);
         let loaded = self.wet.as_ref().map_or(brush.color, |w| w.loaded);
         if self.bristles.is_empty() {
-            self.bristles = make_bristles(set, self.seed, Color { a: 1.0, ..start_color }, Color { a: 1.0, ..loaded }, &brush.colors);
+            self.bristles = make_bristles(set, Color { a: 1.0, ..start_color }, Color { a: 1.0, ..loaded }, &brush.colors);
         }
         let multicolor = brush.is_multicolor().then(|| crate::multicolor::average(&brush.colors, brush.mixing));
         let p = pressure.clamp(0.0, 1.0);
-        // Light pressure: only the middle hairs touch; lifting off: fewer still.
-        let contact = (0.4 + 0.6 * p) * (0.35 + 0.65 * fade);
+        // Light pressure: only the middle hairs touch; lifting off, or in a
+        // rough tapered end, fewer still.
+        let rough = super::rough_end_dryness(brush, dab.taper);
+        let contact = (0.4 + 0.6 * p) * (0.35 + 0.65 * fade) * (1.0 - 0.6 * rough);
         // Pressing harder splays the hairs apart (and a light touch draws them in).
         let splay = 1.0 + set.spread.clamp(0.0, 1.0) * (p - 0.5) * 0.6;
         let (sin, cos) = brush.angle.to_radians().sin_cos();
@@ -128,7 +127,7 @@ impl Stroke {
         let rates = self.wet.as_ref().map(|wet| {
             let (fresh, oiliness) = mode_rates(brush, p);
             let under_relief = canvas.sample_relief(x, y, brush);
-            (wet.amount, wet.initial, wet.started, fresh, oiliness, under_relief)
+            (wet.amount, wet.started, fresh, oiliness, under_relief)
         });
         let mixes_on_surface = brush.mixing == Mixing::Pigment && brush.paint_mode != crate::PaintMode::Paint;
         let plow = 1.0 - (1.0 - plow_force(brush.paint_mode, p)).powf(travel);
@@ -164,10 +163,11 @@ impl Stroke {
                     relief: None,
                     bands: None,
                 },
-                Some((amount, initial, started, fresh, oiliness, under_relief)) => {
-                    // This hair's own paint: it runs dry at its own pace...
-                    let left = if initial > 0.0 { (amount / initial).powf(b.drain) } else { 0.0 };
-                    let own = initial * left * fresh;
+                Some((amount, started, fresh, oiliness, under_relief)) => {
+                    // This hair's own paint (the brush never runs dry; an
+                    // empty brush, like Blend mode, only moves paint)...
+                    let left = if amount > 0.0 { 1.0 } else { 0.0 };
+                    let own = amount * fresh;
                     // ...picks up the wet paint right under it...
                     let under = canvas.paint_at(to.0, to.1, brush.pickup_dry).unwrap_or([0.0; 4]);
                     let under_alpha = under[3];
@@ -202,18 +202,19 @@ impl Stroke {
                         color: b.color,
                         opacity: brush.opacity * deposit * fade_opacity,
                         mode: DabMode::Paint,
-                        wetness: if initial > 0.0 { Wetness::Wet } else { Wetness::Keep },
+                        wetness: if amount > 0.0 { Wetness::Wet } else { Wetness::Keep },
                         texture: None,
                         reach: (0.5 + 0.5 * left) * (0.3 + 0.7 * fade),
                         pigment,
                         relief: Some(ReliefDab {
-                            build: brush.impasto.max(0.0) * own.min(1.0),
+                            build: if brush.flat { 0.0 } else { brush.impasto.max(0.0) * own.min(1.0) },
                             smear_to: under_relief,
                             smear: oiliness * (1.0 - 0.5 * own.min(1.0)),
                             plow,
                             push: under_relief * 2.5,
                             flat: false,
                             scrape: 0.0,
+                            level: brush.flat,
                         }),
                         bands: None, // each hair already carries its own color
                     }
@@ -229,14 +230,11 @@ impl Stroke {
         }
 
         if let Some(wet) = &mut self.wet {
-            let (fresh, _) = mode_rates(brush, p);
             // The brush's paint is all its hairs' paint: carry the average to the next stroke.
             let n = self.bristles.len().max(1) as f32;
             wet.color = Color::rgb(color_sum[0] / n, color_sum[1] / n, color_sum[2] / n);
             wet.relief = canvas.sample_relief(x, y, brush);
             wet.started |= touched > 0;
-            let use_rate = (1.0 - brush.length.clamp(0.0, 1.0)) * 0.12 * travel * fresh;
-            wet.amount *= 1.0 - use_rate;
         }
     }
 }
@@ -249,7 +247,6 @@ mod tests {
         Brush {
             radius: 12.0,
             loading: 1.0,
-            length: 1.0,
             wet_medium: true,
             spacing: 0.05,
             bristles: Some(Bristles { count, thickness, ..Bristles::default() }),
@@ -295,7 +292,7 @@ mod tests {
         // A wet red band, then an oily blue bristle stroke along it.
         let mut canvas = Canvas::new(120, 40, Color::TRANSPARENT);
         paint(&mut canvas, &Brush { color: Color::rgb(1.0, 0.0, 0.0), ..bristle_brush(80, 0.6) }, 20.0, 1.0);
-        let blue = Brush { color: Color::rgb(0.0, 0.0, 1.0), oiliness: 0.9, loading: 0.3, length: 0.3, ..bristle_brush(80, 0.6) };
+        let blue = Brush { color: Color::rgb(0.0, 0.0, 1.0), oiliness: 0.9, loading: 0.3, ..bristle_brush(80, 0.6) };
         paint(&mut canvas, &blue, 20.0, 1.0);
         // Some hairs dragged red into the blue: the colors along the stroke vary.
         let reds: Vec<f32> = (8..32).filter_map(|y| canvas.pixel(90, y)).filter(|c| c.a > 0.3).map(|c| c.r).collect();

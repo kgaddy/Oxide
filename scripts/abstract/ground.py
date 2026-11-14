@@ -29,7 +29,7 @@ def ground(color, width, height, horizon, brush, seed=0):
         {"command": "set_tool", "tool": "oils"},
         {"command": "set_paint_mode", "mode": "paint"},
         {"command": "set_brush", "preset": brush["name"], "size": round(radius, 1), "opacity": 1.0,
-         "loading": 1.0, "length": 1.0, "oiliness": 0.0, "thickness": 0.2},
+         "loading": 1.0, "oiliness": 0.0, "thickness": 0.2},
         {"command": "set_color", "hex": color},
     ]
     y = horizon

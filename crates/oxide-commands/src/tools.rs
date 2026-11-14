@@ -96,9 +96,11 @@ impl Tool {
         // `grain` = how much the medium feels the paper texture.
         let shape = |radius, hardness, spacing, grain| BrushShape { radius, hardness, spacing, grain, ..BrushShape::default() };
         let (shape, opacity, loading, oiliness) = match self {
-            // Oils start with a natural, slightly worn brush.
+            // Oils start with a natural, slightly worn brush that paints evenly
+            // and tapers at both ends, the ends breaking up a
+            // little into dry bristle marks, instead of fading out.
             Tool::OilsAcrylics => {
-                let natural = BrushShape { roughness: 0.35, streaks: 0.45, lift_off: 0.6, ..shape(14.0, 0.6, 0.04, 0.6) };
+                let natural = BrushShape { roughness: 0.35, streaks: 0.45, taper: 0.2, rough_ends: 0.6, ..shape(14.0, 0.6, 0.04, 0.6) };
                 (natural, 1.0, 0.85, 0.4)
             }
             Tool::Ink => (shape(3.0, 0.95, 0.05, 0.2), 1.0, 1.0, 0.0),
@@ -134,19 +136,13 @@ impl Tool {
             Tool::Picker | Tool::Select => (0.0, 0.0),
         };
         let shape = BrushShape { size_pressure, opacity_pressure, ..shape };
-        // Oils hold paint for a while; everything else never runs out.
-        let length = match self {
-            Tool::OilsAcrylics => 0.75,
-            Tool::Knife => 0.6,
-            _ => 1.0,
-        };
         // Oils go on with some body, knife paint thick; other media are flat.
         let thickness = match self {
             Tool::OilsAcrylics => 0.5,
             Tool::Knife => 0.9,
             _ => 0.0,
         };
-        ToolState { shape, opacity, loading, oiliness, length, paint_mode: PaintMode::PaintMix, erase: false, thickness, scrape: false }
+        ToolState { shape, opacity, loading, oiliness, paint_mode: PaintMode::PaintMix, erase: false, thickness, flat: false, scrape: false }
     }
 }
 
@@ -176,6 +172,8 @@ pub struct BrushShape {
     pub taper: f32,
     /// Which ends the taper points (both, or just the start or the end).
     pub taper_ends: TaperEnds,
+    /// How much the tapered ends break up into dry bristle marks (0 = clean points).
+    pub rough_ends: f32,
     /// How much the paper texture shows in the stroke (0 = ignores the paper).
     pub grain: f32,
     /// How the tip turns while painting (fixed, follow the stroke, pen...).
@@ -207,6 +205,7 @@ impl Default for BrushShape {
             lift_off: 0.0,
             taper: 0.0,
             taper_ends: TaperEnds::Both,
+            rough_ends: 0.0,
             grain: 0.0,
             rotation: Rotation::None,
             size_pressure: 0.0,
@@ -230,14 +229,15 @@ pub struct ToolState {
     /// Wet media: how much paint gets picked up and dragged.
     /// Smudge: how strongly it drags.
     pub oiliness: f32,
-    /// Wet media: how long the paint lasts (1 = never runs out).
-    pub length: f32,
     /// Wet media: Paint / Paint & Mix / Paint & Blend / Blend (keys 1–4).
     pub paint_mode: PaintMode,
     /// Wet media: Erase mode (key 5, or A).
     pub erase: bool,
     /// Wet media: how thick the paint goes on (impasto), 0 = flat.
     pub thickness: f32,
+    /// Wet media: flat paint. No thickness at all, and thick paint the brush
+    /// goes over is leveled, so an area never builds up however often it's painted.
+    pub flat: bool,
     /// Knife: scrape wet paint off instead of spreading paint.
     pub scrape: bool,
 }
@@ -261,6 +261,7 @@ impl ToolState {
             lift_off: s.lift_off,
             taper: s.taper,
             taper_ends: s.taper_ends,
+            rough_ends: s.rough_ends,
             grain: s.grain,
             bristles: s.bristles,
             tip: s.tip,
@@ -273,10 +274,10 @@ impl ToolState {
         if tool.is_wet_medium() {
             brush.loading = self.loading;
             brush.oiliness = self.oiliness;
-            brush.length = self.length;
             brush.paint_mode = self.paint_mode;
             brush.wet_medium = true;
             brush.impasto = self.thickness;
+            brush.flat = self.flat;
         }
         if tool == Tool::Knife {
             brush.knife = true;

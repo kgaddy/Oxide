@@ -290,6 +290,9 @@ impl OxideApp {
         brush.radius = SIZES[mp.size].1;
         brush.opacity = mp.opacity;
         brush.lift_off = 0.3;
+        // The palette is for mixing color, not texture: always flat paint, so
+        // working a puddle never piles it up (and old thick paint levels out).
+        brush.flat = true;
         brush.mixing = if natural { oxide_engine::Mixing::Pigment } else { oxide_engine::Mixing::Rgb };
         let (brush, mode) = match mp.tool {
             PaletteTool::Paint => (Brush { loading: 0.9, oiliness: brush.oiliness.max(0.5), ..brush }, DabMode::Paint),

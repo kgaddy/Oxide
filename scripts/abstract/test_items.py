@@ -893,9 +893,9 @@ class TestRecordings(unittest.TestCase):
     def test_paint_thickness_scales_with_the_size(self):
         # Impasto height is in fixed units and lit pixel to pixel: a smaller copy needs thinner paint
         # to look the same (otherwise it looks heavier and more loaded). Loading etc. stay as recorded.
-        cmds = [{"command": "set_brush", "size": 140.0, "loading": 0.22, "length": 0.45, "thickness": 0.25}]
+        cmds = [{"command": "set_brush", "size": 140.0, "loading": 0.22, "thickness": 0.25}]
         small = recordings.transform(cmds, self.ORIGIN, scale=0.5)[0]
-        self.assertEqual(small, {"command": "set_brush", "size": 70.0, "loading": 0.22, "length": 0.45, "thickness": 0.01562})
+        self.assertEqual(small, {"command": "set_brush", "size": 70.0, "loading": 0.22, "thickness": 0.01562})
         self.assertEqual(recordings.transform(cmds, self.ORIGIN, scale=2)[0]["thickness"], 0.5)   # bigger: by the scale
         self.assertEqual(recordings.transform(cmds, self.ORIGIN, scale=8)[0]["thickness"], 1.0)   # at most 1
 
@@ -1480,7 +1480,7 @@ class TestAgainstTheApp(unittest.TestCase):
             info = json.loads(result.stdout.splitlines()[-1])
             info = info.get("result", info)
             got = info["brush"]
-            for key in ("size", "opacity", "hardness", "spacing", "grain", "loading", "oiliness", "length", "thickness",
+            for key in ("size", "opacity", "hardness", "spacing", "grain", "loading", "oiliness", "thickness",
                         "roundness", "roughness", "streaks", "lift_off", "taper"):
                 self.assertAlmostEqual(got[key], brush[key], places=4, msg=f"{tool} {key}")
 

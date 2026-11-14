@@ -63,7 +63,6 @@ mod tests {
             roundness: 0.4,
             rotation: Rotation::FollowStroke,
             loading: 1.0,
-            length: 1.0,
             oiliness: 0.5,
             wet_medium: true,
             colors: vec![Color::rgb(0.9, 0.1, 0.1), Color::rgb(0.1, 0.1, 0.9)],

@@ -197,7 +197,7 @@ impl OxideApp {
         if tool == Tool::Hatch {
             // The hatch's kind first, with which ends of its lines point.
             self.hatch_mode(ui);
-            taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape);
+            taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape, true);
         }
         ui.add_space(4.0);
         if tool.is_wet_medium() {
@@ -223,14 +223,14 @@ impl OxideApp {
         }
     }
 
-    /// Oils & Acrylics and the Knife: the choices (paint mode, taper ends,
+    /// Oils & Acrylics and the Knife: the choices (Flat paint, paint mode,
     /// checkboxes) at the top, then all the sliders together.
     fn wet_media_properties(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
 
         // ----- Choices -----
+        flat_checkbox(ui, &mut self.tool_states[tool.index()]);
         self.paint_mode_buttons(ui);
-        taper_ends_controls(ui, &mut self.tool_states[tool.index()].shape);
         self.dirty_brush_row(ui);
         let mut off = false;
         ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
@@ -241,11 +241,10 @@ impl OxideApp {
         let state = &mut self.tool_states[tool.index()];
         size_slider(ui, state);
         opacity_slider(ui, tool, state);
-        taper_slider(ui, &mut state.shape);
+        taper_controls(ui, &mut state.shape);
         // Combined Oils & Acrylics: oiliness is what makes it
         // behave more like oil (blends, drags) or acrylic (covers).
         loading_slider(ui, state);
-        length_slider(ui, state);
         oiliness_slider(ui, state);
         thickness_slider(ui, state);
         let mut placeholder = 0.0;
@@ -780,19 +779,22 @@ pub(super) fn loading_slider(ui: &mut egui::Ui, state: &mut ToolState) {
         .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
 }
 
-pub(super) fn length_slider(ui: &mut egui::Ui, state: &mut ToolState) {
-    ui.add(egui::Slider::new(&mut state.length, 0.0..=1.0).text("Length"))
-        .on_hover_text("How long the paint lasts: low = runs out fast, 1 = never runs out");
-}
-
 pub(super) fn oiliness_slider(ui: &mut egui::Ui, state: &mut ToolState) {
     ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
         .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
 }
 
 pub(super) fn thickness_slider(ui: &mut egui::Ui, state: &mut ToolState) {
-    ui.add(egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
-        .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.");
+    ui.add_enabled(!state.flat, egui::Slider::new(&mut state.thickness, 0.0..=1.0).text("Thickness"))
+        .on_hover_text("Impasto: how thick the paint goes on. Thick paint shows its brush marks in the light (Paper panel: Impasto depth, Gloss). 0 = flat.")
+        .on_disabled_hover_text("Flat paint is on: the brush adds no thickness.");
+}
+
+/// Wet media: Flat paint on/off (no thickness; levels thick paint it covers).
+pub(super) fn flat_checkbox(ui: &mut egui::Ui, state: &mut ToolState) {
+    ui.checkbox(&mut state.flat, "Flat paint").on_hover_text(
+        "For blocking in: the paint goes on perfectly flat and levels any thick paint it covers (wet or dried), so going over an area again and again never builds it up.",
+    );
 }
 
 /// A drop-down of every brush preset, by group. Picking one sets `shape`
@@ -816,10 +818,19 @@ pub(super) fn brush_combo(ui: &mut egui::Ui, id: &str, presets: &crate::presets:
     });
 }
 
-/// The Taper slider, and which ends it points (Properties and Brush Creator).
+/// The Taper slider, and right under it which ends it points and how rough
+/// they are (Properties, Settings, Quick and Brush Creator), boxed together.
+/// The ends only show once Taper is on.
 pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
-    taper_slider(ui, shape);
-    taper_ends_controls(ui, shape);
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        taper_slider(ui, shape);
+        if shape.taper > 0.0 {
+            taper_ends_controls(ui, shape, false);
+            ui.add(egui::Slider::new(&mut shape.rough_ends, 0.0..=1.0).text("Rough ends"))
+                .on_hover_text("The tapered ends break up into dry, streaky bristle marks (0 = clean points)");
+        }
+    });
 }
 
 /// Just the Taper slider (Hatch shows the ends choice at the top instead).
@@ -828,9 +839,10 @@ pub(super) fn taper_slider(ui: &mut egui::Ui, shape: &mut crate::tools::BrushSha
         .on_hover_text("Strokes come to a clean point, like an engraved line, even with a mouse (0 = off)");
 }
 
-/// Both ends / Reverse: which ends the taper points (greyed out while Taper
-/// is 0, so they don't come and go).
-fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
+/// Both ends, and with `reverse` (Hatch only) which end gets the point.
+/// Hatch shows them at the top, greyed out while Taper is 0; elsewhere Both
+/// ends appears under Taper, and off means the stroke tapers where it ends.
+fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape, reverse: bool) {
     use oxide_engine::TaperEnds;
     ui.horizontal(|ui| {
         if shape.taper <= 0.0 {
@@ -845,7 +857,7 @@ fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) 
         {
             shape.taper_ends = if both { TaperEnds::Both } else { TaperEnds::End };
         }
-        if !both {
+        if reverse && !both {
             let reversed = shape.taper_ends == TaperEnds::Start;
             let hint = "Which end gets the point. Off: the stroke starts full size and tapers where it ends. On: it starts at a point and ends full size (Hatch: Break up moves to that end too).\n(Hatch lines end at the second rail, or where you finished the rails for Along.)";
             if ui.selectable_label(reversed, "⇄ Reverse").on_hover_text(hint).clicked() {

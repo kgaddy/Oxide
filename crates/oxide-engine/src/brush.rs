@@ -130,9 +130,6 @@ pub struct Brush {
     pub rotation: Rotation,
     /// How much paint the brush lays down (0..=1).
     pub loading: f32,
-    /// How long the paint lasts along a stroke (0..=1): low = runs out fast,
-    /// 1 = never runs out.
-    pub length: f32,
     /// Always paint wet (oils & acrylics), even with settings that would
     /// otherwise count as a dry brush.
     pub wet_medium: bool,
@@ -153,6 +150,9 @@ pub struct Brush {
     pub taper: f32,
     /// Which ends the taper points.
     pub taper_ends: TaperEnds,
+    /// How much the tapered ends break up into dry, streaky bristle marks
+    /// (0..=1; 0 = clean points). Only where the stroke tapers.
+    pub rough_ends: f32,
     /// Pick up dry paint as well as wet (the Smudge tool works on dry paint).
     pub pickup_dry: bool,
     /// How much pen pressure controls the size (0 = not at all, 1 = a light
@@ -169,6 +169,10 @@ pub struct Brush {
     /// A palette knife: flat-topped paint with crisp edges, plows hard
     /// through wet paint; with no paint loaded it scrapes wet paint off.
     pub knife: bool,
+    /// Wet media: flat paint. Adds no thickness whatever `impasto` says, and
+    /// levels the paint it covers (wet or dried) flat, so going over an area
+    /// again and again never builds it up.
+    pub flat: bool,
     /// MultiColored brush: two or more colors loaded side by side across the
     /// tip (empty = just `color`).
     pub colors: Vec<Color>,
@@ -198,7 +202,6 @@ impl Default for Brush {
             angle: 0.0,
             rotation: Rotation::None,
             loading: 1.0,
-            length: 1.0,
             wet_medium: false,
             paint_mode: PaintMode::PaintMix,
             oiliness: 0.0,
@@ -207,6 +210,7 @@ impl Default for Brush {
             lift_off: 0.0,
             taper: 0.0,
             taper_ends: TaperEnds::Both,
+            rough_ends: 0.0,
             pickup_dry: false,
             size_pressure: 0.0,
             opacity_pressure: 0.0,
@@ -214,6 +218,7 @@ impl Default for Brush {
             impasto: 0.0,
             bristles: None,
             knife: false,
+            flat: false,
             colors: Vec::new(),
             tip: crate::Tip::Round,
             tip_frame: 0,
@@ -287,7 +292,7 @@ impl Brush {
     }
 
     pub fn is_wet(&self) -> bool {
-        self.wet_medium || self.oiliness > 0.0 || self.loading < 1.0 || self.length < 1.0
+        self.wet_medium || self.oiliness > 0.0 || self.loading < 1.0
     }
 
     /// Distance in pixels between dabs along a stroke.
@@ -300,12 +305,7 @@ impl Brush {
     /// The taper's size for a dab `from_end` pixels from either end of a
     /// stroke: a point at the end, swelling quickly to full size, like a burin cut.
     pub fn taper_scale(&self, from_end: f32) -> f32 {
-        let length = self.taper_length();
-        if length <= 0.0 {
-            return 1.0;
-        }
-        let t = (from_end / length).clamp(0.0, 1.0);
-        1.0 - (1.0 - t) * (1.0 - t)
+        taper_curve(from_end, self.taper_length())
     }
 
     /// The taper's size for a dab `from_start` pixels into a stroke and
@@ -313,6 +313,16 @@ impl Brush {
     pub fn taper_at(&self, from_start: f32, from_end: f32) -> f32 {
         let start = if self.taper_ends.tapers_start() { self.taper_scale(from_start) } else { 1.0 };
         let end = if self.taper_ends.tapers_end() { self.taper_scale(from_end) } else { 1.0 };
+        start * end
+    }
+
+    /// Like [`Brush::taper_at`] for a whole stroke `total` pixels long: a
+    /// stroke shorter than the taper gets a taper that fits it, so a short
+    /// stroke still swells to a body and a tap paints a full dab.
+    pub fn taper_fit(&self, from_start: f32, from_end: f32, total: f32) -> f32 {
+        let length = self.taper_length().min(total.max(0.0));
+        let start = if self.taper_ends.tapers_start() { taper_curve(from_start, length) } else { 1.0 };
+        let end = if self.taper_ends.tapers_end() { taper_curve(from_end, length) } else { 1.0 };
         start * end
     }
 
@@ -339,6 +349,16 @@ impl Brush {
         let fat = (self.radius * self.roundness.clamp(0.05, 1.0).sqrt() / n.sqrt() * 2.5).max(thin);
         thin * (fat / thin).powf(b.thickness.clamp(0.0, 1.0))
     }
+}
+
+/// A taper `length` pixels long, `from_end` pixels from its point: a point
+/// at the end, swelling quickly to full size, like a burin cut.
+fn taper_curve(from_end: f32, length: f32) -> f32 {
+    if length <= 0.0 {
+        return 1.0;
+    }
+    let t = (from_end / length).clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t)
 }
 
 #[cfg(test)]

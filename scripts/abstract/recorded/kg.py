@@ -47,7 +47,7 @@ def kg(x=None, y=None, scale=1.0, rotation=0, colors=None, palette=None, shade=N
     paints every stroke with that brush instead, at the recorded sizes and paint settings."""
     cmds = [
         {'command': 'set_tool', 'tool': 'oils'},
-        {'command': 'set_brush', 'size': 14, 'hardness': 0.6, 'spacing': 0.04, 'grain': 0.6, 'opacity': 1.0, 'loading': 0.85, 'oiliness': 0.4, 'length': 0.75, 'thickness': 0.5, 'size_pressure': 0.6, 'opacity_pressure': 0.3, 'roundness': 1.0, 'angle': 0.0, 'rotation': 'none', 'roughness': 0.35, 'streaks': 0.45, 'lift_off': 0.6, 'taper': 0.0, 'taper_ends': 'both', 'tip': 'round', 'jitter_angle': 0.0, 'jitter_size': 0.0, 'scatter': 0.0, 'bristles': 0},
+        {'command': 'set_brush', 'size': 14, 'hardness': 0.6, 'spacing': 0.04, 'grain': 0.6, 'opacity': 1.0, 'loading': 0.85, 'oiliness': 0.4, 'thickness': 0.5, 'size_pressure': 0.6, 'opacity_pressure': 0.3, 'roundness': 1.0, 'angle': 0.0, 'rotation': 'none', 'roughness': 0.35, 'streaks': 0.45, 'lift_off': 0.6, 'taper': 0.0, 'taper_ends': 'both', 'tip': 'round', 'jitter_angle': 0.0, 'jitter_size': 0.0, 'scatter': 0.0, 'bristles': 0},
         {'command': 'set_paint_mode', 'mode': 'paint_mix'},
         {'command': 'set_multicolor', 'colors': []},
         {'command': 'set_color', 'hex': '#000000'},

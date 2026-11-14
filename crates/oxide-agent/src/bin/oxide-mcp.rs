@@ -116,7 +116,7 @@ impl OxideServer {
         run(&self.session, Command::SetPaintMode(a))
     }
 
-    #[tool(description = "Change brush settings (a named preset from list_brushes, size, opacity, loading, length, oiliness, shape, texture, pressure response).")]
+    #[tool(description = "Change brush settings (a named preset from list_brushes, size, opacity, loading, oiliness, shape, texture, pressure response).")]
     async fn set_brush(&self, Parameters(a): Parameters<SetBrushArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetBrush(a))
     }

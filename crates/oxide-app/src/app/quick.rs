@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Rect, Vec2};
 
-use super::panels::{length_slider, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider};
+use super::panels::{loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, flat_checkbox};
 use super::{Command, OxideApp};
 use crate::quick_panel::{QuickGroup, QuickItem};
 use crate::tools::Tool;
@@ -40,9 +40,11 @@ impl OxideApp {
             QuickItem::Taper => taper_controls(ui, &mut self.tool_states[i].shape),
             QuickItem::PaintMode => self.paint_mode_buttons(ui),
             QuickItem::Loading => loading_slider(ui, &mut self.tool_states[i]),
-            QuickItem::Length => length_slider(ui, &mut self.tool_states[i]),
             QuickItem::Oiliness => oiliness_slider(ui, &mut self.tool_states[i]),
-            QuickItem::Thickness => thickness_slider(ui, &mut self.tool_states[i]),
+            QuickItem::Thickness => {
+                flat_checkbox(ui, &mut self.tool_states[i]);
+                thickness_slider(ui, &mut self.tool_states[i]);
+            }
             QuickItem::DirtyBrush => self.dirty_brush_row(ui),
             QuickItem::Pressure => self.mouse_pressure_slider(ui),
             QuickItem::HatchKind => self.hatch_mode(ui),

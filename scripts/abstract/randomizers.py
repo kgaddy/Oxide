@@ -50,7 +50,6 @@ PAINT_RANGES = {
     "streaks": (0.5, 0.9),             # bristle streaks along the stroke
     "roughness": (0.3, 0.7),           # ragged, grainy edges
     # The paint itself (the oils settings other than loading and thickness).
-    "length": (0.4, 0.9),              # how long paint lasts along a stroke: low runs dry sooner
     "oiliness": (0.0, 0.3),            # lean (covers) to a little oily
     "opacity": (0.85, 1.0),            # nearly solid
     # The hairlines.

@@ -47,12 +47,12 @@ def plant1(x=None, y=None, scale=1.0, rotation=0, colors=None, palette=None, sha
     paints every stroke with that brush instead, at the recorded sizes and paint settings."""
     cmds = [
         {'command': 'set_tool', 'tool': 'oils'},
-        {'command': 'set_brush', 'size': 14, 'hardness': 0.6, 'spacing': 0.04, 'grain': 0.6, 'opacity': 1.0, 'loading': 0.85, 'oiliness': 0.4, 'length': 0.75, 'thickness': 0.5, 'size_pressure': 0.6, 'opacity_pressure': 0.3, 'roundness': 1.0, 'angle': 0.0, 'rotation': 'none', 'roughness': 0.35, 'streaks': 0.45, 'lift_off': 0.6, 'taper': 0.0, 'taper_ends': 'both', 'tip': 'round', 'jitter_angle': 0.0, 'jitter_size': 0.0, 'scatter': 0.0, 'bristles': 0},
+        {'command': 'set_brush', 'size': 14, 'hardness': 0.6, 'spacing': 0.04, 'grain': 0.6, 'opacity': 1.0, 'loading': 0.85, 'oiliness': 0.4, 'thickness': 0.5, 'size_pressure': 0.6, 'opacity_pressure': 0.3, 'roundness': 1.0, 'angle': 0.0, 'rotation': 'none', 'roughness': 0.35, 'streaks': 0.45, 'lift_off': 0.6, 'taper': 0.0, 'taper_ends': 'both', 'tip': 'round', 'jitter_angle': 0.0, 'jitter_size': 0.0, 'scatter': 0.0, 'bristles': 0},
         {'command': 'set_paint_mode', 'mode': 'paint_mix'},
         {'command': 'set_multicolor', 'colors': []},
         {'command': 'set_color', 'hex': '#000000'},
         '# brush: Bristle Flat',
-        {'command': 'set_brush', 'bristle_spread': 0.4, 'bristle_stiffness': 0.7, 'bristle_thickness': 0.5, 'bristles': 56, 'hardness': 0.7, 'length': 0.45, 'lift_off': 0.0, 'loading': 0.22, 'oiliness': 0.23, 'rotation': 'follow_stroke', 'roughness': 0.0, 'roundness': 0.3, 'size': 140.0, 'spacing': 0.05, 'streaks': 0.0, 'thickness': 0.25},
+        {'command': 'set_brush', 'bristle_spread': 0.4, 'bristle_stiffness': 0.7, 'bristle_thickness': 0.5, 'bristles': 56, 'hardness': 0.7, 'lift_off': 0.0, 'loading': 0.22, 'oiliness': 0.23, 'rotation': 'follow_stroke', 'roughness': 0.0, 'roundness': 0.3, 'size': 140.0, 'spacing': 0.05, 'streaks': 0.0, 'thickness': 0.25},
         {'command': 'set_color', 'hex': '#BD6153'},
         {'command': 'stroke', 'points': [[957.95, 1266.79, 0.018], [962.31, 1259.97, 0.266], [969.39, 1249.0699, 0.299], [993.09, 1212.55, 0.324], [1017.89, 1172.76, 0.348], [1024.4301, 1161.86, 0.251], [1024.7, 1160.77, 0.125], [1024.4301, 1159.6801, 0.0]]},
         {'command': 'stroke', 'points': [[1015.16, 1200.83, 0.036], [1016.25, 1195.65, 0.358], [1052.49, 1103.8, 0.367], [1073.1899, 1055.02, 0.506], [1078.64, 1041.12, 0.539], [1078.64, 1041.12, 0.0], [1072.92, 1047.9301, 0.0]]},

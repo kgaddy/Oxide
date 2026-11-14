@@ -148,7 +148,15 @@ pub struct AppSettings {
     pub tool_starts: std::collections::BTreeMap<String, ToolStart>,
     /// What the Quick section shows for each tool, by tool name. Tools not
     /// listed show their default items.
+    #[serde(deserialize_with = "known_quick_items")]
     pub quick_items: std::collections::BTreeMap<String, Vec<QuickItem>>,
+}
+
+/// Read the Quick items, skipping any this version doesn't have (such as
+/// Length, which was removed), so an old settings file still loads.
+fn known_quick_items<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::BTreeMap<String, Vec<QuickItem>>, D::Error> {
+    let raw = std::collections::BTreeMap::<String, Vec<toml::Value>>::deserialize(d)?;
+    Ok(raw.into_iter().map(|(tool, items)| (tool, items.into_iter().filter_map(|v| v.try_into().ok()).collect())).collect())
 }
 
 /// A tool's starting values: its brush and medium settings.
@@ -160,8 +168,9 @@ pub struct ToolStart {
     pub opacity: f32,
     pub loading: f32,
     pub oiliness: f32,
-    pub length: f32,
     pub thickness: f32,
+    #[serde(default)]
+    pub flat: bool,
     pub paint_mode: PaintMode,
     #[serde(default)]
     pub scrape: bool,
@@ -176,8 +185,8 @@ impl ToolStart {
             opacity: state.opacity,
             loading: state.loading,
             oiliness: state.oiliness,
-            length: state.length,
             thickness: state.thickness,
+            flat: state.flat,
             paint_mode: state.paint_mode,
             scrape: state.scrape,
             shape: BrushPreset::from_shape("", "", &state.shape),
@@ -190,10 +199,10 @@ impl ToolStart {
             opacity: self.opacity,
             loading: self.loading,
             oiliness: self.oiliness,
-            length: self.length,
             paint_mode: self.paint_mode,
             erase: false,
             thickness: self.thickness,
+            flat: self.flat,
             scrape: self.scrape,
         }
     }
@@ -472,6 +481,44 @@ mod tests {
         assert_eq!(back.quick_items(Tool::Ink), [QuickItem::Pigments, QuickItem::Size]);
         s.set_quick_items(Tool::Ink, None);
         assert_eq!(s.quick_items(Tool::Ink), QuickItem::defaults(Tool::Ink));
+    }
+
+    #[test]
+    fn old_settings_with_removed_items_still_load() {
+        // Length (removed) in a saved Quick list and a saved tool start.
+        let text = r#"
+            [tool_starts."Oils & Acrylics"]
+            opacity = 1.0
+            loading = 0.5
+            oiliness = 0.2
+            length = 0.75
+            thickness = 0.2
+            paint_mode = "PaintMix"
+            [tool_starts."Oils & Acrylics".shape]
+            name = ""
+            radius = 19.0
+            hardness = 0.6
+            spacing = 0.04
+            roundness = 1.0
+            angle = 0.0
+            roughness = 0.35
+            streaks = 0.45
+            lift_off = 0.6
+            taper = 0.02
+            rotation = "None"
+            size_pressure = 0.6
+            opacity_pressure = 0.43
+            grain = 0.6
+            tip = "round"
+            jitter_angle = 0.0
+            jitter_size = 0.0
+            scatter = 0.0
+            [quick_items]
+            "Oils & Acrylics" = ["Size", "Length", "Loading"]
+        "#;
+        let s: AppSettings = toml::from_str(text).unwrap();
+        assert_eq!(s.quick_items(Tool::OilsAcrylics), [QuickItem::Size, QuickItem::Loading]);
+        assert_eq!(s.tool_start(Tool::OilsAcrylics).0.loading, 0.5);
     }
 
     #[test]

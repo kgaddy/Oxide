@@ -18,7 +18,6 @@ pub enum QuickItem {
     /// Oils: the paint modes. Knife: Spread / Scrape.
     PaintMode,
     Loading,
-    Length,
     Oiliness,
     Thickness,
     DirtyBrush,
@@ -62,14 +61,13 @@ impl QuickGroup {
 }
 
 impl QuickItem {
-    pub const ALL: [QuickItem; 24] = [
+    pub const ALL: [QuickItem; 23] = [
         QuickItem::Brush,
         QuickItem::Size,
         QuickItem::Opacity,
         QuickItem::Taper,
         QuickItem::PaintMode,
         QuickItem::Loading,
-        QuickItem::Length,
         QuickItem::Oiliness,
         QuickItem::Thickness,
         QuickItem::DirtyBrush,
@@ -99,9 +97,8 @@ impl QuickItem {
             QuickItem::PaintMode if tool == Tool::Knife => "Spread / Scrape",
             QuickItem::PaintMode => "Paint mode",
             QuickItem::Loading => "Loading",
-            QuickItem::Length => "Length",
             QuickItem::Oiliness => "Oiliness",
-            QuickItem::Thickness => "Thickness",
+            QuickItem::Thickness => "Thickness / Flat paint",
             QuickItem::DirtyBrush => "Dirty brush",
             QuickItem::Pressure => "Mouse pressure",
             QuickItem::HatchKind => "Hatch kind",
@@ -136,7 +133,7 @@ impl QuickItem {
         match self {
             Brush | Size | Opacity => brush,
             Taper => tool.paints() || tool == Tool::Eraser,
-            PaintMode | Loading | Length | Oiliness | Thickness | DirtyBrush => tool.is_wet_medium(),
+            PaintMode | Loading | Oiliness | Thickness | DirtyBrush => tool.is_wet_medium(),
             Pressure => tool.paints() || tool == Tool::Smudge,
             HatchKind | HatchOptions => tool == Tool::Hatch,
             SelectOptions => tool == Tool::Select,

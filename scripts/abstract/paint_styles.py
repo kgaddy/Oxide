@@ -34,7 +34,7 @@ The `paint` settings (all 0 to 1 unless noted):
   streaks, roughness                       the dry-brush texture
   loading                                  how much paint the brush carries
   thickness                                how thick the paint goes on
-  length, oiliness, opacity                how long paint lasts, how oily, how solid
+  oiliness, opacity                        how oily, how solid
   hair_taper, hair_roughness               how the hairlines thin out and how ragged they are
 Each stroke in the mark wanders a little around these (see TEXTURE).
 
@@ -73,7 +73,7 @@ PAINT_DEFAULTS = {
     "bristles": 80, "bristle_thickness": 0.35, "bristle_spread": 0.6, "bristle_stiffness": 0.55,
     "streaks": 0.7, "roughness": 0.5,
     "loading": 0.9, "thickness": 0.3,
-    "length": 0.65, "oiliness": 0.15, "opacity": 0.95,
+    "oiliness": 0.15, "opacity": 0.95,
     "hair_taper": 0.8, "hair_roughness": 0.3,
 }
 
@@ -163,7 +163,7 @@ class _Mark:
         (TEXTURE) so no two strokes are alike."""
         rng, v = self.rng, self.values
         return {"loading": _wander(rng, v["loading"]), "thickness": _wander(rng, v["thickness"]),
-                "length": _wander(rng, v["length"]), "oiliness": _wander(rng, v["oiliness"]),
+                "oiliness": _wander(rng, v["oiliness"]),
                 "opacity": max(0.05, _wander(rng, v["opacity"]))}
 
     def bristle(self, radius, dry=0.5, **extra):

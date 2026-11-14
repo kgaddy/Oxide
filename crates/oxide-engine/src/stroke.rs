@@ -90,10 +90,9 @@ struct WetPaint {
     /// The clean paint the brush was loaded with. A loaded brush keeps
     /// feeding this to the tip, so it stays mostly clean while it has paint.
     loaded: Color,
-    /// How much paint is left on the brush, 0..=1.
+    /// How much paint the brush carries, 0..=1 (the brush's loading). It
+    /// doesn't run out: the brush paints the same from start to end.
     amount: f32,
-    /// How much paint it started with (the brush's loading).
-    initial: f32,
     /// False until the first dab has touched the canvas.
     started: bool,
     /// How thick the paint the brush is pushing along is (impasto it picked up).
@@ -157,7 +156,6 @@ impl Stroke {
             loaded,
             // Blend mode carries no paint of its own.
             amount: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
-            initial: if brush.paint_mode == PaintMode::Blend { 0.0 } else { brush.loading.clamp(0.0, 1.0) },
             started: false,
             relief: 0.0,
             // (A MultiColored brush starts clean, with its colors side by side.)
@@ -229,7 +227,7 @@ impl Stroke {
         let end = self.travelled;
         for i in 0..n {
             let mut dab = self.tail.pop_front().expect("counted above");
-            dab.taper *= brush.taper_at(f32::INFINITY, end - dab.dist);
+            dab.taper = end_taper(brush, &dab, end);
             // 1.0 at the start of the lift-off, down toward 0 at the very end.
             let fade = match (i + lift).checked_sub(n) {
                 Some(j) => 1.0 - (j + 1) as f32 / (lift + 1) as f32,
@@ -276,7 +274,7 @@ impl Stroke {
         // The taper's end shows as it will look when the pen lifts here.
         let end = self.travelled;
         while let Some(mut dab) = ghost.tail.pop_front() {
-            dab.taper *= brush.taper_at(f32::INFINITY, end - dab.dist);
+            dab.taper = end_taper(brush, &dab, end);
             ghost.paint(canvas, brush, dab, 1.0);
         }
         if gap && brush.taper <= 0.0 {
@@ -333,6 +331,8 @@ impl Stroke {
     /// Actually put paint down. `fade` is 1.0 normally, less while lifting off.
     fn paint(&mut self, canvas: &mut Canvas, brush: &Brush, dab: PendingDab, fade: f32) {
         let PendingDab { x, y, pressure, pen_angle, dir, has_direction, taper, .. } = dab;
+        // The bristle streaks are laid out for the full-size brush.
+        let pattern_radius = (brush.radius * brush.pressure_size(pressure)).max(0.5);
 
         // This dab's brush: turned (follow stroke / pen tilt / pen rotation)
         // and sized and faded by pen pressure.
@@ -375,11 +375,12 @@ impl Stroke {
             return;
         }
         let fade_opacity = 0.3 + 0.7 * fade;
-        let lift_dryness = (1.0 - fade) * 0.9;
+        // Lifting off, and the rough tapered ends, paint like a drier brush.
+        let lift_dryness = ((1.0 - fade) * 0.9).max(rough_end_dryness(brush, taper));
 
         let Some(wet) = &mut self.wet else {
-            let texture = (brush.is_textured() || fade < 1.0)
-                .then_some(DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness: lift_dryness });
+            let texture = (brush.is_textured() || lift_dryness > 0.0)
+                .then_some(DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness: lift_dryness, pattern_radius });
             // A firmer, more opaque touch presses further into the paper's tooth.
             let reach = (0.4 + 0.5 * brush.opacity.clamp(0.0, 1.0)) * (1.0 - 0.7 * lift_dryness);
             let style = DabStyle {
@@ -468,19 +469,18 @@ impl Stroke {
         // Lay down paint: fresh paint from the brush, plus smeared paint that
         // oily brushes drag along even when they're out of fresh paint.
         // (A scraping knife leaves only a thin film of what it drags.)
-        let scraping = brush.knife && wet.initial <= 0.0;
+        let scraping = brush.knife && wet.amount <= 0.0;
         // A knife's blade is thin: a pixel is under it only for the blade's
         // thickness, so the knife's effects are measured against that (one
         // pass of the blade = the full effect, whatever the spacing).
         let blade_travel = (brush.step() / (2.0 * brush.radius * brush.roundness.clamp(0.05, 1.0)).max(1.0)).min(1.0);
         let smear = oiliness * under_alpha * if scraping { 0.15 } else { 1.0 };
         let deposit = amount + (1.0 - amount) * smear;
-        // A brush running low leaves broken, streaky marks: weak bristles go
-        // dry first. "Low" is relative to what it started with, so a lightly
-        // loaded brush starts clean and breaks up as it empties.
-        let left = if wet.initial > 0.0 { wet.amount / wet.initial } else { 0.0 };
+        // An empty brush (smudge, Blend mode) only leaves the broken, streaky
+        // marks of the paint it drags; a loaded one paints solidly.
+        let left = if wet.amount > 0.0 { 1.0 } else { 0.0 };
         let dryness = (1.0 - (left + (1.0 - left) * smear)).max(lift_dryness);
-        let texture = DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness };
+        let texture = DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness, pattern_radius };
         // Prepare the brush color for pigment mixing on the canvas (once per dab).
         // (Paint mode covers instead of mixing with the wet paint underneath.)
         let mixes_on_surface = brush.mixing == Mixing::Pigment && brush.paint_mode != PaintMode::Paint;
@@ -492,7 +492,7 @@ impl Stroke {
             opacity: brush.opacity * deposit * fade_opacity,
             mode: DabMode::Paint,
             // Oils leave wet paint; a smudge (no paint of its own) just moves paint.
-            wetness: if wet.initial > 0.0 { Wetness::Wet } else { Wetness::Keep },
+            wetness: if wet.amount > 0.0 { Wetness::Wet } else { Wetness::Keep },
             // A knife has no bristles: no streaks; running low it skips over
             // the canvas tooth instead (through `reach`).
             texture: (!brush.knife).then_some(&texture),
@@ -501,7 +501,7 @@ impl Stroke {
             reach: (0.5 + 0.5 * left) * (1.0 - 0.7 * dryness),
             pigment: pigment.as_ref(),
             relief: Some(ReliefDab {
-                build: brush.impasto.max(0.0) * amount.min(1.0),
+                build: if brush.flat { 0.0 } else { brush.impasto.max(0.0) * amount.min(1.0) },
                 smear_to: wet.relief,
                 smear: oiliness * (1.0 - 0.5 * amount.min(1.0)),
                 // Over wet thick paint the bristles plow a furrow and push the
@@ -516,14 +516,11 @@ impl Stroke {
                 flat: brush.knife,
                 // An empty knife scrapes: wet paint comes off as it passes.
                 scrape: if scraping { 1.0 - (1.0 - 0.85 * (0.4 + 0.6 * p)).powf(blade_travel) } else { 0.0 },
+                level: brush.flat,
             }),
             bands: (!wet.bands.is_empty()).then(|| Bands { colors: &wet.bands, pigments: band_pigments.as_deref() }),
         };
         canvas.dab_with(x, y, brush, &style);
-
-        // Use up paint (only as much as actually went down). Length 1 never runs out.
-        let use_rate = (1.0 - brush.length.clamp(0.0, 1.0)) * 0.12 * travel * fresh;
-        wet.amount *= 1.0 - use_rate;
     }
 }
 
@@ -561,12 +558,32 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How many dabs to hold back so the end of the stroke can taper.
+/// How dry a dab in a tapered end paints with [`Brush::rough_ends`]: from 0
+/// where the stroke is full size up to `rough_ends` at the point (`taper` is
+/// the dab's size from the taper, 1 = full size).
+pub(super) fn rough_end_dryness(brush: &Brush, taper: f32) -> f32 {
+    brush.rough_ends.clamp(0.0, 1.0) * (1.0 - taper.clamp(0.0, 1.0)).powf(0.3)
+}
+
+/// How many dabs to hold back so the end of the stroke can taper. (Also
+/// for a taper at the start only: until the stroke is longer than the
+/// taper, its dabs wait so a short stroke can get a taper that fits it.)
 fn taper_dabs(brush: &Brush) -> usize {
-    if !brush.taper_ends.tapers_end() {
+    if brush.taper <= 0.0 {
         return 0;
     }
-    (brush.taper_length() / brush.step()).ceil() as usize
+    // +1 for the dab put down where the stroke began.
+    (brush.taper_length() / brush.step()).ceil() as usize + 1
+}
+
+/// A held-back dab's final taper once the stroke ends `end` pixels along.
+/// A stroke shorter than the taper still has all its dabs held back, so
+/// they all get a taper fitted to the stroke (a tap paints a full dab).
+fn end_taper(brush: &Brush, dab: &PendingDab, end: f32) -> f32 {
+    match end < brush.taper_length() {
+        true => brush.taper_fit(dab.dist, end - dab.dist, end),
+        false => dab.taper * brush.taper_at(f32::INFINITY, end - dab.dist),
+    }
 }
 
 /// How many dabs to hold back for the lift-off taper.
@@ -588,9 +605,43 @@ mod tests {
     const BLUE: Color = Color::rgb(0.0, 0.0, 1.0);
 
     #[test]
+    fn flat_paint_never_builds_up_and_levels_thick_paint() {
+        let thick = Brush { radius: 8.0, impasto: 0.9, loading: 1.0, wet_medium: true, streaks: 0.6, ..Brush::default() };
+        let flat = Brush { flat: true, ..thick.clone() };
+        let max = |c: &Canvas| c.relief().iter().fold(0.0f32, |m, &h| m.max(h));
+        // Over and over on bare canvas: no thickness at all, despite impasto 0.9.
+        let mut canvas = Canvas::new(120, 40, Color::TRANSPARENT);
+        for _ in 0..10 {
+            line(&mut canvas, &flat, (10.0, 20.0), (110.0, 20.0));
+        }
+        assert_eq!(max(&canvas), 0.0);
+        // Over wet thick paint: it gets leveled.
+        line(&mut canvas, &thick, (10.0, 20.0), (110.0, 20.0));
+        let before = canvas.relief()[20 * 120 + 60];
+        assert!(before > 0.3, "{before}");
+        line(&mut canvas, &flat, (10.0, 20.0), (110.0, 20.0));
+        let after = canvas.relief()[20 * 120 + 60];
+        assert!(after < 0.05, "wet thick paint is leveled: {before} -> {after}");
+        // Over dried thick paint: leveled too.
+        let n = 120 * 40;
+        canvas.set_relief(vec![0.6; n], Some(vec![0.0; n]));
+        line(&mut canvas, &flat, (10.0, 20.0), (110.0, 20.0));
+        let dried = canvas.relief()[20 * 120 + 60];
+        assert!(dried < 0.05, "dried thick paint is leveled: {dried}");
+        assert_eq!(canvas.relief()[2 * 120 + 60], 0.6, "outside the stroke stays as it was");
+        // A bristle brush, too.
+        let mut canvas = Canvas::new(120, 40, Color::TRANSPARENT);
+        let hairs = Brush { bristles: Some(crate::Bristles::default()), ..flat.clone() };
+        for _ in 0..5 {
+            line(&mut canvas, &hairs, (10.0, 20.0), (110.0, 20.0));
+        }
+        assert_eq!(max(&canvas), 0.0);
+    }
+
+    #[test]
     fn thick_paint_builds_relief_and_blending_levels_it() {
         let mut canvas = Canvas::new(120, 40, Color::TRANSPARENT);
-        let oil = Brush { radius: 8.0, impasto: 0.8, loading: 1.0, length: 1.0, wet_medium: true, streaks: 0.6, ..Brush::default() };
+        let oil = Brush { radius: 8.0, impasto: 0.8, loading: 1.0, wet_medium: true, streaks: 0.6, ..Brush::default() };
         line(&mut canvas, &oil, (10.0, 20.0), (110.0, 20.0));
         let mid = canvas.relief()[20 * 120 + 60];
         assert!(mid > 0.3, "a loaded oil stroke leaves thick paint: {mid}");
@@ -630,6 +681,55 @@ mod tests {
     /// How many pixels in column `x` the paint covers.
     fn thickness(canvas: &Canvas, x: usize) -> usize {
         (0..canvas.height()).filter(|&y| canvas.pixel(x, y).is_some_and(|c| c.a > 0.5)).count()
+    }
+
+    #[test]
+    fn rough_ends_break_up_the_tapered_ends_only() {
+        // A wet, streaky stroke tapered at both ends (48 px per end).
+        let gaps = |rough: f32| {
+            let brush = Brush { radius: 6.0, spacing: 0.05, taper: 0.5, streaks: 0.4, rough_ends: rough, wet_medium: true, ..Brush::default() };
+            let mut canvas = Canvas::new(300, 30, Color::TRANSPARENT);
+            line(&mut canvas, &brush, (20.0, 15.0), (280.0, 15.0));
+            // Empty pixels across the stroke between its painted edges, in column x.
+            let gaps_at = |x: usize| {
+                let col: Vec<bool> = (0..30).map(|y| canvas.pixel(x, y).unwrap().a > 0.3).collect();
+                match (col.iter().position(|&p| p), col.iter().rposition(|&p| p)) {
+                    (Some(a), Some(b)) => col[a..=b].iter().filter(|&&p| !p).count(),
+                    _ => 0,
+                }
+            };
+            let ends: usize = (28..44).chain(256..272).map(gaps_at).sum();
+            let middle: usize = (120..180).map(gaps_at).sum();
+            (ends, middle)
+        };
+        let (clean_ends, _) = gaps(0.0);
+        let (rough_ends, rough_middle) = gaps(1.0);
+        assert!(rough_ends > clean_ends + 10, "the ends break up: {rough_ends} vs {clean_ends}");
+        assert_eq!(rough_middle, 0, "the middle stays solid");
+    }
+
+    #[test]
+    fn taper_fits_short_strokes_and_taps() {
+        // Taper 0.5 at radius 6 is 48 px per end.
+        let brush = Brush { radius: 6.0, hardness: 1.0, spacing: 0.05, taper: 0.5, ..Brush::default() };
+        // A tap paints a full-size dab, not a speck.
+        let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
+        let mut tap = Stroke::begin(&mut canvas, &brush, DabMode::Paint, 20.0, 20.0);
+        tap.finish(&mut canvas, &brush);
+        assert!(thickness(&canvas, 20) >= 10, "tap: {}", thickness(&canvas, 20));
+        // A stroke shorter than the taper still swells to a body in the middle
+        // and points at both ends.
+        let mut canvas = Canvas::new(80, 30, Color::TRANSPARENT);
+        line(&mut canvas, &brush, (20.0, 15.0), (60.0, 15.0));
+        let middle = thickness(&canvas, 40);
+        assert!(middle >= 5, "short stroke body: {middle}");
+        assert!(thickness(&canvas, 21) < middle && thickness(&canvas, 59) < middle);
+        // Taper on the start only works the same way.
+        let start_only = Brush { taper_ends: crate::TaperEnds::Start, ..brush };
+        let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
+        let mut tap = Stroke::begin(&mut canvas, &start_only, DabMode::Paint, 20.0, 20.0);
+        tap.finish(&mut canvas, &start_only);
+        assert!(thickness(&canvas, 20) >= 10);
     }
 
     #[test]
@@ -681,19 +781,19 @@ mod tests {
         assert!(!Brush::default().is_wet());
         assert!(Brush { oiliness: 0.3, ..Brush::default() }.is_wet());
         assert!(Brush { loading: 0.5, ..Brush::default() }.is_wet());
-        assert!(Brush { length: 0.5, ..Brush::default() }.is_wet());
         assert!(Brush { wet_medium: true, ..Brush::default() }.is_wet());
     }
 
     #[test]
-    fn low_loading_runs_dry() {
-        let mut canvas = Canvas::new(400, 20, Color::TRANSPARENT);
-        let brush = Brush { radius: 5.0, loading: 0.9, length: 0.3, spacing: 0.05, ..Brush::default() };
-        line(&mut canvas, &brush, (10.0, 10.0), (390.0, 10.0));
+    fn paint_never_runs_out() {
+        // A long wet stroke is as solid at its end as at its start.
+        let mut canvas = Canvas::new(1200, 20, Color::TRANSPARENT);
+        let brush = Brush { radius: 5.0, loading: 0.9, spacing: 0.05, wet_medium: true, ..Brush::default() };
+        line(&mut canvas, &brush, (10.0, 10.0), (1190.0, 10.0));
         let start = canvas.pixel(15, 10).unwrap().a;
-        let end = canvas.pixel(385, 10).unwrap().a;
+        let end = canvas.pixel(1180, 10).unwrap().a;
         assert!(start > 0.9, "start alpha {start}");
-        assert!(end < start * 0.5, "paint should fade: start {start}, end {end}");
+        assert!((end - start).abs() < 0.05, "paint shouldn't fade: start {start}, end {end}");
     }
 
     #[test]
@@ -722,9 +822,10 @@ mod tests {
         let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
         canvas.dab_with(60.0, 10.0, &red_block, &wet);
 
-        // RGB mixing here: this test is about the pickup *mechanics*.
+        // RGB mixing here: this test is about the pickup *mechanics*. (Loading
+        // 0.6: a lightly loaded brush cleans itself slowly, so it stays dirty.)
         let oily_blue =
-            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.9, length: 0.9, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.6, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let stroke = line(&mut canvas, &oily_blue, (20.0, 10.0), (90.0, 10.0));
 
         // Just after passing through red, the blue paint is tinted red.
