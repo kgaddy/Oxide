@@ -4,6 +4,8 @@
 
 A natural-media painting app written in Rust. It's developed on macOS and also builds for Windows and Linux. It focuses on **oils, acrylics and pen & ink**: paint that stays wet, smears and mixes like real pigment (blue + yellow = green), and builds up thick impasto that catches the light. AI agents such as Claude can paint in it too, through a built-in MCP server.
 
+![Painting chili peppers in Oxide with oils on a gesso panel](assets/screenshots/paprika.jpg)
+
 > **Status:** early and in active development. The `.oxide` file format may still change. macOS is the main, tested platform; Windows and Linux compile but haven't been tried on real machines yet (see [Platform support](#platform-support)).
 
 ## Features
@@ -16,6 +18,15 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 - **Pen tablets (macOS):** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing.
 - **Files:** a native `.oxide` format that keeps wet paint and impasto. Export to PNG, JPEG, BMP, TIFF, WebP and layered PSD.
 - **Scripting and AI agents:** an MCP server (`oxide-mcp`) and a JSON command runner (`oxide-run`). The app can also record what you paint as a replayable script.
+
+## Screenshots
+
+| | |
+|:---:|:---:|
+| ![Oil strokes with flat, filbert and knife brushes, mixing wet into wet](assets/screenshots/brush-strokes.jpg) | ![The mixing palette: mix paint like on a real palette, then pick it up to paint with](assets/screenshots/mixing-palette.jpg) |
+| Wet oils with flat, filbert and knife brushes | The mixing palette |
+| ![The canvas rotated for a comfortable stroke angle, with the navigator](assets/screenshots/paprika-rotated.jpg) | |
+| Rotate the canvas to paint at a natural angle | |
 
 ## Requirements
 
