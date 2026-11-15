@@ -228,7 +228,7 @@ fn grainy_brush_skips_valleys_on_rough_paper() {
     let mut doc = Document::with_surface(128, 128, Color::WHITE, rough);
     let pencil = Brush { radius: 60.0, hardness: 1.0, grain: 1.0, ..Brush::default() };
     let light_touch =
-        DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None, relief: None, bands: None };
+        DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None, relief: None, bands: None, flow: None };
     doc.active_canvas().dab_with(64.0, 64.0, &pencil, &light_touch);
     let covered = (0..128 * 128)
         .filter(|&i| doc.layers()[0].canvas.dry_pixels()[i][3] > 0.5)

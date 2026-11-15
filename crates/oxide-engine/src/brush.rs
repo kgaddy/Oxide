@@ -150,8 +150,9 @@ pub struct Brush {
     pub taper: f32,
     /// Which ends the taper points.
     pub taper_ends: TaperEnds,
-    /// How much the tapered ends break up into dry, streaky bristle marks
-    /// (0..=1; 0 = clean points). Only where the stroke tapers.
+    /// How much the ends of a stroke break up into dry, streaky bristle marks
+    /// (0..=1; 0 = clean ends), over the taper if there is one, or a few
+    /// brush widths if not. The [taper ends](Brush::taper_ends) setting picks the ends.
     pub rough_ends: f32,
     /// Pick up dry paint as well as wet (the Smudge tool works on dry paint).
     pub pickup_dry: bool,
@@ -326,6 +327,37 @@ impl Brush {
         start * end
     }
 
+    /// How long each end's [rough ends](Brush::rough_ends) zone is, in canvas
+    /// pixels: the taper's length, or without a taper up to 6 brush radii
+    /// (capped like the taper). Also how far the stroke's end is held back.
+    pub fn ends_length(&self) -> f32 {
+        if self.taper > 0.0 {
+            self.taper_length()
+        } else if self.rough_ends > 0.0 {
+            (self.radius * 6.0).min(120.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// How close a dab `from_start` pixels into a stroke `total` pixels long
+    /// (`from_end` before its end; INFINITY while the end isn't known) is to
+    /// a rough end: 1 at the end point, 0 past the [ends zone](Brush::ends_length).
+    /// A stroke shorter than two zones gets zones that fit it (a tap has none).
+    pub fn end_closeness(&self, from_start: f32, from_end: f32, total: f32) -> f32 {
+        let length = self.ends_length().min(total.max(0.0));
+        let start = if self.taper_ends.tapers_start() { end_curve(from_start, length) } else { 0.0 };
+        let end = if self.taper_ends.tapers_end() { end_curve(from_end, length) } else { 0.0 };
+        start.max(end)
+    }
+
+    /// How far the brush moves between dabs, as a share of its width along
+    /// the stroke (so about 1 / how many dabs overlap a pixel), 0..=1.
+    pub fn spacing_share(&self) -> f32 {
+        let size = self.radius * 2.0 * self.roundness.clamp(0.05, 1.0).max(0.25);
+        (self.step() / size.max(0.5)).clamp(0.001, 1.0)
+    }
+
     pub fn step(&self) -> f32 {
         // Flat tips are thinner across, so space dabs by the thin side too.
         let size = self.radius * 2.0 * self.roundness.clamp(0.05, 1.0).max(0.25);
@@ -359,6 +391,16 @@ fn taper_curve(from_end: f32, length: f32) -> f32 {
     }
     let t = (from_end / length).clamp(0.0, 1.0);
     1.0 - (1.0 - t) * (1.0 - t)
+}
+
+/// How close to the point of an end `length` pixels long a dab `from_end`
+/// pixels from it is: 1 at the point, 0 from `length` on. (Matches the
+/// taper's shape: where the taper is at size `s`, this is `(1 − s)^0.3`.)
+fn end_curve(from_end: f32, length: f32) -> f32 {
+    if length <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - (from_end / length).clamp(0.0, 1.0)).powf(0.6)
 }
 
 #[cfg(test)]

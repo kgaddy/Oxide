@@ -172,7 +172,7 @@ pub struct BrushShape {
     pub taper: f32,
     /// Which ends the taper points (both, or just the start or the end).
     pub taper_ends: TaperEnds,
-    /// How much the tapered ends break up into dry bristle marks (0 = clean points).
+    /// How much the stroke's ends break up into dry bristle marks (0 = clean ends), with or without a taper.
     pub rough_ends: f32,
     /// How much the paper texture shows in the stroke (0 = ignores the paper).
     pub grain: f32,

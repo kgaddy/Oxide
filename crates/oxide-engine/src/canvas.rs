@@ -65,6 +65,23 @@ pub struct DabStyle<'a> {
     /// MultiColored brush: colors in bands across the tip (and, for pigment
     /// mixing, each band's pigment). None = one color (`color`).
     pub bands: Option<Bands<'a>>,
+    /// Build up instead of stacking (wet paint): `opacity` is how solid the
+    /// finished stroke is, and each dab lays down this share of it (about
+    /// 1 / how many dabs overlap a pixel). Anywhere the brush covers fairly
+    /// well builds up to the full opacity; only the soft rim stays lighter.
+    /// None = each dab paints `coverage × opacity`.
+    pub flow: Option<Flow>,
+}
+
+/// How a wet brush builds up its stroke (see [`DabStyle::flow`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Flow {
+    /// The share of the stroke's opacity each dab lays down.
+    pub share: f32,
+    /// How solid the brush is by its settings (loading × opacity, before pen
+    /// pressure), 0..=1. A firm brush covers dab by dab instead of building
+    /// up in thin layers, which wet paint underneath would mix into.
+    pub firm: f32,
 }
 
 /// A grid of pixels we paint into: one layer of a painting.
@@ -447,7 +464,7 @@ impl Canvas {
     /// Strokes are made of many overlapping dabs; see [`crate::Stroke`].
     pub fn dab(&mut self, cx: f32, cy: f32, brush: &Brush, mode: DabMode) {
         let style =
-            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+            DabStyle { color: brush.color, opacity: brush.opacity, mode, wetness: Wetness::Dry, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         self.dab_with(cx, cy, brush, &style);
     }
 
@@ -481,7 +498,19 @@ impl Canvas {
                 if coverage <= 0.0 {
                     continue;
                 }
-                let mut strength = (coverage * style.opacity).clamp(0.0, 1.0);
+                let mut strength = match style.flow {
+                    Some(Flow { share, firm }) => {
+                        let total = style.opacity.clamp(0.0, 0.995);
+                        let built = 1.0 - (1.0 - total).powf(share * (coverage * 3.0).min(1.0));
+                        // A fully loaded brush at full opacity just covers, dab
+                        // by dab, as a solid brush does (built up in thin
+                        // layers, wet paint underneath would mix into every one).
+                        let solid = (coverage * style.opacity).clamp(0.0, 1.0);
+                        let k = ((firm - 0.85) / 0.15).clamp(0.0, 1.0);
+                        built + (solid.max(built) - built) * k * k
+                    }
+                    None => (coverage * style.opacity).clamp(0.0, 1.0),
+                };
                 if self.preserve_alpha {
                     // Lock transparency: no erasing, and paint only as much as
                     // there's already paint here.
@@ -820,7 +849,7 @@ mod tests {
         let brush = Brush { radius: 5.0, ..Brush::default() };
         // Dry red underneath, wet blue on top.
         canvas.dab(10.0, 10.0, &Brush { color: Color::rgb(1.0, 0.0, 0.0), ..brush.clone() }, DabMode::Paint);
-        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet_blue = DabStyle { color: Color::rgb(0.0, 0.0, 1.0), opacity: 0.5, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet_blue);
         assert!(canvas.has_wet_paint());
 
@@ -836,7 +865,7 @@ mod tests {
     fn wet_count_stays_exact() {
         let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
         let brush = Brush { radius: 6.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: Color::BLACK, opacity: 0.7, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         let exact = |c: &Canvas| c.wet_pixels().iter().filter(|p| p[3] > 0.0).count();
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab_with(14.0, 12.0, &brush, &wet);
@@ -870,7 +899,7 @@ mod tests {
     fn dry_media_dries_the_wet_paint_it_covers() {
         let mut canvas = Canvas::new(20, 20, Color::TRANSPARENT);
         let brush = Brush { radius: 5.0, ..Brush::default() };
-        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(10.0, 10.0, &brush, &wet);
         canvas.dab(10.0, 10.0, &Brush { color: Color::WHITE, ..brush }, DabMode::Paint);
         assert_eq!(canvas.wetness_at(10, 10), 0.0);

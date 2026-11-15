@@ -379,7 +379,7 @@ mod tests {
         doc.begin_stroke();
         let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
         let relief = Some(crate::ReliefDab { build: 0.7, smear_to: 0.0, smear: 0.0, plow: 0.0, push: 0.0, flat: false, scrape: 0.0, level: false });
-        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief, bands: None };
+        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief, bands: None, flow: None };
         doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
         doc.end_stroke();
         doc.add_layer();
@@ -438,7 +438,7 @@ mod tests {
     fn mixing_palette_is_saved_inside_the_painting() {
         let mut doc = Document::new(20, 20, Color::WHITE);
         let mut palette = Document::new(16, 8, Color::rgb(0.9, 0.9, 0.9));
-        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         palette.active_canvas().dab_with(8.0, 4.0, &Brush { radius: 3.0, ..Brush::default() }, &wet);
         palette.notes = "Paints:\n• Ultramarine Blue (#1C2A6B)\n• Burnt Umber \"quoted\" — ok".into();
         doc.palette = Some(Box::new(palette));

@@ -5,7 +5,7 @@
 //! the canvas it draws a thin line from where it was, with its own paint.
 //! Light pressure: only the middle hairs touch. Firm: all of them, splayed.
 
-use crate::canvas::{ReliefDab, unpremultiply};
+use crate::canvas::{Flow, ReliefDab, unpremultiply};
 use crate::paint::{Mixing, mix_paint};
 use crate::spectral::Pigment;
 use crate::tip::{hash, hash2};
@@ -98,8 +98,10 @@ impl Stroke {
         let p = pressure.clamp(0.0, 1.0);
         // Light pressure: only the middle hairs touch; lifting off, or in a
         // rough tapered end, fewer still.
-        let rough = super::rough_end_dryness(brush, dab.taper);
-        let contact = (0.4 + 0.6 * p) * (0.35 + 0.65 * fade) * (1.0 - 0.6 * rough);
+        // A lightly loaded brush drags too: only the strong hairs leave paint.
+        let rough = super::rough_end_dryness(brush, dab.rough);
+        let thin = self.wet.as_ref().map_or(0.0, |w| super::loading_dryness(w.amount * mode_rates(brush, p).0));
+        let contact = (0.4 + 0.6 * p) * (0.35 + 0.65 * fade) * (1.0 - 0.6 * rough.max(thin));
         // Pressing harder splays the hairs apart (and a light touch draws them in).
         let splay = 1.0 + set.spread.clamp(0.0, 1.0) * (p - 0.5) * 0.6;
         let (sin, cos) = brush.angle.to_radians().sin_cos();
@@ -132,6 +134,8 @@ impl Stroke {
         let mixes_on_surface = brush.mixing == Mixing::Pigment && brush.paint_mode != crate::PaintMode::Paint;
         let plow = 1.0 - (1.0 - plow_force(brush.paint_mode, p)).powf(travel);
 
+        let tap = self.placed <= 1;
+        let tap_or = |share: f32| if tap { 1.0 } else { share };
         let mut color_sum = [0.0f32; 3];
         let mut touched = 0usize;
         for b in &mut self.bristles {
@@ -162,6 +166,7 @@ impl Stroke {
                     pigment: None,
                     relief: None,
                     bands: None,
+                    flow: None,
                 },
                 Some((amount, started, fresh, oiliness, under_relief)) => {
                     // This hair's own paint (the brush never runs dry; an
@@ -188,7 +193,10 @@ impl Stroke {
                         b.loaded = mix_paint(b.loaded, average, crate::multicolor::drift(travel, oiliness), brush.mixing);
                     }
                     let smear = oiliness * under_alpha;
-                    let deposit = own + (1.0 - own) * smear;
+                    // Loading = how solid the stroke ends up; each hair's dabs
+                    // (about three overlap a pixel) lay down their share.
+                    let cover = super::loaded_cover(own);
+                    let deposit = cover + (1.0 - cover) * smear;
                     let pigment = if mixes_on_surface {
                         let stale = b.pigment.as_ref().is_none_or(|(c, _)| color_diff(*c, b.color) > 0.01);
                         if stale {
@@ -217,6 +225,11 @@ impl Stroke {
                             level: brush.flat,
                         }),
                         bands: None, // each hair already carries its own color
+                        // About three of a hair's dabs overlap a pixel.
+                        flow: Some(Flow {
+                            share: tap_or(0.3),
+                            firm: brush.opacity / brush.pressure_opacity(pressure).max(0.01) * cover,
+                        }),
                     }
                 }
             };

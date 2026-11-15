@@ -24,7 +24,7 @@ mod transform;
 
 pub use blend::{BlendMode, blend};
 pub use brush::{Bristles, Brush, PaintMode, Rotation, TaperEnds};
-pub use canvas::{Buffers, Canvas, Color, DabMode, DabStyle, MAX_RELIEF, ReliefDab, Wetness};
+pub use canvas::{Buffers, Canvas, Color, DabMode, DabStyle, Flow, MAX_RELIEF, ReliefDab, Wetness};
 pub use document::{Clip, DEFAULT_DPI, Document, Layer, LayerGroup, LayerMask};
 pub use file::FileError;
 pub use paint::{Mixing, mix_paint};

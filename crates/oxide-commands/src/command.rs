@@ -171,8 +171,8 @@ pub struct SetBrushArgs {
     /// Which ends the taper points: "both" (default), "start" (starts at a point,
     /// ends full size) or "end" (starts full size, ends at a point).
     pub taper_ends: Option<String>,
-    /// How much the tapered ends break up into dry, streaky bristle marks 0–1
-    /// (0 = clean points; only where the stroke tapers).
+    /// How much the ends of each stroke break up into dry, streaky bristle marks 0–1
+    /// (0 = clean ends), over the taper or, without one, a few brush widths.
     pub rough_ends: Option<f32>,
     /// How much the paper texture shows in the stroke 0–1.
     pub grain: Option<f32>,

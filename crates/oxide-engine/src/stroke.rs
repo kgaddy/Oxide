@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 mod bristle;
 
-use crate::canvas::{Bands, ReliefDab, unpremultiply};
+use crate::canvas::{Bands, Flow, ReliefDab, unpremultiply};
 use crate::paint::mix_paint;
 use crate::tip::{DabTexture, hash2};
 use crate::brush::{PaintMode, Rotation};
@@ -72,6 +72,9 @@ pub struct Stroke {
     /// Fixed per stroke: decides the bristle pattern and edge randomness.
     seed: u32,
     dab_count: u32,
+    /// How many dabs have been placed (painted or held back). A tap (one
+    /// dab) paints at full strength; wet paint otherwise builds up dab by dab.
+    placed: u32,
     /// Smoothed direction of travel (unit vector), for bristle streaks.
     dir: (f32, f32),
     has_direction: bool,
@@ -132,6 +135,9 @@ struct PendingDab {
     dist: f32,
     /// Size from the taper so far (1 = full size); the end is applied at pen-up.
     taper: f32,
+    /// How close it is to a rough end so far (0..=1, see [`Brush::end_closeness`]);
+    /// the end is applied at pen-up.
+    rough: f32,
 }
 
 impl Stroke {
@@ -173,6 +179,7 @@ impl Stroke {
             wet,
             seed: hash2(x.to_bits(), y.to_bits()),
             dab_count: 0,
+            placed: 0,
             dir: (cos, sin),
             has_direction: false,
             tail: VecDeque::new(),
@@ -218,7 +225,8 @@ impl Stroke {
     }
 
     /// Pen up: paint the held-back dabs, fading out as the brush lifts.
-    /// (Safe to skip for brushes without lift-off; they hold nothing back.)
+    /// (Safe to skip only for dry brushes without lift-off, taper or rough ends; they
+    /// hold nothing back. Wet brushes always hold back their latest dab.)
     pub fn finish(&mut self, canvas: &mut Canvas, brush: &Brush) {
         let n = self.tail.len();
         // The taper may hold back more dabs than lift-off; only the last
@@ -227,7 +235,7 @@ impl Stroke {
         let end = self.travelled;
         for i in 0..n {
             let mut dab = self.tail.pop_front().expect("counted above");
-            dab.taper = end_taper(brush, &dab, end);
+            (dab.taper, dab.rough) = (end_taper(brush, &dab, end), end_rough(brush, &dab, end));
             // 1.0 at the start of the lift-off, down toward 0 at the very end.
             let fade = match (i + lift).checked_sub(n) {
                 Some(j) => 1.0 - (j + 1) as f32 / (lift + 1) as f32,
@@ -274,15 +282,21 @@ impl Stroke {
         // The taper's end shows as it will look when the pen lifts here.
         let end = self.travelled;
         while let Some(mut dab) = ghost.tail.pop_front() {
-            dab.taper = end_taper(brush, &dab, end);
+            (dab.taper, dab.rough) = (end_taper(brush, &dab, end), end_rough(brush, &dab, end));
             ghost.paint(canvas, brush, dab, 1.0);
         }
-        if gap && brush.taper <= 0.0 {
+        if gap && brush.ends_length() <= 0.0 {
             let p = self.last_point;
-            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction, dist: end, taper: 1.0 };
+            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction, dist: end, taper: 1.0, rough: 0.0 };
             ghost.paint(canvas, brush, dab, 1.0);
         }
         Some(Preview { region, saved })
+    }
+
+    /// How much of the stroke's paint each wet dab lays down: `share`, or
+    /// all of it for a tap (a single dab has nothing to build up with).
+    fn flow_share(&self, share: f32) -> f32 {
+        if self.placed <= 1 { 1.0 } else { share }
     }
 
     /// The color on the brush now (for wet brushes), so a "dirty brush" can
@@ -320,8 +334,11 @@ impl Stroke {
     #[allow(clippy::too_many_arguments)]
     fn place_at(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32, pressure: f32, pen_angle: Option<f32>, dist: f32) {
         let taper = brush.taper_at(dist, f32::INFINITY);
-        self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction, dist, taper });
-        let keep = lift_off_dabs(brush).max(taper_dabs(brush));
+        let rough = brush.end_closeness(dist, f32::INFINITY, f32::INFINITY);
+        self.tail.push_back(PendingDab { x, y, pressure, pen_angle, dir: self.dir, has_direction: self.has_direction, dist, taper, rough });
+        self.placed += 1;
+        // (Wet paint: at least one dab waits, so a tap can be told apart from a stroke.)
+        let keep = lift_off_dabs(brush).max(end_dabs(brush)).max(usize::from(self.wet.is_some()));
         while self.tail.len() > keep {
             let dab = self.tail.pop_front().expect("longer than keep");
             self.paint(canvas, brush, dab, 1.0);
@@ -330,7 +347,7 @@ impl Stroke {
 
     /// Actually put paint down. `fade` is 1.0 normally, less while lifting off.
     fn paint(&mut self, canvas: &mut Canvas, brush: &Brush, dab: PendingDab, fade: f32) {
-        let PendingDab { x, y, pressure, pen_angle, dir, has_direction, taper, .. } = dab;
+        let PendingDab { x, y, pressure, pen_angle, dir, has_direction, taper, rough, .. } = dab;
         // The bristle streaks are laid out for the full-size brush.
         let pattern_radius = (brush.radius * brush.pressure_size(pressure)).max(0.5);
 
@@ -344,6 +361,8 @@ impl Stroke {
         }
         adjusted.radius = (brush.radius * brush.pressure_size(pressure) * taper).max(0.5);
         adjusted.opacity = brush.opacity * brush.pressure_opacity(pressure);
+        // How solid the brush is set to paint, before pen pressure.
+        let set_opacity = brush.opacity;
         let dab_seed = hash2(self.seed, self.dab_count);
         self.dab_count += 1;
         // A multi-frame imported tip: each dab picks one of its variations.
@@ -375,8 +394,9 @@ impl Stroke {
             return;
         }
         let fade_opacity = 0.3 + 0.7 * fade;
-        // Lifting off, and the rough tapered ends, paint like a drier brush.
-        let lift_dryness = ((1.0 - fade) * 0.9).max(rough_end_dryness(brush, taper));
+        // Lifting off, and the rough ends, paint like a drier brush.
+        let lift_dryness = ((1.0 - fade) * 0.9).max(rough_end_dryness(brush, rough));
+        let flow = self.flow_share(brush.spacing_share());
 
         let Some(wet) = &mut self.wet else {
             let texture = (brush.is_textured() || lift_dryness > 0.0)
@@ -393,6 +413,7 @@ impl Stroke {
                 pigment: None,
                 relief: None,
                 bands: brush.is_multicolor().then_some(Bands { colors: &brush.colors, pigments: None }),
+                flow: None,
             };
             canvas.dab_with(x, y, brush, &style);
             return;
@@ -475,11 +496,16 @@ impl Stroke {
         // pass of the blade = the full effect, whatever the spacing).
         let blade_travel = (brush.step() / (2.0 * brush.radius * brush.roundness.clamp(0.05, 1.0)).max(1.0)).min(1.0);
         let smear = oiliness * under_alpha * if scraping { 0.15 } else { 1.0 };
-        let deposit = amount + (1.0 - amount) * smear;
+        // Loading is how solid the finished stroke is: each
+        // dab lays down its share, so the overlapping dabs add up to it
+        // whatever the spacing, instead of piling up to opaque.
+        let cover = loaded_cover(amount);
+        let deposit = cover + (1.0 - cover) * smear;
         // An empty brush (smudge, Blend mode) only leaves the broken, streaky
-        // marks of the paint it drags; a loaded one paints solidly.
+        // marks of the paint it drags; a loaded one paints solidly, and a
+        // lightly loaded one breaks up into bristle marks (dry brush).
         let left = if wet.amount > 0.0 { 1.0 } else { 0.0 };
-        let dryness = (1.0 - (left + (1.0 - left) * smear)).max(lift_dryness);
+        let dryness = (1.0 - (left + (1.0 - left) * smear)).max(lift_dryness).max(loading_dryness(amount) * (1.0 - smear));
         let texture = DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness, pattern_radius };
         // Prepare the brush color for pigment mixing on the canvas (once per dab).
         // (Paint mode covers instead of mixing with the wet paint underneath.)
@@ -519,6 +545,7 @@ impl Stroke {
                 level: brush.flat,
             }),
             bands: (!wet.bands.is_empty()).then(|| Bands { colors: &wet.bands, pigments: band_pigments.as_deref() }),
+            flow: Some(Flow { share: flow, firm: set_opacity * cover }),
         };
         canvas.dab_with(x, y, brush, &style);
     }
@@ -532,7 +559,9 @@ fn mode_rates(brush: &Brush, p: f32) -> (f32, f32) {
         // Pure color: no pickup, no smearing.
         PaintMode::Paint => (1.0, 0.0),
         // Light touch: less paint, more mixing. Full pressure = as set.
-        PaintMode::PaintMix => (0.4 + 0.6 * p, (base_oil * (1.0 + (1.0 - p) * 0.8)).min(1.0)),
+        // (A light touch still lays down most of the paint: Loading and the
+        // opacity pressure setting are what make it see-through.)
+        PaintMode::PaintMix => (0.8 + 0.2 * p, (base_oil * (1.0 + (1.0 - p) * 0.8)).min(1.0)),
         // Light touch: blend only; firm: paint.
         PaintMode::PaintBlend => (smoothstep(0.25, 0.85, p), base_oil + (1.0 - p) * (0.9 - base_oil).max(0.0)),
         // No paint: light = soft blending, firm = smudging further.
@@ -558,22 +587,36 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How dry a dab in a tapered end paints with [`Brush::rough_ends`]: from 0
-/// where the stroke is full size up to `rough_ends` at the point (`taper` is
-/// the dab's size from the taper, 1 = full size).
-pub(super) fn rough_end_dryness(brush: &Brush, taper: f32) -> f32 {
-    brush.rough_ends.clamp(0.0, 1.0) * (1.0 - taper.clamp(0.0, 1.0)).powf(0.3)
+/// How solid a finished stroke is at this loading (0..=1). Curved so that
+/// most of the range is see-through to solid: 0.15 is a faint
+/// glaze, 0.65 mostly covers, 0.85 and up is solid.
+pub(super) fn loaded_cover(amount: f32) -> f32 {
+    1.0 - (1.0 - amount.clamp(0.0, 1.0)).powf(1.6)
 }
 
-/// How many dabs to hold back so the end of the stroke can taper. (Also
-/// for a taper at the start only: until the stroke is longer than the
-/// taper, its dabs wait so a short stroke can get a taper that fits it.)
-fn taper_dabs(brush: &Brush) -> usize {
-    if brush.taper <= 0.0 {
+/// How dry (broken into bristle marks) a brush paints at this loading: a
+/// lightly loaded brush drags, so the weak bristles leave nothing.
+pub(super) fn loading_dryness(amount: f32) -> f32 {
+    if amount <= 0.0 { 0.0 } else { (1.0 - amount.clamp(0.0, 1.0)).powf(2.0) * 0.7 }
+}
+
+/// How dry a dab near an end paints with [`Brush::rough_ends`]: from 0
+/// outside the ends up to `rough_ends` at the very end (`closeness` is from
+/// [`Brush::end_closeness`]).
+pub(super) fn rough_end_dryness(brush: &Brush, closeness: f32) -> f32 {
+    brush.rough_ends.clamp(0.0, 1.0) * closeness.clamp(0.0, 1.0)
+}
+
+/// How many dabs to hold back so the end of the stroke can taper or break
+/// up (rough ends). (Also for the start only: until the stroke is longer
+/// than the end zone, its dabs wait so a short stroke gets ends that fit it.)
+fn end_dabs(brush: &Brush) -> usize {
+    let length = brush.ends_length();
+    if length <= 0.0 {
         return 0;
     }
     // +1 for the dab put down where the stroke began.
-    (brush.taper_length() / brush.step()).ceil() as usize + 1
+    (length / brush.step()).ceil() as usize + 1
 }
 
 /// A held-back dab's final taper once the stroke ends `end` pixels along.
@@ -583,6 +626,15 @@ fn end_taper(brush: &Brush, dab: &PendingDab, end: f32) -> f32 {
     match end < brush.taper_length() {
         true => brush.taper_fit(dab.dist, end - dab.dist, end),
         false => dab.taper * brush.taper_at(f32::INFINITY, end - dab.dist),
+    }
+}
+
+/// A held-back dab's final closeness to a rough end once the stroke ends
+/// `end` pixels along (fitted to a stroke shorter than the end zone).
+fn end_rough(brush: &Brush, dab: &PendingDab, end: f32) -> f32 {
+    match end < brush.ends_length() {
+        true => brush.end_closeness(dab.dist, end - dab.dist, end),
+        false => dab.rough.max(brush.end_closeness(f32::INFINITY, end - dab.dist, f32::INFINITY)),
     }
 }
 
@@ -684,6 +736,54 @@ mod tests {
     }
 
     #[test]
+    fn loading_sets_how_solid_the_stroke_is_whatever_the_spacing() {
+        // As in another app: low loading is a see-through glaze, high is solid, and
+        // the overlapping dabs don't pile up to opaque.
+        let alpha = |loading: f32, spacing: f32| {
+            let brush = Brush { radius: 8.0, hardness: 0.8, loading, spacing, wet_medium: true, ..Brush::default() };
+            let mut canvas = Canvas::new(200, 30, Color::TRANSPARENT);
+            line(&mut canvas, &brush, (20.0, 15.0), (180.0, 15.0));
+            canvas.pixel(100, 15).unwrap().a
+        };
+        let (faint, half, solid) = (alpha(0.15, 0.04), alpha(0.5, 0.04), alpha(1.0, 0.04));
+        assert!(faint < 0.4, "loading 0.15 is a glaze: {faint}");
+        assert!(half > faint + 0.2 && half < solid - 0.05, "0.5 in between: {half}");
+        assert!(solid > 0.95, "loading 1 is solid: {solid}");
+        let (dense, sparse) = (alpha(0.5, 0.02), alpha(0.5, 0.1));
+        assert!((dense - sparse).abs() < 0.08, "spacing doesn't change it: {dense} vs {sparse}");
+        // A tap lays down the full loading in one dab.
+        let brush = Brush { radius: 8.0, hardness: 0.8, loading: 0.5, spacing: 0.04, wet_medium: true, ..Brush::default() };
+        let mut canvas = Canvas::new(40, 40, Color::TRANSPARENT);
+        let mut tap = Stroke::begin(&mut canvas, &brush, DabMode::Paint, 20.0, 20.0);
+        tap.finish(&mut canvas, &brush);
+        let dot = canvas.pixel(20, 20).unwrap().a;
+        assert!((dot - half).abs() < 0.15, "tap {dot} vs stroke {half}");
+    }
+
+    #[test]
+    fn a_fully_loaded_brush_covers_wet_paint_at_any_pressure() {
+        // Loading and opacity all the way up: yellow over wet blue stays
+        // yellow (it doesn't build up in thin layers that mix to green), even
+        // with a light touch and opacity on pressure.
+        let blue = Brush { color: Color::rgb(0.15, 0.1, 0.85), radius: 10.0, wet_medium: true, mixing: Mixing::Pigment, ..Brush::default() };
+        let yellow = Brush {
+            color: Color::rgb(0.85, 0.75, 0.05),
+            paint_mode: PaintMode::PaintMix,
+            oiliness: 0.03,
+            opacity_pressure: 0.43,
+            ..blue.clone()
+        };
+        let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
+        line(&mut canvas, &blue, (20.0, 20.0), (180.0, 20.0));
+        let at = |pressure: f32| StrokePoint { pressure, ..StrokePoint::mouse(0.0, 0.0) };
+        let mut stroke = Stroke::begin_at(&mut canvas, &yellow, DabMode::Paint, StrokePoint { x: 20.0, y: 20.0, ..at(0.6) }, None);
+        stroke.line_to_point(&mut canvas, &yellow, StrokePoint { x: 180.0, y: 20.0, ..at(0.6) });
+        stroke.finish(&mut canvas, &yellow);
+        let c = canvas.pixel(100, 20).unwrap();
+        assert!(c.r > 0.7 && c.b < 0.2, "still yellow, not green: {c:?}");
+    }
+
+    #[test]
     fn rough_ends_break_up_the_tapered_ends_only() {
         // A wet, streaky stroke tapered at both ends (48 px per end).
         let gaps = |rough: f32| {
@@ -706,6 +806,32 @@ mod tests {
         let (rough_ends, rough_middle) = gaps(1.0);
         assert!(rough_ends > clean_ends + 10, "the ends break up: {rough_ends} vs {clean_ends}");
         assert_eq!(rough_middle, 0, "the middle stays solid");
+    }
+
+    #[test]
+    fn rough_ends_work_without_a_taper() {
+        // No taper: the ends still break up, over 6 brush radii (36 px here).
+        let gaps = |rough: f32| {
+            let brush = Brush { radius: 6.0, spacing: 0.05, streaks: 0.4, rough_ends: rough, wet_medium: true, ..Brush::default() };
+            let mut canvas = Canvas::new(300, 30, Color::TRANSPARENT);
+            line(&mut canvas, &brush, (20.0, 15.0), (280.0, 15.0));
+            let gaps_at = |x: usize| {
+                let col: Vec<bool> = (0..30).map(|y| canvas.pixel(x, y).unwrap().a > 0.3).collect();
+                match (col.iter().position(|&p| p), col.iter().rposition(|&p| p)) {
+                    (Some(a), Some(b)) => col[a..=b].iter().filter(|&&p| !p).count(),
+                    _ => 0,
+                }
+            };
+            let ends: usize = (22..36).chain(264..278).map(gaps_at).sum();
+            let middle: usize = (120..180).map(gaps_at).sum();
+            let full = thickness(&canvas, 30);
+            (ends, middle, full)
+        };
+        let (clean_ends, _, clean_width) = gaps(0.0);
+        let (rough_ends, rough_middle, _) = gaps(1.0);
+        assert!(rough_ends > clean_ends + 10, "the ends break up: {rough_ends} vs {clean_ends}");
+        assert_eq!(rough_middle, 0, "the middle stays solid");
+        assert!(clean_width >= 10, "no taper: full width near the end ({clean_width})");
     }
 
     #[test]
@@ -819,7 +945,7 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         // Wet red paint (a block painted with the wet medium).
         let red_block = Brush { color: RED, radius: 20.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(60.0, 10.0, &red_block, &wet);
 
         // RGB mixing here: this test is about the pickup *mechanics*. (Loading
@@ -849,7 +975,7 @@ mod tests {
     fn loaded_brush_stays_mostly_its_own_color_over_wet_paint() {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(100.0, 10.0, &red_block, &wet);
 
         // A freshly loaded brush with moderate oiliness (like the default oils).
@@ -863,7 +989,7 @@ mod tests {
     fn brush_cleans_up_after_leaving_wet_paint() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 15.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(40.0, 10.0, &red_block, &wet);
 
         let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.6, loading: 0.9, spacing: 0.05, ..Brush::default() };
@@ -892,7 +1018,7 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let yellow = Color::rgb(0.988, 0.827, 0.0);
         let block = Brush { color: yellow, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(100.0, 10.0, &block, &wet);
 
         let blue = Color::rgb(0.0, 0.129, 0.522);
@@ -943,7 +1069,7 @@ mod tests {
     fn red_field() -> Canvas {
         let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
         let block = Brush { color: RED, radius: 60.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None };
+        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
         canvas.dab_with(50.0, 20.0, &block, &wet);
         canvas
     }

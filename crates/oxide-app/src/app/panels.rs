@@ -818,17 +818,18 @@ pub(super) fn brush_combo(ui: &mut egui::Ui, id: &str, presets: &crate::presets:
     });
 }
 
-/// The Taper slider, and right under it which ends it points and how rough
-/// they are (Properties, Settings, Quick and Brush Creator), boxed together.
-/// The ends only show once Taper is on.
+/// The Taper and Rough ends sliders, and which ends they work on
+/// (Properties, Settings, Quick and Brush Creator), boxed together. The
+/// ends choice only shows once either is on.
 pub(super) fn taper_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape) {
     ui.group(|ui| {
         ui.set_width(ui.available_width());
         taper_slider(ui, shape);
-        if shape.taper > 0.0 {
+        ui.add(egui::Slider::new(&mut shape.rough_ends, 0.0..=1.0).text("Rough ends")).on_hover_text(
+            "The ends of the stroke break up into dry, streaky bristle marks, over the taper or, without one, a few brush widths (0 = clean ends)",
+        );
+        if shape.taper > 0.0 || shape.rough_ends > 0.0 {
             taper_ends_controls(ui, shape, false);
-            ui.add(egui::Slider::new(&mut shape.rough_ends, 0.0..=1.0).text("Rough ends"))
-                .on_hover_text("The tapered ends break up into dry, streaky bristle marks (0 = clean points)");
         }
     });
 }
@@ -845,13 +846,13 @@ pub(super) fn taper_slider(ui: &mut egui::Ui, shape: &mut crate::tools::BrushSha
 fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape, reverse: bool) {
     use oxide_engine::TaperEnds;
     ui.horizontal(|ui| {
-        if shape.taper <= 0.0 {
+        if shape.taper <= 0.0 && shape.rough_ends <= 0.0 {
             ui.disable();
         }
         let mut both = shape.taper_ends == TaperEnds::Both;
         if ui
             .checkbox(&mut both, "Both ends")
-            .on_hover_text("Point both ends of the stroke. Off: full size at one end, tapering to a point at the other")
+            .on_hover_text("Taper and roughen both ends of the stroke. Off: only where it ends")
             .on_disabled_hover_text("Turn Taper up above 0 to point the ends of the stroke")
             .changed()
         {
