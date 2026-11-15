@@ -1,5 +1,7 @@
 # Oxide
 
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/kevingaddy)
+
 A natural-media painting app written in Rust. It's developed on macOS and also builds for Windows and Linux. It focuses on **oils, acrylics and pen & ink**: paint that stays wet, smears and mixes like real pigment (blue + yellow = green), and builds up thick impasto that catches the light. AI agents such as Claude can paint in it too, through a built-in MCP server.
 
 > **Status:** early and in active development. The `.oxide` file format may still change. macOS is the main, tested platform; Windows and Linux compile but haven't been tried on real machines yet (see [Platform support](#platform-support)).
@@ -10,7 +12,7 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 - **Pigment color mixing:** spectral (Kubelka-Munk style) mixing, ported from [spectral.js](https://github.com/rvanwijnen/spectral.js), on the canvas and on a mixing palette.
 - **Impasto and surfaces:** thick paint keeps its height and is lit. Paper, canvas, linen and panel surfaces have adjustable depth and lighting.
 - **More tools:** Ink, Pencil, Marker, Airbrush, Eraser, Smudge, Palette Knife, Hatch (engraving-style line fills), Select and Picker.
-- **Layers:** groups, masks, blend modes, locks, a tracing layer, and a Reference Image window to paint from.
+- **Layers:** groups, blend modes, locks, a tracing layer, and a Reference Image window to paint from.
 - **Pen tablets (macOS):** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing.
 - **Files:** a native `.oxide` format that keeps wet paint and impasto. Export to PNG, JPEG, BMP, TIFF, WebP and layered PSD.
 - **Scripting and AI agents:** an MCP server (`oxide-mcp`) and a JSON command runner (`oxide-run`). The app can also record what you paint as a replayable script.
@@ -245,6 +247,10 @@ New to Rust? *[The Rust Programming Language](https://doc.rust-lang.org/book/)*,
 ## Contributing
 
 <!-- TODO: contribution guidelines (issues, pull requests, code style) once the repo is public. -->
+
+## Support
+
+Oxide is free and open source, built in my spare time. If you enjoy it, you can support its development on [Ko-fi](https://ko-fi.com/kevingaddy). ☕
 
 ## License
 
