@@ -248,7 +248,7 @@ New to Rust? *[The Rust Programming Language](https://doc.rust-lang.org/book/)*,
 
 ## License
 
-<!-- TODO: no LICENSE file yet. The release notes recommend "MIT OR Apache-2.0"; add the LICENSE file(s) and `license` fields in each Cargo.toml, then state it here. -->
+Oxide is released under the [MIT License](LICENSE). Third-party code it includes keeps its own license; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Acknowledgments
 
