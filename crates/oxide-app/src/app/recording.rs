@@ -67,7 +67,7 @@ impl OxideApp {
     /// Every frame: with the mouse up, catch the layer and paper changes made
     /// in the panels (so they're written before the next action).
     pub(super) fn recording_frame(&mut self, pointer_down: bool) {
-        if !pointer_down && self.stroke.is_none() && self.mask_last.is_none() {
+        if !pointer_down && self.stroke.is_none() {
             self.with_recorder(|r, _, doc| r.sync(doc));
         }
     }
@@ -80,7 +80,6 @@ impl OxideApp {
         }
         let layer = |index: Option<usize>| LayerRefArgs { index, name: None };
         let selection = |action: &str| Script::Selection(SelectionArgs { action: action.into(), radius: None });
-        let mask = |action: &str| Script::Mask(MaskArgs { action: action.into() });
         let script = match command {
             Command::Undo => Script::Undo(NoArgs {}),
             Command::Redo => Script::Redo(NoArgs {}),
@@ -101,13 +100,6 @@ impl OxideApp {
             Command::ClearLayer => Script::ClearLayer(layer(None)),
             Command::GroupLayer => Script::GroupLayer(NoArgs {}),
             Command::Ungroup => Script::Ungroup(NoArgs {}),
-            Command::AddMask => mask("add"),
-            Command::ToggleMask => {
-                let on = self.document.layers()[self.document.active_index()].mask.as_ref().is_some_and(|m| m.enabled);
-                mask(if on { "on" } else { "off" })
-            }
-            Command::ApplyMask => mask("apply"),
-            Command::DeleteMask => mask("delete"),
             Command::SelectAll => selection("all"),
             Command::Deselect => selection("none"),
             Command::InvertSelection => selection("invert"),

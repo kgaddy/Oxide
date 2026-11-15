@@ -181,11 +181,6 @@ impl OxideServer {
         run(&self.session, Command::Selection(a))
     }
 
-    #[tool(description = "Layer mask of the current layer: add (from the selection), on, off, apply, delete. Paint on it with stroke target \"mask\".")]
-    async fn mask(&self, Parameters(a): Parameters<MaskArgs>) -> Result<CallToolResult, McpError> {
-        run(&self.session, Command::Mask(a))
-    }
-
     #[tool(description = "Put the current layer in a new layer group. Moving a layer (move_layer) against a group's edge moves it in or out of the group.")]
     async fn group_layer(&self) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::GroupLayer(NoArgs {}))

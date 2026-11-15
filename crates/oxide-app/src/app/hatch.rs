@@ -109,8 +109,8 @@ impl OxideApp {
     }
 
     fn paint_hatch_now(&mut self, rails: Rails, seed: u32) {
-        if !self.document.can_paint_active() || self.mask_painting() {
-            self.error("Can't hatch here: pick a visible, unlocked layer (and leave mask editing).");
+        if !self.document.can_paint_active() {
+            self.error("Can't hatch here: pick a visible, unlocked layer.");
             return;
         }
         let lines = hatch_lines_with_edge(&rails.0, &rails.1, rails.2.as_deref(), &self.hatch.settings, seed);

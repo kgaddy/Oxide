@@ -329,37 +329,6 @@ impl OxideApp {
                 }
             }
         });
-        // The layer mask: hide parts of the layer without erasing them.
-        ui.add_space(4.0);
-        match self.document.layers()[active].mask.as_ref().map(|m| m.enabled) {
-            None => {
-                let label = if self.document.selection().is_some() { "Add mask from selection" } else { "Add mask" };
-                if ui.button(format!("◐ {label}")).on_hover_text("Hide parts of this layer without erasing them: paint on the mask with dark to hide, light to reveal").clicked()
-                {
-                    self.run(Command::AddMask, ui.ctx());
-                }
-            }
-            Some(enabled) => {
-                ui.horizontal(|ui| {
-                    ui.label("◐ Mask");
-                    let mut on = enabled;
-                    if ui.checkbox(&mut on, "On").on_hover_text("Switch the mask's effect on or off").changed() {
-                        self.document.set_mask_enabled(on);
-                    }
-                    ui.checkbox(&mut self.editing_mask, "Paint on mask")
-                        .on_hover_text("Strokes go to the mask: dark colors hide, light colors reveal, the eraser reveals");
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Apply").on_hover_text("Erase the hidden paint for good and remove the mask").clicked() {
-                        self.run(Command::ApplyMask, ui.ctx());
-                    }
-                    if ui.button("Delete").on_hover_text("Remove the mask (nothing is erased)").clicked() {
-                        self.run(Command::DeleteMask, ui.ctx());
-                    }
-                });
-            }
-        }
-
         // The current layer's group: name, opacity, ungroup.
         if let Some(group) = self.document.layers()[active].group.and_then(|id| self.document.group(id)).cloned() {
             ui.add_space(4.0);

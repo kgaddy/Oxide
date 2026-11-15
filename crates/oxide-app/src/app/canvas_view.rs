@@ -130,34 +130,6 @@ impl OxideApp {
                             self.pick_color(c);
                         }
                     }
-                    // Painting on the layer's mask: dark hides, light reveals, the eraser reveals.
-                    _ if !blocked && self.mask_painting() && (self.tool.paints() || self.tool == Tool::Eraser) => {
-                        let mut brush = self.stroke_brush();
-                        brush.radius = (brush.radius * brush.pressure_size(point.pressure)).max(0.5);
-                        brush.opacity *= brush.pressure_opacity(point.pressure);
-                        let erasing = self.tool == Tool::Eraser || (self.tool.is_wet_medium() && self.state().erase);
-                        let c = self.color;
-                        let value = if erasing { 1.0 } else { 0.299 * c.r + 0.587 * c.g + 0.114 * c.b };
-                        match self.mask_last {
-                            None => {
-                                if self.document.begin_mask_stroke() {
-                                    self.with_recorder(|r, hand, doc| {
-                                        r.begin_stroke(hand, doc, Some("mask"));
-                                        r.point(point);
-                                    });
-                                    self.document.mask_dab(p.x, p.y, &brush, value);
-                                    self.mask_last = Some((p.x, p.y));
-                                }
-                            }
-                            Some(last) => {
-                                self.document.mask_line(last, (p.x, p.y), &brush, value);
-                                if let Some(r) = &mut self.recorder {
-                                    r.point(point);
-                                }
-                                self.mask_last = Some((p.x, p.y));
-                            }
-                        }
-                    }
                     _ if !blocked => {
                         let erasing = self.tool == Tool::Eraser || (self.tool.is_wet_medium() && self.state().erase);
                         let mode = if erasing { DabMode::Erase } else { DabMode::Paint };
@@ -249,12 +221,6 @@ impl OxideApp {
                 }
                 self.select_release();
                 self.hatch_release();
-                if self.mask_last.take().is_some() {
-                    self.document.end_mask_stroke();
-                    if let Some(r) = &mut self.recorder {
-                        r.end_stroke();
-                    }
-                }
             }
         }
 
@@ -309,18 +275,6 @@ impl OxideApp {
         }
         self.draw_selection(&painter, &xf);
         self.draw_hatch_rails(&painter, &xf);
-        // Painting on a mask: say so, top-left of the workspace.
-        if self.mask_painting() {
-            let pos = workspace.left_top() + Vec2::new(12.0, 12.0);
-            let mask_on = self.document.layers()[self.document.active_index()].mask.as_ref().is_some_and(|m| m.enabled);
-            let text = if mask_on {
-                "◐ Painting on the layer mask: dark hides, light reveals (eraser reveals)"
-            } else {
-                "◌ Painting on the layer mask, but it's off: changes won't show until you turn it on (Layers panel → Mask → On)"
-            };
-            painter.text(pos + Vec2::splat(1.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::BLACK);
-            painter.text(pos, egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
-        }
         if transforming {
             let hover = response.hover_pos().filter(|_| !space_down && !r_down);
             self.transform_overlay(ui, &painter, &xf, hover);

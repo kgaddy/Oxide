@@ -217,9 +217,7 @@ pub struct StrokeArgs {
     pub pressure: Option<f32>,
     /// Draw a smooth curve through the points instead of straight segments (default false).
     pub smooth: Option<bool>,
-    /// "canvas" (default), "palette" (the mixing palette, 640×400), or
-    /// "mask" (the current layer's mask: the color's lightness is the value,
-    /// black hides, white reveals; the eraser reveals).
+    /// "canvas" (default) or "palette" (the mixing palette, 640×400).
     pub target: Option<String>,
 }
 

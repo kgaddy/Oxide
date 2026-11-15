@@ -182,13 +182,9 @@ pub struct OxideApp {
     select_drag: Option<select_tool::SelectDrag>,
     selection_outline: select_tool::OutlineCache,
     feather_radius: f32,
-    /// Paint on the current layer's mask instead of its paint.
-    editing_mask: bool,
     /// The last copied paint (keeps wetness and thickness), and a fingerprint
     /// of the image we put on the system clipboard, to know if it's still ours.
     clip: Option<(oxide_engine::Clip, u64)>,
-    /// The last point of a stroke on a mask.
-    mask_last: Option<(f32, f32)>,
     /// The preset picked last for each tool (for the brush name in Properties).
     brush_names: [Option<String>; Tool::COUNT],
     /// The secondary color (the second swatch; ⌘\\ swaps).
@@ -278,11 +274,6 @@ enum Command {
     SwapColors,
     GroupLayer,
     Ungroup,
-    AddMask,
-    ToggleMaskPainting,
-    ToggleMask,
-    ApplyMask,
-    DeleteMask,
     Copy,
     Cut,
     Paste,
@@ -445,9 +436,7 @@ impl OxideApp {
             select_drag: None,
             selection_outline: Default::default(),
             feather_radius: 8.0,
-            editing_mask: false,
             clip: None,
-            mask_last: None,
             multicolor: Vec::new(),
             multicolor_on: false,
             secondary: Color::WHITE,
@@ -563,11 +552,6 @@ impl OxideApp {
                 mode.label()
             ));
         }
-    }
-
-    /// Are strokes going to the current layer's mask?
-    fn mask_painting(&self) -> bool {
-        self.editing_mask && self.document.layers()[self.document.active_index()].mask.is_some()
     }
 
     /// Is the MultiColored brush on, with at least two colors loaded?
@@ -743,21 +727,6 @@ impl OxideApp {
             Command::ShowShortcuts => self.show_shortcuts = true,
             Command::Settings => self.show_settings(),
             Command::SwapColors => self.swap_colors(),
-            Command::AddMask => {
-                if self.document.add_mask() {
-                    self.editing_mask = true;
-                    self.info("Added a mask. Painting now goes to the mask: dark hides, light reveals (Layers panel → Paint on mask to switch back).");
-                }
-            }
-            Command::ToggleMaskPainting => self.editing_mask = !self.editing_mask,
-            Command::ToggleMask => {
-                let i = self.document.active_index();
-                if let Some(on) = self.document.layers()[i].mask.as_ref().map(|m| m.enabled) {
-                    self.document.set_mask_enabled(!on);
-                }
-            }
-            Command::ApplyMask => self.document.apply_mask(),
-            Command::DeleteMask => self.document.delete_mask(),
             Command::Copy => self.copy(false),
             Command::Cut => self.copy(true),
             Command::Paste => self.paste(),
