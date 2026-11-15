@@ -247,11 +247,6 @@ impl OxideApp {
         loading_slider(ui, state);
         oiliness_slider(ui, state);
         thickness_slider(ui, state);
-        let mut placeholder = 0.0;
-        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Impasto depth"))
-            .on_disabled_hover_text("Paint thickness: coming with impasto (milestone 6)");
-        ui.add_enabled(false, egui::Slider::new(&mut placeholder, 0.0..=1.0).text("Gloss"))
-            .on_disabled_hover_text("Shine on thick paint: coming with impasto (milestone 6)");
         self.mouse_pressure_slider(ui);
     }
 

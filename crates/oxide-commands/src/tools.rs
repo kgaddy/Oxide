@@ -7,6 +7,9 @@
 
 use oxide_engine::{Bristles, Brush, Color, PaintMode, Rotation, TaperEnds, Tip};
 
+/// How thick Oils & Acrylics paint is at Thickness 1 (the brush's impasto build).
+pub const OIL_THICKNESS_MAX: f32 = 0.13;
+
 /// The tool that the left mouse button / pen uses on the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -276,7 +279,12 @@ impl ToolState {
             brush.oiliness = self.oiliness;
             brush.paint_mode = self.paint_mode;
             brush.wet_medium = true;
-            brush.impasto = self.thickness;
+            // Oils' Thickness slider tops out at what used to be 0.13: brush
+            // marks catch the light without piling up (the knife lays it on thick).
+            brush.impasto = match tool {
+                Tool::OilsAcrylics => self.thickness * OIL_THICKNESS_MAX,
+                _ => self.thickness,
+            };
             brush.flat = self.flat;
         }
         if tool == Tool::Knife {
