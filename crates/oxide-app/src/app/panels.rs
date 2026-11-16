@@ -578,7 +578,7 @@ impl OxideApp {
             ui.vertical(|ui| {
                 ui.monospace(oxide_commands::palette::to_hex(self.color));
                 ui.horizontal(|ui| {
-                    if ui.small_button("⇄ Swap").on_hover_text("Swap primary and secondary colors (⌘\\)").clicked() {
+                    if ui.small_button(format!("{} Swap", egui_phosphor::regular::ARROWS_LEFT_RIGHT)).on_hover_text("Swap primary and secondary colors (⌘\\)").clicked() {
                         swap = true;
                     }
                     if ui.small_button("Pick").on_hover_text("Pick a color from the painting: click the canvas, then you're back to your tool. (Or hold ⌥ and click the canvas with any tool; the Picker tool, I, keeps picking.)").clicked() {
@@ -856,7 +856,7 @@ fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape, 
         if reverse && !both {
             let reversed = shape.taper_ends == TaperEnds::Start;
             let hint = "Which end gets the point. Off: the stroke starts full size and tapers where it ends. On: it starts at a point and ends full size (Hatch: Break up moves to that end too).\n(Hatch lines end at the second rail, or where you finished the rails for Along.)";
-            if ui.selectable_label(reversed, "⇄ Reverse").on_hover_text(hint).clicked() {
+            if ui.selectable_label(reversed, format!("{} Reverse", egui_phosphor::regular::ARROWS_LEFT_RIGHT)).on_hover_text(hint).clicked() {
                 shape.taper_ends = if reversed { TaperEnds::End } else { TaperEnds::Start };
             }
         }

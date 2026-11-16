@@ -8,7 +8,7 @@ random place on the canvas, all the same size, each in shades of one palette col
 Everything shared (the palette, the composition, the background, the command line) comes from
 the shared modules, so this file holds only what is particular to this painting.
 
-From a recording to a painting (run from the repo root, /Users/kevingaddy/Documents/Rust/Oxide):
+From a recording to a painting (run from the repo root):
 
 1. Record the mark in the app: press ⏺ Record in the status bar, paint it, press ⏹ Stop and
    save the .jsonl (here ~/Desktop/mark1.jsonl). Open the app with:

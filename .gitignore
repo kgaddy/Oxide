@@ -2,3 +2,10 @@
 .DS_Store
 agent-study.png
 agent-study.oxide
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local Claude Code instructions (machine-specific paths)
+CLAUDE.local.md

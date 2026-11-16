@@ -72,7 +72,7 @@ impl OxideApp {
         }
     }
 
-    /// Choosing the items: the ones in use (drag to reorder, ✕ to take one
+    /// Choosing the items: the ones in use (drag to reorder, Remove to take one
     /// out), then everything else that fits this tool, to add.
     fn quick_editor(&mut self, ui: &mut egui::Ui, tool: Tool, mut items: Vec<QuickItem>) {
         let before = items.clone();
@@ -90,7 +90,7 @@ impl OxideApp {
                 .response
                 .on_hover_text("Drag to move");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").on_hover_text("Take it out").clicked() {
+                    if ui.small_button("Remove").on_hover_text("Take it out of Quick").clicked() {
                         remove = Some(n);
                     }
                 });

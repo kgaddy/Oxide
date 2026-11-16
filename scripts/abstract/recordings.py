@@ -404,7 +404,7 @@ def function_name(path):
     return name
 
 
-def to_python(cmds, name, source="a recording"):
+def to_python(cmds, name, source="a recording", out=RECORDED_DIR):
     """The text of a Python module with one function, `name`, that paints `cmds`."""
     canvas = next((c for c in cmds if isinstance(c, dict) and c["command"] == "new_painting"), None)
     dropped = sorted({c["command"] for c in cmds if isinstance(c, dict) and c["command"] in CANVAS_COMMANDS})
@@ -433,6 +433,10 @@ def to_python(cmds, name, source="a recording"):
              f"({origin[0]:.0f}, {origin[1]:.0f}) and it reaches {reach(kept, origin):.0f} px from there (at scale 1)."
              if box else "It paints nothing on the canvas.")
     body = "\n".join(f"        {c!r}," for c in kept)
+    # Converted somewhere other than scripts/abstract/recorded: also look where recordings.py is.
+    elsewhere = Path(out).expanduser().resolve() != RECORDED_DIR.resolve()
+    extra_note = ", or where it was converted" if elsewhere else ""
+    extra_path = f", {str(SCRIPT_DIR)!r}" if elsewhere else ""
     return f'''"""{name}: converted from {source} by recordings.py on {date.today()}.
 
     from recorded import {name}
@@ -451,8 +455,8 @@ Paint a demo of it: python3 scripts/abstract/recorded/{name}.py --run
 import sys
 from pathlib import Path
 
-# recordings.py is in scripts/abstract: the folder above this one, or where it was converted.
-sys.path[:0] = [str(Path(__file__).resolve().parent.parent), {str(SCRIPT_DIR)!r}]
+# recordings.py is in scripts/abstract: the folder above this one{extra_note}.
+sys.path[:0] = [str(Path(__file__).resolve().parent.parent){extra_path}]
 import recordings  # noqa: E402
 
 ORIGIN = {origin!r}  # the middle of the strokes, where they were painted
@@ -507,7 +511,7 @@ def convert(jsonl_path, name=None, out=RECORDED_DIR):
     if not package.exists():
         package.write_text('"""Recordings converted to Python by recordings.py (one module each)."""\n')
     path = out / f"{name}.py"
-    path.write_text(to_python(commands.read_script(jsonl_path), name, jsonl_path.name))
+    path.write_text(to_python(commands.read_script(jsonl_path), name, jsonl_path.name, out))
     return path
 
 

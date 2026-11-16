@@ -16,8 +16,8 @@ Paint a demo of it: python3 scripts/abstract/recorded/kg.py --run
 import sys
 from pathlib import Path
 
-# recordings.py is in scripts/abstract: the folder above this one, or where it was converted.
-sys.path[:0] = [str(Path(__file__).resolve().parent.parent), '/Users/kevingaddy/Documents/Rust/Oxide/scripts/abstract']
+# recordings.py is in scripts/abstract: the folder above this one.
+sys.path[:0] = [str(Path(__file__).resolve().parent.parent)]
 import recordings  # noqa: E402
 
 ORIGIN = (1339.67, 2017.78)  # the middle of the strokes, where they were painted
