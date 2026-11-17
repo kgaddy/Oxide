@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn loading_sets_how_solid_the_stroke_is_whatever_the_spacing() {
-        // As in another app: low loading is a see-through glaze, high is solid, and
+        // Low loading is a see-through glaze, high is solid, and
         // the overlapping dabs don't pile up to opaque.
         let alpha = |loading: f32, spacing: f32| {
             let brush = Brush { radius: 8.0, hardness: 0.8, loading, spacing, wet_medium: true, ..Brush::default() };
