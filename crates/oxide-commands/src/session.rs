@@ -367,9 +367,17 @@ impl Session {
     }
 
     fn open(&mut self, a: PathArgs) -> R {
+        let path = PathBuf::from(&a.path);
+        if crate::reb::is_reb(&path) {
+            // Imported, not opened: saving needs a new .oxide path.
+            self.document = crate::reb::load_reb(&path).map_err(|e| format!("Couldn't import {}: {e}", a.path))?;
+            self.path = None;
+            self.carried = None;
+            return Ok(Output::Json(self.info()));
+        }
         let file = File::open(&a.path).map_err(|e| format!("Couldn't open {}: {e}", a.path))?;
         self.document = Document::load(BufReader::new(file)).map_err(|e| format!("Couldn't open {}: {e}", a.path))?;
-        self.path = Some(PathBuf::from(&a.path));
+        self.path = Some(path);
         self.carried = None;
         Ok(Output::Json(self.info()))
     }
@@ -992,6 +1000,7 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Reference photos: import_image with reference: true puts the photo on a locked tracing layer and adds a layer above to paint on. Every stroke then takes its color from the photo where the stroke starts (so place each stroke's first point on the color you want). pick_color with from: \"reference\" reads the photo's exact color. Hide the tracing layer (set_layer visible: false) to judge your painting on its own; tracing still works while hidden.
 - Mixing palette (640×400): palette_add_swatch, stroke with target \"palette\", palette_pick, palette_notes, snapshot target \"palette\".
 - Every change is one undo step (undo / redo). Use snapshot to SEE the result before deciding the next strokes.
+- open also imports .reb paintings (layers, wet paint, thickness); save the result as .oxide.
 - Save as .oxide (keeps layers, wet paint, palette); export to png/jpeg/bmp/tiff/webp/psd.";
 
 #[cfg(test)]

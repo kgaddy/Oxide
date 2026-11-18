@@ -9,6 +9,7 @@ pub mod hatch;
 pub mod import;
 pub mod palette;
 pub mod presets;
+pub mod reb;
 pub mod recorder;
 pub mod script_layer;
 pub mod session;

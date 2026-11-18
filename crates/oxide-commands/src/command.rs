@@ -81,7 +81,7 @@ pub struct NewPaintingArgs {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PathArgs {
-    /// File path (an .oxide painting).
+    /// File path (an .oxide painting; open also imports .reb paintings).
     pub path: String,
 }
 

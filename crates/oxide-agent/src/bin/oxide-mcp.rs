@@ -71,7 +71,7 @@ impl OxideServer {
         run(&self.session, Command::NewPainting(a))
     }
 
-    #[tool(description = "Open an .oxide painting from disk.")]
+    #[tool(description = "Open an .oxide painting from disk, or import a .reb painting (layers, wet paint and thickness; save it as .oxide).")]
     async fn open(&self, Parameters(a): Parameters<PathArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::Open(a))
     }

@@ -13,6 +13,8 @@ use super::OxideApp;
 use crate::settings::DialogFolder;
 
 const OXIDE_FILTER: (&str, &[&str]) = ("Oxide painting", &["oxide"]);
+/// What File → Open accepts: Oxide paintings and importable .reb paintings.
+const OPEN_FILTER: (&str, &[&str]) = ("Paintings", &["oxide", "reb"]);
 
 /// Something the user asked for that has to wait for "save changes?".
 #[derive(Clone, PartialEq, Debug)]
@@ -135,7 +137,7 @@ impl OxideApp {
     }
 
     fn open_dialog(&mut self) {
-        let dialog = self.dialog(DialogFolder::Paintings).add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1);
+        let dialog = self.dialog(DialogFolder::Paintings).add_filter(OPEN_FILTER.0, OPEN_FILTER.1);
         if let Some(path) = dialog.pick_file() {
             self.remember_folder(DialogFolder::Paintings, &path);
             self.open_path(path);
@@ -143,6 +145,9 @@ impl OxideApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
+        if oxide_commands::reb::is_reb(&path) {
+            return self.import_reb(&path);
+        }
         let result = File::open(&path)
             .map_err(|e| e.to_string())
             .and_then(|f| Document::load(BufReader::new(f)).map_err(|e| e.to_string()));
@@ -154,6 +159,18 @@ impl OxideApp {
                 self.save_app_settings();
             }
             Err(e) => self.error(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// Open a .reb painting as a new, unsaved Oxide painting (Save asks
+    /// where to put the .oxide; the original file is never written).
+    fn import_reb(&mut self, path: &Path) {
+        match oxide_commands::reb::load_reb(path) {
+            Ok(document) => {
+                self.replace_document(document, None);
+                self.info(format!("Imported {}. Wet paint and thickness are approximate. Save to keep it as .oxide.", path.display()));
+            }
+            Err(e) => self.error(format!("Couldn't import {}: {e}", path.display())),
         }
     }
 
@@ -315,11 +332,11 @@ impl OxideApp {
         let mut painting = None;
         for path in paths {
             match ext(&path).as_str() {
-                "oxide" => painting = painting.or(Some(path)),
+                "oxide" | "reb" => painting = painting.or(Some(path)),
                 "abr" | "gbr" | "gih" => tips.push(path),
                 "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp" | "bmp" => self.import_image_file(&path),
                 "jsonl" => self.import_script_file(&path),
-                _ => self.error(format!("Oxide can't open {} (paintings: .oxide; images; scripts: .jsonl; brushes: .abr, .gbr, .gih)", path.display())),
+                _ => self.error(format!("Oxide can't open {} (paintings: .oxide, .reb; images; scripts: .jsonl; brushes: .abr, .gbr, .gih)", path.display())),
             }
         }
         if !tips.is_empty() {
