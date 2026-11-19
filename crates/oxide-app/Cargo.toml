@@ -9,6 +9,8 @@ arboard = { version = "3.6.1", default-features = false, features = ["image-data
 dirs = "7.0.0"
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu"] }
 egui-phosphor = "0.14.0"
+egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark", "load-images"] }
+egui_extras = { version = "0.36.0", default-features = false, features = ["image", "file"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp"] }
 oxide-commands = { version = "0.1.0", path = "../oxide-commands" }
 oxide-engine = { version = "0.1.0", path = "../oxide-engine" }

@@ -19,6 +19,7 @@ mod transform;
 mod panels;
 mod quick;
 mod recording;
+mod help;
 mod reference_image;
 
 use std::path::PathBuf;
@@ -172,6 +173,8 @@ pub struct OxideApp {
     reference: reference_image::ReferenceImage,
     /// Help → Keyboard Shortcuts window.
     show_shortcuts: bool,
+    /// Help → Oxide Help: the wiki's Using Oxide pages.
+    help: help::Help,
     /// The Brushes panel's search box.
     brush_search: String,
     /// The group name being edited in the Layers panel.
@@ -268,6 +271,12 @@ enum Command {
     ToggleBrushCreator,
     TogglePenSettings,
     ShowShortcuts,
+    /// Help → Oxide Help (where it was left).
+    ShowHelp,
+    /// Help → the current tool's page.
+    ToolHelp,
+    /// Help → the wiki online, in the browser.
+    OpenWiki,
     /// Settings… (⌘,).
     Settings,
     MultiColor,
@@ -302,7 +311,7 @@ impl Command {
         matches!(
             self,
             Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
-                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts | Settings
+                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts | ShowHelp | ToolHelp | OpenWiki | Settings
                 | Theme(_) | OpenThemesFolder | ReloadThemes | Record
         )
     }
@@ -430,6 +439,7 @@ impl OxideApp {
             transform: None,
             stabilizer: Default::default(),
             show_shortcuts: false,
+            help: Default::default(),
             brush_search: String::new(),
             renaming_group: None,
             select_kind: Default::default(),
@@ -725,6 +735,9 @@ impl OxideApp {
             Command::ToggleBrushCreator => self.brush_creator.open = !self.brush_creator.open,
             Command::TogglePenSettings => self.show_pen_settings = !self.show_pen_settings,
             Command::ShowShortcuts => self.show_shortcuts = true,
+            Command::ShowHelp => self.help.open = true,
+            Command::ToolHelp => self.help.show_page(&help::tool_page(self.tool)),
+            Command::OpenWiki => ctx.open_url(egui::OpenUrl::new_tab(help::ONLINE)),
             Command::Settings => self.show_settings(),
             Command::SwapColors => self.swap_colors(),
             Command::Copy => self.copy(false),
@@ -1184,6 +1197,7 @@ impl eframe::App for OxideApp {
         self.transform_window(&ctx);
         self.reference_window(&ctx);
         self.shortcuts_window(&ctx);
+        self.help_window(&ctx);
         self.new_artwork_dialog(&ctx);
         // Drawn after New Artwork so it sits on top when opened from there.
         self.select_canvas_dialog(&ctx);

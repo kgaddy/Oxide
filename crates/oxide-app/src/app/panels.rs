@@ -55,6 +55,10 @@ impl OxideApp {
                 // title is draggable up to them (so the button stays clickable).
                 let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(handle).selectable(false));
+                    let help = egui::Button::new(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).small().frame(false);
+                    if ui.add(help).on_hover_text(format!("Help for {}", section.title())).clicked() {
+                        self.help.show_page(&super::help::section_page(section, self.tool));
+                    }
                     if section == Section::Quick {
                         let editing = self.quick_editing;
                         let text = if editing { "Done".to_string() } else { format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE) };

@@ -30,6 +30,28 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Oxide.icns"
 rm -rf "$ICONSET"
 
+# Help → Oxide Help: copy the wiki's pages (read only; the wiki isn't
+# touched) and the pictures the Using Oxide pages show. Set OXIDE_WIKI to use
+# a wiki clone somewhere else. Without one, Help offers the online wiki.
+WIKI="${OXIDE_WIKI:-../Oxide.wiki/Oxide.wiki}"
+if [ -f "$WIKI/Home.md" ]; then
+    HELP="$APP/Contents/Resources/help"
+    mkdir -p "$HELP/Attachments"
+    cp "$WIKI"/*.md "$HELP/"
+    # The pages linked from Home's "Using Oxide" section, and their images.
+    USING=$(sed -n '/^## Using Oxide/,/^## /p' "$WIKI/Home.md" \
+        | grep -o '\[\[[^]]*\]\]' | sed 's/^\[\[//; s/\]\]$//; s/.*|//; s/ /-/g' | sort -u)
+    for page in $USING; do
+        [ -f "$WIKI/$page.md" ] || continue
+        grep -o 'Attachments/[^)" ]*' "$WIKI/$page.md" | sort -u | while read -r pic; do
+            if [ -f "$WIKI/$pic" ]; then cp "$WIKI/$pic" "$HELP/Attachments/"; fi
+        done || true
+    done
+    echo "Bundled help from $WIKI"
+else
+    echo "No wiki clone at $WIKI: Help will offer the online wiki"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

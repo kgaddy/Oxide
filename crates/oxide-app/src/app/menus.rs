@@ -197,7 +197,16 @@ impl OxideApp {
                     check("Pen Settings", TogglePenSettings, self.show_pen_settings, true),
                 ],
             },
-            Menu { title: "Help", entries: vec![item("Keyboard Shortcuts…", ShowShortcuts)] },
+            Menu {
+                title: "Help",
+                entries: vec![
+                    item("Oxide Help", ShowHelp),
+                    item(format!("{} Help", self.tool.label()), ToolHelp),
+                    item("Keyboard Shortcuts…", ShowShortcuts),
+                    Entry::Separator,
+                    item("Oxide Wiki Online", OpenWiki),
+                ],
+            },
         ]
     }
 
