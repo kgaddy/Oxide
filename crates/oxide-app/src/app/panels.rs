@@ -726,19 +726,26 @@ impl OxideApp {
         }
     }
 
-    /// Dry layer, Dry all, Rewet.
+    /// Dry layer and Rewet (Dry all stays in the Layer menu).
     pub(super) fn dry_buttons(&mut self, ui: &mut egui::Ui) {
         let active = self.document.active_index();
         let wet_here = self.document.layers()[active].canvas.has_wet_paint();
-        let wet_anywhere = self.document.layers().iter().any(|l| l.canvas.has_wet_paint());
+        // Big, colored buttons so they are easy to find: Dry layer is a yellow
+        // orange and Rewet the complementary blue.
+        let c = egui::Color32::from_rgb;
+        let dry_layer_fill = c(245, 175, 40);
+        let rewet_fill = c(45, 110, 200);
+        let big = |text: &str, fill: egui::Color32, ink: egui::Color32| {
+            egui::Button::new(egui::RichText::new(text).size(14.0).strong().color(ink))
+                .fill(fill)
+                .min_size(Vec2::new(0.0, 30.0))
+        };
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(wet_here, egui::Button::new("Dry layer")).on_hover_text("Lock the paint in (⌘D)").clicked() {
+            ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
+            if ui.add_enabled(wet_here, big(&format!("{}  Dry layer", egui_phosphor::regular::HAIR_DRYER), dry_layer_fill, egui::Color32::WHITE)).on_hover_text("Lock the paint in (⌘D)").clicked() {
                 self.run(Command::DryLayer, ui.ctx());
             }
-            if ui.add_enabled(wet_anywhere, egui::Button::new("Dry all")).on_hover_text("Dry every layer (⇧⌘D)").clicked() {
-                self.run(Command::DryAll, ui.ctx());
-            }
-            if ui.button("Rewet").on_hover_text("Make this layer's paint wet again so it can be blended").clicked() {
+            if ui.add(big(&format!("{}  Rewet", egui_phosphor::regular::SHOWER), rewet_fill, egui::Color32::WHITE)).on_hover_text("Make this layer's paint wet again so it can be blended").clicked() {
                 self.run(Command::RewetLayer, ui.ctx());
             }
         });
