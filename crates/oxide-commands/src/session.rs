@@ -284,9 +284,12 @@ impl Session {
             }
             Command::ImportTip(a) => {
                 let tips = crate::tip_import::import_tips(std::path::Path::new(&a.path))?;
-                let names: Vec<String> = tips.iter().map(|t| t.key()).collect();
-                if let Some(&first) = tips.first() {
-                    self.state_mut().shape.tip = first;
+                let names: Vec<String> = tips.iter().map(|(t, _)| t.key()).collect();
+                if let Some(&(first, settings)) = tips.first() {
+                    // Spacing, roundness, angle and jitter the file gave (if any).
+                    let shape = &mut self.state_mut().shape;
+                    shape.tip = first;
+                    settings.apply(shape);
                 }
                 Ok(Output::Json(json!({"imported": names, "now_using": names.first()})))
             }
@@ -982,7 +985,7 @@ pub const DESCRIBE: &str = "Oxide is a natural-media painting app (oils & acryli
 - Oils paint modes (set_paint_mode): paint (pure color), paint_mix (default; light pressure mixes more), paint_blend (light pressure only blends), blend (no paint; moves wet paint), erase.
 - Brushes: list_brushes lists every brush in the app (built-in and saved by the user) with its shape settings; set_brush preset: \"<name>\" selects one (other settings in the same call override it). A preset sets the brush shape only.
 - Oils settings (set_brush): loading (how much paint; the brush never runs out), oiliness (0 acrylic-like covers, 1 oily blends), thickness (impasto: 0 flat … 1 thick, default 0.5; brush marks show as lit ridges; set_paper impasto_depth / gloss 0–10 set how strongly they're lit). flat: true = flat paint: no thickness, and thick paint (wet or dried) under the brush is leveled, so going over an area again never builds it up (for blocking in). Dirty brush: the next stroke starts with paint left on the brush and cleans up as it goes.
-- Imported tips: import_tip with a Photoshop .abr (brush packs; can hold many tips), a GIMP .gbr/.gih, or an image (PNG/JPEG: black-on-white, white-on-black or transparent). They're saved in Oxide's tip library and used as set_brush tip: \"image:<name>\" (info lists the current tip).
+- Imported tips: import_tip with a Photoshop .abr (brush packs; can hold many tips), a Procreate .brush/.brushset (shape images only), a GIMP .gbr/.gih, or an image (PNG/JPEG: black-on-white, white-on-black or transparent). They're saved in Oxide's tip library and used as set_brush tip: \"image:<name>\" (info lists the current tip).
 - Texture tips (set_brush tip: sponge / chalk / splatter / dry_brush / rag / speckle, with spacing 0.25–0.7, jitter_angle ~1 and some jitter_size / scatter so the stamps don't fill in or repeat; round = back to normal). Good for foliage, texture, broken color.
 - Palette knife (set_tool knife): spreads thick, flat-topped paint with crisp edges and pushes wet paint into ridges; set_paint_mode scrape = an empty knife that scrapes wet paint off (dried paint stays). Long straight strokes work best.
 - Bristle brushes (set_brush bristles: 60, plus bristle_thickness / bristle_spread / bristle_stiffness): the tip is real hairs, each carrying, picking up and running out of paint on its own; the most realistic oil strokes. Light pressure = only the middle hairs touch; bristles: 0 = back to a stamped tip.

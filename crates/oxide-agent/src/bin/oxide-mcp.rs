@@ -151,7 +151,7 @@ impl OxideServer {
         run(&self.session, Command::TransformLayer(a))
     }
 
-    #[tool(description = "Import brush tips from a Photoshop .abr (brush packs), GIMP .gbr/.gih, or an image (PNG/JPEG). They're saved in Oxide's tip library; the first one becomes the current tip.")]
+    #[tool(description = "Import brush tips from a Photoshop .abr (brush packs), a Procreate .brush/.brushset (shape images only), GIMP .gbr/.gih, or an image (PNG/JPEG). They're saved in Oxide's tip library; the first one becomes the current tip.")]
     async fn import_tip(&self, Parameters(a): Parameters<PathArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::ImportTip(a))
     }

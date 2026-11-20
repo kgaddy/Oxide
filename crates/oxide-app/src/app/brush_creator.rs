@@ -47,14 +47,18 @@ impl OxideApp {
         self.brush_creator.open = open;
     }
 
-    /// Brush Creator → Import tips…: pick brush files, add their tips to the
-    /// library, and switch to the first one.
-    fn import_tips(&mut self, ctx: &egui::Context) {
-        let Some(paths) = self
-            .dialog(DialogFolder::Tips)
-            .add_filter("Brush tips", &["abr", "gbr", "gih", "png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"])
-            .pick_files()
-        else {
+    /// File → Import Brushes… and Brush Creator → Import brushes…: pick brush
+    /// files (or, with `images`, pictures to use as tips), add their tips to
+    /// the library, and switch to the first one. Brush files only by default,
+    /// so a Downloads folder full of pictures doesn't bury them.
+    pub(super) fn import_tips(&mut self, ctx: &egui::Context, images: bool) {
+        let dialog = self.dialog(DialogFolder::Tips);
+        let dialog = if images {
+            dialog.set_title("Choose pictures to use as brush tips").add_filter("Pictures", &["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"])
+        } else {
+            dialog.set_title("Choose brush files to import").add_filter("Brush files", &["abr", "brush", "brushset", "gbr", "gih"])
+        };
+        let Some(paths) = dialog.pick_files() else {
             return;
         };
         if let Some(first) = paths.first() {
@@ -72,8 +76,10 @@ impl OxideApp {
                     // Each tip also becomes a brush preset, grouped by the file it came from.
                     let source = path.file_stem().map_or("Imported".into(), |s| s.to_string_lossy().into_owned());
                     let group = format!("Imported: {source}");
-                    for &tip in &tips {
-                        let shape = BrushShape { radius: 24.0, spacing: 0.25, jitter_angle: 1.0, tip, ..BrushShape::default() };
+                    for &(tip, settings) in &tips {
+                        // Texture-tip defaults, then whatever the file said (spacing, jitter...).
+                        let mut shape = BrushShape { radius: 24.0, spacing: 0.25, jitter_angle: 1.0, tip, ..BrushShape::default() };
+                        settings.apply(&mut shape);
                         if let Err(e) = self.presets.save_in(ctx, tip.name(), &group, &shape) {
                             errors.push(e);
                         }
@@ -83,12 +89,18 @@ impl OxideApp {
                 Err(e) => errors.push(e),
             }
         }
-        if let Some(&first) = added.first() {
-            self.state_mut().shape.tip = first;
+        if let Some(&(first, settings)) = added.first() {
+            let shape = &mut self.state_mut().shape;
+            shape.tip = first;
+            settings.apply(shape);
         }
         match (added.len(), errors.first()) {
             (0, Some(e)) => self.error(e.clone()),
-            (n, None) => self.info(format!("Imported {n} tip{} (now using \"{}\")", if n == 1 { "" } else { "s" }, added[0].name())),
+            (n, None) => self.info(format!(
+                "Imported {n} brush{} as presets (now using \"{}\"). Edit them in the Brush Creator.",
+                if n == 1 { "" } else { "es" },
+                added[0].0.name()
+            )),
             (n, Some(e)) => self.error(format!("Imported {n} tips, but: {e}")),
         }
     }
@@ -119,7 +131,7 @@ impl OxideApp {
         ui.separator();
 
         let shape = &mut self.tool_states[self.tool.index()].shape;
-        let (mut import_tips, mut remove_tip) = (false, None);
+        let (mut import_tips, mut import_pictures, mut remove_tip) = (false, false, None);
         match creator.tab {
             Tab::Stroke => {
                 ui.add(egui::Slider::new(&mut shape.radius, 0.5..=200.0).logarithmic(true).text("Size"));
@@ -167,8 +179,12 @@ impl OxideApp {
                 .on_hover_text("Round: a smooth ellipse. The others stamp a texture (sponge, chalk, splatter, dry brush, rag, speckle, or tips you imported); turn on Jitter (Stroke tab) so it doesn't repeat.");
                 ui.horizontal(|ui| {
                     import_tips = ui
-                        .button("Import tips…")
-                        .on_hover_text("Photoshop brushes (.abr), GIMP brushes (.gbr, .gih), or images (PNG, JPEG, TIFF, WebP): black on white, white on black, or transparent")
+                        .button("Import brushes…")
+                        .on_hover_text("Choose downloaded brush files: Photoshop (.abr), Procreate (.brush, .brushset) or GIMP (.gbr, .gih)")
+                        .clicked();
+                    import_pictures = ui
+                        .button("Picture as tip…")
+                        .on_hover_text("Use a picture (PNG, JPEG, TIFF, WebP) as a tip: black on white, white on black, or transparent")
                         .clicked();
                     if let oxide_engine::Tip::Image(image) = shape.tip {
                         if ui.button("Remove tip").on_hover_text("Delete this imported tip from Oxide's tip library").clicked() {
@@ -254,7 +270,10 @@ impl OxideApp {
         }
 
         if import_tips {
-            self.import_tips(&ui.ctx().clone());
+            self.import_tips(&ui.ctx().clone(), false);
+        }
+        if import_pictures {
+            self.import_tips(&ui.ctx().clone(), true);
         }
         if let Some(name) = remove_tip {
             match oxide_commands::tip_import::remove_tip(&name) {

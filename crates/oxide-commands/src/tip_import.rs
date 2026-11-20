@@ -8,6 +8,10 @@
 //!   many tips. Photoshop's "computed" brushes have no image and are skipped.
 //! - **GIMP .gbr** (one tip) and **.gih** (several frames: one tip that
 //!   varies from dab to dab).
+//! - **Procreate .brush** (one brush) and **.brushset** (a pack): zip files
+//!   holding each brush's shape image; the brush's name is read from its
+//!   settings archive. Only the tip shape is imported, not Procreate's
+//!   dynamics, and its grain texture is ignored.
 //!
 //! Imported tips are saved as grayscale PNGs (white = paint) in
 //! `~/Library/Application Support/Oxide/tips/`, one file per frame
@@ -16,6 +20,8 @@
 use std::path::{Path, PathBuf};
 
 use oxide_engine::{Tip, register_tip, unregister_tip};
+
+use crate::tools::BrushShape;
 
 /// Tips bigger than this (in pixels, longest side) are scaled down.
 const MAX_SIDE: u32 = 512;
@@ -27,10 +33,50 @@ pub struct Frame {
     pub data: Vec<f32>,
 }
 
+/// Brush settings that came with a tip, when the file carried them.
+/// `None` = the file didn't say, so the caller's default stays.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TipSettings {
+    /// Distance between dabs, as a fraction of the diameter.
+    pub spacing: Option<f32>,
+    pub roundness: Option<f32>,
+    /// Degrees.
+    pub angle: Option<f32>,
+    /// Per-dab randomness, 0..=1 (as in the Brush Creator).
+    pub jitter_angle: Option<f32>,
+    pub jitter_size: Option<f32>,
+    pub scatter: Option<f32>,
+}
+
+impl TipSettings {
+    /// Copy the settings the file gave onto a brush shape.
+    pub fn apply(&self, shape: &mut BrushShape) {
+        if let Some(v) = self.spacing {
+            shape.spacing = v.clamp(0.02, 2.0);
+        }
+        if let Some(v) = self.roundness {
+            shape.roundness = v.clamp(0.05, 1.0);
+        }
+        if let Some(v) = self.angle {
+            shape.angle = v;
+        }
+        if let Some(v) = self.jitter_angle {
+            shape.jitter_angle = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = self.jitter_size {
+            shape.jitter_size = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = self.scatter {
+            shape.scatter = v.clamp(0.0, 1.0);
+        }
+    }
+}
+
 /// A tip read from a file, with one or more frames.
 pub struct ImportedTip {
     pub name: String,
     pub frames: Vec<Frame>,
+    pub settings: TipSettings,
 }
 
 /// Where Oxide keeps imported tips.
@@ -45,25 +91,38 @@ pub fn read_tip_file(path: &Path) -> Result<Vec<ImportedTip>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
     let tips = match ext.as_str() {
         "abr" => {
-            let frames = parse_abr(&bytes)?;
-            let count = frames.len();
-            frames
-                .into_iter()
+            let tips = parse_abr(&bytes)?;
+            let info = abr_presets(&bytes);
+            let count = tips.len();
+            tips.into_iter()
                 .enumerate()
-                .map(|(i, f)| ImportedTip { name: if count == 1 { stem.clone() } else { format!("{stem} {}", i + 1) }, frames: vec![f] })
+                .map(|(i, (id, f))| {
+                    let found = id.and_then(|id| info.iter().find(|p| p.id == id));
+                    let numbered = || if count == 1 { stem.clone() } else { format!("{stem} {}", i + 1) };
+                    // Photoshop packs often name their tips "1", "2", ...: that says nothing.
+                    let name = match found.map(|p| p.name.trim()) {
+                        Some(n) if !n.is_empty() && !n.chars().all(|c| c.is_ascii_digit()) => n.to_string(),
+                        _ => numbered(),
+                    };
+                    // A file that lists its brushes says everything about them, so no
+                    // dynamics means no jitter (not Oxide's texture-tip default).
+                    let settings = found.map_or_else(TipSettings::default, |p| p.settings);
+                    ImportedTip { name, frames: vec![f], settings }
+                })
                 .collect()
         }
+        "brush" | "brushset" => parse_procreate(&bytes, &stem)?,
         "gbr" => {
             let (name, frame, _) = parse_gbr(&bytes)?;
-            vec![ImportedTip { name: if name.is_empty() { stem } else { name }, frames: vec![frame] }]
+            vec![ImportedTip { name: if name.is_empty() { stem } else { name }, frames: vec![frame], settings: TipSettings::default() }]
         }
         "gih" => {
             let (name, frames) = parse_gih(&bytes)?;
-            vec![ImportedTip { name: if name.is_empty() { stem } else { name }, frames }]
+            vec![ImportedTip { name: if name.is_empty() { stem } else { name }, frames, settings: TipSettings::default() }]
         }
         _ => {
             let img = image::load_from_memory(&bytes).map_err(|e| format!("Couldn't read {} as an image: {e}", path.display()))?;
-            vec![ImportedTip { name: stem, frames: vec![frame_from_image(&img)] }]
+            vec![ImportedTip { name: stem, frames: vec![frame_from_image(&img)], settings: TipSettings::default() }]
         }
     };
     let tips: Vec<ImportedTip> = tips
@@ -78,8 +137,8 @@ pub fn read_tip_file(path: &Path) -> Result<Vec<ImportedTip>, String> {
 }
 
 /// Read a file's tips, save them in the library and make them available.
-/// Returns the new tips (in file order).
-pub fn import_tips(path: &Path) -> Result<Vec<Tip>, String> {
+/// Returns the new tips (in file order) with the settings the file gave them.
+pub fn import_tips(path: &Path) -> Result<Vec<(Tip, TipSettings)>, String> {
     let dir = tips_dir().ok_or("Couldn't find the Application Support folder.")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut added = Vec::new();
@@ -91,7 +150,7 @@ pub fn import_tips(path: &Path) -> Result<Vec<Tip>, String> {
             let gray = image::GrayImage::from_fn(f.w as u32, f.h as u32, |x, y| image::Luma([(f.data[y as usize * f.w + x as usize] * 255.0).round() as u8]));
             gray.save(dir.join(file)).map_err(|e| e.to_string())?;
         }
-        added.push(register_tip(&name, tip.frames.into_iter().map(|f| (f.w, f.h, f.data)).collect()));
+        added.push((register_tip(&name, tip.frames.into_iter().map(|f| (f.w, f.h, f.data)).collect()), tip.settings));
     }
     Ok(added)
 }
@@ -262,7 +321,8 @@ impl<'a> Reader<'a> {
 
 // ---------- Photoshop .abr ----------
 
-fn parse_abr(bytes: &[u8]) -> Result<Vec<Frame>, String> {
+/// Each tip with its id (v6+ files; it links the tip to its entry in `desc`).
+fn parse_abr(bytes: &[u8]) -> Result<Vec<(Option<String>, Frame)>, String> {
     let mut r = Reader::new(bytes);
     let version = r.u16()?;
     match version {
@@ -273,7 +333,7 @@ fn parse_abr(bytes: &[u8]) -> Result<Vec<Frame>, String> {
 }
 
 /// Old Photoshop brushes (version 1 and 2): a list of brushes; type 2 has an image.
-fn abr_v12(r: &mut Reader, version: u16) -> Result<Vec<Frame>, String> {
+fn abr_v12(r: &mut Reader, version: u16) -> Result<Vec<(Option<String>, Frame)>, String> {
     let count = r.u16()?;
     let mut frames = Vec::new();
     for _ in 0..count {
@@ -287,7 +347,7 @@ fn abr_v12(r: &mut Reader, version: u16) -> Result<Vec<Frame>, String> {
                 r.take(chars * 2)?; // the name, UTF-16
             }
             r.take(1 + 8)?; // antialiasing, short bounds
-            frames.push(abr_image(r)?);
+            frames.push((None, abr_image(r)?));
         }
         r.pos = next.min(r.b.len());
     }
@@ -295,7 +355,7 @@ fn abr_v12(r: &mut Reader, version: u16) -> Result<Vec<Frame>, String> {
 }
 
 /// Photoshop 6 and later: tagged sections; the tip images are in "samp".
-fn abr_v6(r: &mut Reader) -> Result<Vec<Frame>, String> {
+fn abr_v6(r: &mut Reader) -> Result<Vec<(Option<String>, Frame)>, String> {
     let sub = r.u16()?;
     let mut frames = Vec::new();
     while r.pos + 12 <= r.b.len() {
@@ -309,10 +369,13 @@ fn abr_v6(r: &mut Reader) -> Result<Vec<Frame>, String> {
             while r.pos + 4 <= end {
                 let size = r.u32()? as usize;
                 let next = r.pos + size.div_ceil(4) * 4; // each sample is padded to 4 bytes
-                // Skip the sample's id (and, in newer files, more header data).
-                r.take(if sub == 1 { 47 } else { 301 })?;
+                // Skip the sample's id (a length-prefixed string, normally 36
+                // characters) and, after it, 10 bytes (or 264 in newer files).
+                let id_len = r.u8()? as usize;
+                let id = String::from_utf8_lossy(r.take(id_len)?).trim_end_matches('\0').to_string();
+                r.take(if sub == 1 { 10 } else { 264 })?;
                 match abr_image(r) {
-                    Ok(f) => frames.push(f),
+                    Ok(f) => frames.push((Some(id), f)),
                     Err(e) if frames.is_empty() => return Err(e),
                     Err(_) => {}
                 }
@@ -322,6 +385,160 @@ fn abr_v6(r: &mut Reader) -> Result<Vec<Frame>, String> {
         r.pos = end;
     }
     Ok(frames)
+}
+
+/// What the `desc` section says about one brush.
+struct AbrPreset {
+    id: String,
+    name: String,
+    settings: TipSettings,
+}
+
+/// Names and settings of a v6+ .abr's brushes (empty for older files, or if
+/// the descriptor can't be read: the tips still import, just unnamed).
+fn abr_presets(bytes: &[u8]) -> Vec<AbrPreset> {
+    let mut r = Reader::new(bytes);
+    if !matches!(r.u16(), Ok(6..=10)) || r.u16().is_err() {
+        return Vec::new();
+    }
+    while r.pos + 12 <= r.b.len() {
+        if r.take(4).ok() != Some(b"8BIM") {
+            break;
+        }
+        let (Ok(key), Ok(len)) = (r.take(4), r.u32()) else { break };
+        let end = (r.pos + len as usize).min(r.b.len());
+        if key == b"desc" {
+            let mut d = Reader::new(&r.b[r.pos..end]);
+            let items = d.u32().ok().filter(|&v| v == 16).and_then(|_| ps_descriptor(&mut d, 0).ok()).unwrap_or_default();
+            return match ps_get(&items, "Brsh") {
+                Some(Val::List(l)) => l.iter().filter_map(abr_preset).collect(),
+                _ => Vec::new(),
+            };
+        }
+        r.pos = end;
+    }
+    Vec::new()
+}
+
+fn abr_preset(item: &Val) -> Option<AbrPreset> {
+    let Val::Obj(item) = item else { return None };
+    let Some(Val::Obj(tip)) = ps_get(item, "Brsh") else { return None };
+    let text = |items: &[(String, Val)], k: &str| match ps_get(items, k) {
+        Some(Val::Text(t)) => Some(t.clone()),
+        _ => None,
+    };
+    let id = text(tip, "sampledData")?;
+    let name = text(item, "Nm  ").or_else(|| text(tip, "Nm  ")).unwrap_or_default();
+    let on = |k: &str| matches!(ps_get(item, k), Some(Val::Bool(true)));
+    // A jitter amount lives in an object next to the "use ..." switch.
+    let jitter = |switch: &str, obj: &str| -> f32 {
+        if !on(switch) {
+            return 0.0;
+        }
+        match ps_get(item, obj) {
+            Some(Val::Obj(o)) => ps_num(o, "jitter").map_or(0.0, |v| v as f32 / 100.0),
+            _ => 0.0,
+        }
+    };
+    let settings = TipSettings {
+        spacing: ps_num(tip, "Spcn").map(|v| v as f32 / 100.0),
+        roundness: ps_num(tip, "Rndn").map(|v| v as f32 / 100.0),
+        angle: ps_num(tip, "Angl").map(|v| v as f32),
+        // Photoshop's angle jitter is a share of a full turn, as Oxide's is.
+        jitter_angle: Some(jitter("useTipDynamics", "angleDynamics").clamp(0.0, 1.0)),
+        jitter_size: Some(jitter("useTipDynamics", "szVr").clamp(0.0, 1.0)),
+        // Scatter is a share of the diameter; Oxide's is of the radius.
+        scatter: Some((jitter("useScatter", "scatterDynamics") * 2.0).clamp(0.0, 1.0)),
+    };
+    Some(AbrPreset { id, name: name.trim_end_matches('\0').trim().to_string(), settings })
+}
+
+// Photoshop "descriptors": the tagged tree Photoshop keeps brush settings in.
+
+enum Val {
+    Obj(Vec<(String, Val)>),
+    List(Vec<Val>),
+    Num(f64),
+    Text(String),
+    Bool(bool),
+    Other,
+}
+
+fn ps_get<'a>(items: &'a [(String, Val)], key: &str) -> Option<&'a Val> {
+    items.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+fn ps_num(items: &[(String, Val)], key: &str) -> Option<f64> {
+    match ps_get(items, key)? {
+        Val::Num(n) => Some(*n),
+        _ => None,
+    }
+}
+
+/// A length-prefixed id (length 0 means a 4-character key).
+fn ps_key(r: &mut Reader) -> Result<String, String> {
+    let n = r.u32()? as usize;
+    Ok(String::from_utf8_lossy(r.take(if n == 0 { 4 } else { n })?).into_owned())
+}
+
+/// A UTF-16 string, prefixed by its length in characters.
+fn ps_text(r: &mut Reader) -> Result<String, String> {
+    let n = r.u32()? as usize;
+    if n > 1 << 20 {
+        return Err("A Photoshop text is too long (damaged file?).".into());
+    }
+    let units: Vec<u16> = r.take(n * 2)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
+    Ok(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string())
+}
+
+fn ps_descriptor(r: &mut Reader, depth: u32) -> Result<Vec<(String, Val)>, String> {
+    if depth > 16 {
+        return Err("Photoshop settings nest too deeply.".into());
+    }
+    ps_text(r)?; // the descriptor's name
+    ps_key(r)?; // its class
+    let count = r.u32()?;
+    let mut items = Vec::new();
+    for _ in 0..count {
+        let key = ps_key(r)?;
+        let ty: [u8; 4] = r.take(4)?.try_into().map_err(|_| "short")?;
+        items.push((key, ps_value(r, &ty, depth)?));
+    }
+    Ok(items)
+}
+
+fn ps_value(r: &mut Reader, ty: &[u8; 4], depth: u32) -> Result<Val, String> {
+    Ok(match ty {
+        b"Objc" => Val::Obj(ps_descriptor(r, depth + 1)?),
+        b"VlLs" => {
+            let n = r.u32()?;
+            let mut list = Vec::new();
+            for _ in 0..n {
+                let t: [u8; 4] = r.take(4)?.try_into().map_err(|_| "short")?;
+                list.push(ps_value(r, &t, depth + 1)?);
+            }
+            Val::List(list)
+        }
+        b"doub" => Val::Num(f64::from_be_bytes(r.take(8)?.try_into().map_err(|_| "short")?)),
+        b"UntF" => {
+            r.take(4)?; // the unit
+            Val::Num(f64::from_be_bytes(r.take(8)?.try_into().map_err(|_| "short")?))
+        }
+        b"TEXT" => Val::Text(ps_text(r)?),
+        b"long" => Val::Num(r.i32()? as f64),
+        b"bool" => Val::Bool(r.u8()? != 0),
+        b"enum" => {
+            ps_key(r)?;
+            ps_key(r)?;
+            Val::Other
+        }
+        b"tdta" => {
+            let n = r.u32()? as usize;
+            r.take(n)?;
+            Val::Other
+        }
+        t => return Err(format!("Unknown Photoshop setting type {}.", String::from_utf8_lossy(t))),
+    })
 }
 
 /// One sampled tip: bounds, depth, compression, then the pixels (255 = paint).
@@ -374,6 +591,105 @@ fn unpack_bits(src: &[u8], len: usize) -> Vec<u8> {
     }
     out.resize(len, 0);
     out
+}
+
+// ---------- Procreate .brush / .brushset ----------
+
+/// Biggest single file we'll unpack from a Procreate zip (guards against zip bombs).
+const MAX_ENTRY: u64 = 128 << 20;
+
+/// A Procreate brush file is a zip with `Shape.png` (the tip), `Grain.png` and
+/// `Brush.archive` (settings, a binary plist). A brushset is a zip of folders,
+/// one per brush, listed in `brushset.plist`.
+fn parse_procreate(bytes: &[u8], stem: &str) -> Result<Vec<ImportedTip>, String> {
+    use std::io::Read;
+    type Zip<'a> = zip::ZipArchive<std::io::Cursor<&'a [u8]>>;
+    fn read(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        zip.by_name(name).ok()?.take(MAX_ENTRY).read_to_end(&mut out).ok()?;
+        Some(out)
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| "Not a Procreate brush file (it should be a zip).".to_string())?;
+    // Each brush lives in a folder ("" for a lone .brush), found by its Shape.png.
+    let mut folders: Vec<String> = Vec::new();
+    for i in 0..zip.len() {
+        let Ok(entry) = zip.by_index(i) else { continue };
+        let Ok(name) = entry.name().map(|n| n.to_string()) else { continue };
+        if let Some(dir) = name.strip_suffix("Shape.png").filter(|d| d.is_empty() || d.ends_with('/')) {
+            if !dir.starts_with("__MACOSX") && !folders.iter().any(|f| f == dir) {
+                folders.push(dir.to_string());
+            }
+        }
+    }
+    // The pack's own order, if it tells us.
+    if let Some(order) = read(&mut zip, "brushset.plist").and_then(|b| plist::Value::from_reader(std::io::Cursor::new(b)).ok()).and_then(|v| {
+        let list = v.into_dictionary()?.remove("brushes")?.into_array()?;
+        Some(list.into_iter().filter_map(|v| v.into_string()).collect::<Vec<_>>())
+    }) {
+        let rank = |f: &String| order.iter().position(|o| f.trim_end_matches('/') == o).unwrap_or(usize::MAX);
+        folders.sort_by_key(rank);
+    }
+    let mut tips = Vec::new();
+    for dir in &folders {
+        let Some(png) = read(&mut zip, &format!("{dir}Shape.png")) else { continue };
+        let Ok(img) = image::load_from_memory(&png) else { continue };
+        let name = read(&mut zip, &format!("{dir}Brush.archive")).and_then(|b| procreate_name(&b)).unwrap_or_else(|| {
+            if folders.len() == 1 { stem.to_string() } else { format!("{stem} {}", tips.len() + 1) }
+        });
+        let settings = read(&mut zip, &format!("{dir}Brush.archive")).map(|b| procreate_settings(&b)).unwrap_or_default();
+        tips.push(ImportedTip { name, frames: vec![frame_from_image(&img)], settings });
+    }
+    if tips.is_empty() {
+        return Err("No brush shapes found (is this a Procreate brush?).".into());
+    }
+    Ok(tips)
+}
+
+/// The brush object inside `Brush.archive` (an NSKeyedArchiver plist), with a
+/// way to follow references into its `$objects` list.
+fn procreate_root(archive: &[u8]) -> Option<(plist::Dictionary, Vec<plist::Value>)> {
+    let root = plist::Value::from_reader(std::io::Cursor::new(archive)).ok()?.into_dictionary()?;
+    let objects = root.get("$objects")?.as_array()?.clone();
+    let resolve = |v: &plist::Value| match v {
+        plist::Value::Uid(u) => objects.get(u.get() as usize).cloned(),
+        other => Some(other.clone()),
+    };
+    let top = resolve(root.get("$top")?.as_dictionary()?.get("root")?)?.into_dictionary()?;
+    Some((top, objects))
+}
+
+fn plist_value(v: &plist::Value, objects: &[plist::Value]) -> Option<plist::Value> {
+    match v {
+        plist::Value::Uid(u) => objects.get(u.get() as usize).cloned(),
+        other => Some(other.clone()),
+    }
+}
+
+/// The brush's name (a string, or a reference to one).
+fn procreate_name(archive: &[u8]) -> Option<String> {
+    let (top, objects) = procreate_root(archive)?;
+    let name = plist_value(top.get("name")?, &objects)?.into_string()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Spacing and jitter from the archive. **The key names are best guesses**
+/// (no Procreate file was on hand to check them against): a key that isn't
+/// there is simply skipped, so the worst case is the default settings.
+fn procreate_settings(archive: &[u8]) -> TipSettings {
+    let Some((top, objects)) = procreate_root(archive) else { return TipSettings::default() };
+    let num = |key: &str| -> Option<f32> {
+        match plist_value(top.get(key)?, &objects)? {
+            plist::Value::Real(v) => Some(v as f32),
+            plist::Value::Integer(v) => v.as_signed().map(|v| v as f32),
+            _ => None,
+        }
+    };
+    TipSettings {
+        spacing: num("plotSpacing").filter(|v| (0.01..=4.0).contains(v)),
+        jitter_angle: num("shapeRandomise").map(|v| v.clamp(0.0, 1.0)),
+        scatter: num("plotJitter").map(|v| v.clamp(0.0, 1.0)),
+        ..TipSettings::default()
+    }
 }
 
 // ---------- GIMP .gbr / .gih ----------
@@ -450,7 +766,7 @@ mod tests {
     /// Build a version 6 .abr (subversion 2) with the square, compressed.
     fn abr_v6_file() -> Vec<u8> {
         let (w, h, px) = square();
-        let mut sample = vec![0u8; 301]; // id + header data we skip
+        let mut sample = vec![0u8; 265]; // empty id + header data we skip
         sample_header(&mut sample, w, h, 8, true);
         let (counts, packed) = pack_rows(w, &px);
         for c in counts {
@@ -488,7 +804,7 @@ mod tests {
     fn reads_photoshop_v6_brushes() {
         let frames = parse_abr(&abr_v6_file()).unwrap();
         assert_eq!(frames.len(), 1);
-        check_square(&frames[0]);
+        check_square(&frames[0].1);
     }
 
     #[test]
@@ -513,7 +829,73 @@ mod tests {
         file.extend(brush);
         let frames = parse_abr(&file).unwrap();
         assert_eq!(frames.len(), 1);
-        check_square(&frames[0]);
+        check_square(&frames[0].1);
+    }
+
+    // A descriptor, written the way Photoshop does.
+    fn ps_string(out: &mut Vec<u8>, s: &str) {
+        out.extend(((s.len() + 1) as u32).to_be_bytes());
+        for c in s.encode_utf16().chain([0]) {
+            out.extend(c.to_be_bytes());
+        }
+    }
+    fn ps_item(out: &mut Vec<u8>, key: &str, ty: &[u8; 4]) {
+        out.extend((key.len() as u32).to_be_bytes());
+        out.extend(key.as_bytes());
+        out.extend(ty);
+    }
+    fn ps_unit(out: &mut Vec<u8>, key: &str, v: f64) {
+        ps_item(out, key, b"UntF");
+        out.extend(b"#Prc");
+        out.extend(v.to_be_bytes());
+    }
+    fn ps_object(out: &mut Vec<u8>, count: u32) {
+        ps_string(out, "");
+        out.extend(0u32.to_be_bytes());
+        out.extend(b"null");
+        out.extend(count.to_be_bytes());
+    }
+
+    /// An .abr whose only content is a `desc` section naming one brush.
+    fn abr_with_desc() -> Vec<u8> {
+        let mut d = 16u32.to_be_bytes().to_vec();
+        ps_object(&mut d, 1);
+        ps_item(&mut d, "Brsh", b"VlLs");
+        d.extend(1u32.to_be_bytes());
+        d.extend(b"Objc");
+        ps_object(&mut d, 4);
+        ps_item(&mut d, "Nm  ", b"TEXT");
+        ps_string(&mut d, "Wet Ink");
+        ps_item(&mut d, "useTipDynamics", b"bool");
+        d.push(1);
+        ps_item(&mut d, "angleDynamics", b"Objc");
+        ps_object(&mut d, 1);
+        ps_unit(&mut d, "jitter", 40.0);
+        ps_item(&mut d, "Brsh", b"Objc");
+        ps_object(&mut d, 3);
+        ps_unit(&mut d, "Spcn", 15.0);
+        ps_unit(&mut d, "Rndn", 50.0);
+        ps_item(&mut d, "sampledData", b"TEXT");
+        ps_string(&mut d, "abc-123");
+        let mut file = 6u16.to_be_bytes().to_vec();
+        file.extend(2u16.to_be_bytes());
+        file.extend(b"8BIMdesc");
+        file.extend((d.len() as u32).to_be_bytes());
+        file.extend(d);
+        file
+    }
+
+    #[test]
+    fn reads_photoshop_brush_names_and_settings() {
+        let presets = abr_presets(&abr_with_desc());
+        assert_eq!(presets.len(), 1);
+        let p = &presets[0];
+        assert_eq!((p.id.as_str(), p.name.as_str()), ("abc-123", "Wet Ink"));
+        assert_eq!(p.settings.spacing, Some(0.15));
+        assert_eq!(p.settings.roundness, Some(0.5));
+        assert_eq!(p.settings.jitter_angle, Some(0.4));
+        assert_eq!(p.settings.jitter_size, Some(0.0), "no size dynamics: no jitter");
+        assert!(abr_presets(&abr_v6_file()).is_empty(), "no desc section: unnamed, not an error");
     }
 
     #[test]
@@ -534,6 +916,63 @@ mod tests {
         // Cropping keeps a 2-pixel margin around the paint.
         let tidy = tidy(a);
         assert_eq!((tidy.w, tidy.h), (8, 8));
+    }
+
+    /// A Procreate brush zip: a shape image plus a settings archive naming it.
+    fn procreate_file(shape_dirs: &[(&str, &str)], set_order: Option<&[&str]>) -> Vec<u8> {
+        use std::io::Write;
+        let (w, h, px) = square();
+        let mut png = Vec::new();
+        let gray = image::GrayImage::from_raw(w as u32, h as u32, px).unwrap();
+        gray.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let archive = |name: &str| {
+            let mut root = plist::Dictionary::new();
+            root.insert("name".into(), plist::Value::Uid(plist::Uid::new(2)));
+            root.insert("plotSpacing".into(), plist::Value::Real(0.3));
+            let mut top = plist::Dictionary::new();
+            top.insert("root".into(), plist::Value::Uid(plist::Uid::new(1)));
+            let mut dict = plist::Dictionary::new();
+            dict.insert("$top".into(), plist::Value::Dictionary(top));
+            dict.insert("$objects".into(), plist::Value::Array(vec!["$null".into(), plist::Value::Dictionary(root), name.into()]));
+            let mut out = Vec::new();
+            plist::to_writer_binary(&mut out, &plist::Value::Dictionary(dict)).unwrap();
+            out
+        };
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        for (dir, name) in shape_dirs {
+            zip.start_file(format!("{dir}Shape.png"), opts).unwrap();
+            zip.write_all(&png).unwrap();
+            zip.start_file(format!("{dir}Brush.archive"), opts).unwrap();
+            zip.write_all(&archive(name)).unwrap();
+        }
+        if let Some(order) = set_order {
+            let mut dict = plist::Dictionary::new();
+            dict.insert("brushes".into(), plist::Value::Array(order.iter().map(|&o| o.into()).collect()));
+            let mut out = Vec::new();
+            plist::to_writer_binary(&mut out, &plist::Value::Dictionary(dict)).unwrap();
+            zip.start_file("brushset.plist", opts).unwrap();
+            zip.write_all(&out).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn reads_a_procreate_brush() {
+        let tips = parse_procreate(&procreate_file(&[("", "Inky")], None), "file").unwrap();
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].name, "Inky");
+        assert_eq!(tips[0].settings.spacing.map(|v| (v * 100.0).round()), Some(30.0));
+        assert_eq!(tips[0].settings.scatter, None, "keys the file lacks stay unset");
+        check_square(&tips[0].frames[0]);
+    }
+
+    #[test]
+    fn reads_a_procreate_brushset_in_its_own_order() {
+        let file = procreate_file(&[("AAA/", "First by zip"), ("BBB/", "First by set")], Some(&["BBB", "AAA"]));
+        let names: Vec<String> = parse_procreate(&file, "pack").unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["First by set", "First by zip"]);
+        assert!(parse_procreate(b"not a zip", "x").is_err());
     }
 
     #[test]

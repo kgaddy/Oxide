@@ -83,7 +83,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
             <key>CFBundleTypeName</key>        <string>Brush Tips</string>
             <key>CFBundleTypeRole</key>        <string>Viewer</string>
             <key>LSHandlerRank</key>           <string>Alternate</string>
-            <key>CFBundleTypeExtensions</key>  <array><string>abr</string><string>gbr</string><string>gih</string></array>
+            <key>CFBundleTypeExtensions</key>  <array><string>abr</string><string>brush</string><string>brushset</string><string>gbr</string><string>gih</string></array>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>        <string>Image</string>

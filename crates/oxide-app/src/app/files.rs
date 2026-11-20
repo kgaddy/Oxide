@@ -333,10 +333,10 @@ impl OxideApp {
         for path in paths {
             match ext(&path).as_str() {
                 "oxide" | "reb" => painting = painting.or(Some(path)),
-                "abr" | "gbr" | "gih" => tips.push(path),
+                "abr" | "brush" | "brushset" | "gbr" | "gih" => tips.push(path),
                 "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp" | "bmp" => self.import_image_file(&path),
                 "jsonl" => self.import_script_file(&path),
-                _ => self.error(format!("Oxide can't open {} (paintings: .oxide, .reb; images; scripts: .jsonl; brushes: .abr, .gbr, .gih)", path.display())),
+                _ => self.error(format!("Oxide can't open {} (paintings: .oxide, .reb; images; scripts: .jsonl; brushes: .abr, .brush, .brushset, .gbr, .gih)", path.display())),
             }
         }
         if !tips.is_empty() {

@@ -142,6 +142,8 @@ pub struct OxideApp {
     saved_reference: Option<std::sync::Arc<Vec<u8>>>,
     /// An action waiting on the "Save changes?" dialog.
     pending: Option<PendingAction>,
+    /// "New group…" on a brush: (preset index, name typed so far) while the dialog is open.
+    new_group: Option<(usize, String)>,
     /// Set once the user confirmed quitting, so the close isn't intercepted again.
     allow_close: bool,
     status: Option<Status>,
@@ -231,6 +233,8 @@ enum Command {
     ImportImage,
     /// File → Import Script as Layer: paint an oxide-run .jsonl onto a new layer.
     ImportScript,
+    /// File → Import Brushes: Photoshop, Procreate and GIMP brushes, or images, as brush tips.
+    ImportBrushes,
     OpenReference,
     Export,
     Quit,
@@ -418,6 +422,7 @@ impl OxideApp {
             pick_return: None,
             file_path: None,
             pending: None,
+            new_group: None,
             allow_close: false,
             status: theme_problem.map(|text| Status { text, is_error: true }),
             themes,
@@ -687,6 +692,7 @@ impl OxideApp {
             }
             Command::ImportImage => self.import_image(),
             Command::ImportScript => self.import_script(),
+            Command::ImportBrushes => self.import_tips(ctx, false),
             Command::OpenReference => self.open_reference_image(),
             Command::Export => self.export_dialog.open = true,
             Command::Undo => self.document.undo(),
@@ -1193,6 +1199,7 @@ impl eframe::App for OxideApp {
             .show(ui, |ui| self.canvas_view(ui));
 
         self.brush_creator_window(&ctx);
+        self.new_group_dialog(&ctx);
         self.pen_settings_window(&ctx);
         self.settings_window(&ctx);
         self.mixing_palette_window(&ctx);

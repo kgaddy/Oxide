@@ -90,6 +90,7 @@ impl OxideApp {
                     Entry::Separator,
                     item("Import Image as Layer…", ImportImage),
                     item("Import Script as Layer…", ImportScript),
+                    item("Import Brushes…", ImportBrushes),
                     item("Open Reference Image…", OpenReference),
                     item("Export…", Export),
                     Entry::Separator,

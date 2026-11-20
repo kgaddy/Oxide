@@ -331,7 +331,7 @@ pub enum DialogFolder {
     Exports,
     /// Import Image as Layer, Open Reference Image.
     Images,
-    /// Import brush tips (.abr, .gbr, .gih, images).
+    /// Import brush tips (.abr, .brush, .brushset, .gbr, .gih, images).
     Tips,
     /// Recorded actions (.jsonl scripts for oxide-run).
     Recordings,

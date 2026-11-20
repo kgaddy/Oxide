@@ -339,6 +339,33 @@ impl OxideApp {
             .on_hover_text("Pressure used when painting with a mouse (the pen uses its real pressure)");
     }
 
+    /// "New group…" on a brush: ask for the group's name, then move the brush there.
+    pub(super) fn new_group_dialog(&mut self, ctx: &egui::Context) {
+        let Some((index, mut name)) = self.new_group.take() else { return };
+        let Some(entry) = self.presets.entries.get(index) else { return };
+        let brush = entry.preset.name.clone();
+        let (mut ok, mut cancel) = (false, false);
+        let modal = egui::Modal::new(egui::Id::new("new-brush-group")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading("New group");
+            ui.label(format!("Move \"{brush}\" into a new group called:"));
+            let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
+            edit.request_focus();
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let ready = !name.trim().is_empty();
+                ok = (ui.add_enabled(ready, egui::Button::new("Create")).clicked() || enter) && ready;
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if ok {
+            self.presets.set_group(index, name.trim());
+        } else if !cancel && !modal.should_close() {
+            self.new_group = Some((index, name)); // still asking
+        }
+    }
+
     /// The brush in use, by preset name, with its size: "Bristle Flat · size 14".
     /// "(edited)" once its shape is changed beyond the size.
     fn current_brush_label(&self, ui: &mut egui::Ui) {
@@ -370,6 +397,7 @@ impl OxideApp {
         let mut apply = None;
         let mut delete = None;
         let mut move_to: Option<(usize, String)> = None;
+        let mut ask_new_group: Option<usize> = None;
         // Search across all groups.
         ui.add(egui::TextEdit::singleline(&mut self.brush_search).hint_text("🔍 Search brushes").desired_width(f32::INFINITY));
         let search = self.brush_search.trim().to_lowercase();
@@ -425,7 +453,10 @@ impl OxideApp {
                                         move_to = Some((i, crate::presets::MY_BRUSHES.to_string()));
                                     }
                                     ui.separator();
-                                    ui.weak("New group: name it when saving in the Brush Creator");
+                                    if ui.button("New group…").clicked() {
+                                        ask_new_group = Some(i);
+                                        ui.close();
+                                    }
                                 });
                                 if ui.button("Delete brush").clicked() {
                                     delete = Some(i);
@@ -435,6 +466,9 @@ impl OxideApp {
                     }
                 });
             });
+        }
+        if let Some(i) = ask_new_group {
+            self.new_group = Some((i, String::new()));
         }
         if let Some((i, group)) = move_to {
             self.presets.set_group(i, &group);
