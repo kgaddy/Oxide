@@ -16,6 +16,7 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 - **More tools:** Ink, Pencil, Marker, Airbrush, Eraser, Smudge, Palette Knife, Hatch (engraving-style line fills), Select and Picker.
 - **Layers:** groups, blend modes, locks, a tracing layer, and a Reference Image window to paint from.
 - **Color picker:** a hue wheel (with a painter's RYB option) or a classic saturation/brightness square with hue, saturation and brightness sliders. Choose in Settings.
+- **Importing brushes:** bring in downloaded Photoshop (`.abr`), Procreate (`.brush`, `.brushset`) and GIMP (`.gbr`, `.gih`) brushes with **File → Import Brushes…** (or drop the files on the window). Each tip arrives as a brush preset with the name, spacing, roundness, angle and jitter from its file, ready to edit in the Brush Creator. Only the tip shape comes across, not the other app's pressure curves or grain textures. Pictures (PNG, JPEG and so on) can be used as tips too.
 - **Pen tablets:** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing. Tested on macOS; written for Windows and Linux (Wayland) but untried.
 - **Files:** a native `.oxide` format that keeps wet paint and impasto. Export to PNG, JPEG, BMP, TIFF, WebP and layered PSD.
 - **Scripting and AI agents:** an MCP server (`oxide-mcp`) and a JSON command runner (`oxide-run`). The app can also record what you paint as a replayable script.
