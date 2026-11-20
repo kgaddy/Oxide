@@ -110,7 +110,6 @@ scripts/bundle-macos.sh --install
 | Run on a real machine | ✅ daily use | not yet tried | not yet tried |
 | Pen pressure, tilt, rotation | ✅ | ⚠️ implemented (Windows Ink), untested | ⚠️ Wayland only, untested; on X11 the pen works as a mouse |
 | Menu bar | native Mac menu bar | menus inside the window | menus inside the window |
-| Open `.oxide` from the file manager | ✅ (with Oxide.app) | ❌ use File → Open or drag onto the window | ❌ use File → Open or drag onto the window |
 | App bundle / installer | `scripts/bundle-macos.sh` | none yet: run `cargo run` or `target\release\oxide-app.exe` | none yet: run `cargo run` or `target/release/oxide-app` |
 
 The headless tools (`oxide-mcp`, `oxide-run`) don't open a window, so they work the same everywhere. Pen support on Windows and Linux would need a new backend in `crates/oxide-app/src/pen.rs`.
