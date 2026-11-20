@@ -14,6 +14,16 @@ use crate::tools::{Tool, ToolState};
 
 const MAX_RECENT: usize = 10;
 
+/// How the color picker is laid out (Settings → Color picker).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorStyle {
+    /// A hue ring with a saturation/brightness square inside.
+    #[default]
+    Wheel,
+    /// A saturation/brightness square with hue, saturation and brightness sliders.
+    Classic,
+}
+
 /// Units for canvas sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Unit {
@@ -137,6 +147,8 @@ pub struct AppSettings {
     pub invert_rotation: bool,
     /// Show the color wheel as a painter's RYB wheel instead of RGB.
     pub ryb_wheel: bool,
+    /// Which color picker layout to show.
+    pub color_style: ColorStyle,
     /// The Picker averages a square this many pixels wide (1 = one pixel).
     pub picker_sample: usize,
     /// The UI theme's name (View → Theme).
@@ -228,6 +240,7 @@ impl Default for AppSettings {
             tilt_offset: 0.0,
             invert_rotation: false,
             ryb_wheel: false,
+            color_style: ColorStyle::Wheel,
             picker_sample: 1,
             theme: crate::theme::DEFAULT_THEME.into(),
             panels: crate::panel_layout::PanelLayout::default(),

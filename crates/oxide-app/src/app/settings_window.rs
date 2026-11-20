@@ -42,6 +42,17 @@ impl OxideApp {
     pub(super) fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.settings.open;
         egui::Window::new("Settings").open(&mut open).resizable(false).default_width(340.0).show(ctx, |ui| {
+            ui.strong("Color picker");
+            ui.horizontal(|ui| {
+                use crate::settings::ColorStyle;
+                let style = &mut self.app_settings.color_style;
+                let mut changed = ui.selectable_value(style, ColorStyle::Wheel, "Wheel").on_hover_text("A hue ring with a saturation/brightness square inside").changed();
+                changed |= ui.selectable_value(style, ColorStyle::Classic, "Classic").on_hover_text("A saturation/brightness square with hue, saturation and brightness sliders").changed();
+                if changed {
+                    self.settings.unsaved = true;
+                }
+            });
+            ui.separator();
             ui.strong("Tool starting values");
             ui.weak("What each tool starts with when Oxide opens. The tool you're painting with doesn't change until you click Use Now.");
             ui.add_space(6.0);

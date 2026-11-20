@@ -8,7 +8,7 @@ use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
 use super::{Command, OxideApp, to_color32};
-use crate::color_wheel::color_wheel;
+use crate::color_wheel::{classic_picker, color_wheel};
 use crate::panel_layout::{Section, Side};
 use crate::presets::{THUMB_H, THUMB_W};
 use crate::tools::{BrushShape, FUTURE_TOOLS, SWATCHES, Tool, ToolState};
@@ -608,6 +608,12 @@ impl OxideApp {
         let diameter = ui.available_width().min(220.0);
         let mut hsv = self.hsv;
         let ryb = self.app_settings.ryb_wheel;
+        if self.app_settings.color_style == crate::settings::ColorStyle::Classic {
+            if classic_picker(ui, &mut hsv, ryb) {
+                self.set_hsv(hsv);
+            }
+            return;
+        }
         ui.vertical_centered(|ui| {
             if color_wheel(ui, &mut hsv, diameter, ryb) {
                 self.set_hsv(hsv);
@@ -740,6 +746,7 @@ impl OxideApp {
                 .fill(fill)
                 .min_size(Vec2::new(0.0, 30.0))
         };
+        ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
             if ui.add_enabled(wet_here, big(&format!("{}  Dry layer", egui_phosphor::regular::HAIR_DRYER), dry_layer_fill, egui::Color32::WHITE)).on_hover_text("Lock the paint in (⌘D)").clicked() {
@@ -749,6 +756,7 @@ impl OxideApp {
                 self.run(Command::RewetLayer, ui.ctx());
             }
         });
+        ui.add_space(6.0);
     }
 }
 
