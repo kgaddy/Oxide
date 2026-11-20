@@ -368,7 +368,8 @@ const SHORTCUTS: [(Command, KeyboardShortcut); 41] = [
 ];
 
 impl OxideApp {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let ctx = &cc.egui_ctx;
         // A pen tip wobbles a little when you tap. egui only counts a press as a
         // click if it moves less than 6 points, so pen taps on buttons were often
         // seen as tiny drags and ignored. Be more forgiving.
@@ -429,7 +430,7 @@ impl OxideApp {
             frame_ms: 0.0,
             frame_ms_raw: 0.0,
             bench: bench::Bench::requested().then(Default::default),
-            pen: PenInput::new(ctx),
+            pen: PenInput::new(cc),
             mouse_pressure: 1.0,
             mode_key: None,
             last_paint_mode: PaintMode::PaintMix,
@@ -1138,6 +1139,7 @@ impl eframe::App for OxideApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
+        self.pen.pump();
         self.handle_close_request(&ctx);
         self.watch_theme_file(&ctx);
         self.bench_tick(&ctx);

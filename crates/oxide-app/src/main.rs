@@ -33,6 +33,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Oxide",
         options,
-        Box::new(|cc| Ok(Box::new(app::OxideApp::new(&cc.egui_ctx)))),
+        Box::new(|cc| Ok(Box::new(app::OxideApp::new(cc)))),
     )
 }

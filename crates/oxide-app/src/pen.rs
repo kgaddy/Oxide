@@ -6,6 +6,10 @@
 //! data to every mouse event, plus send separate tablet-point and proximity
 //! events. We keep the latest reading in a shared [`PenState`] that the app
 //! reads each frame.
+//!
+//! Windows listens to `WM_POINTER` messages (Windows Ink: pressure, tilt,
+//! rotation); Linux uses the Wayland tablet protocol through `octotablet`
+//! (X11 isn't covered yet, so the pen is just a mouse there).
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -64,7 +68,7 @@ impl Default for PenState {
 
 impl PenState {
     /// Keep a pressure reading (dropping the oldest when full).
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
     fn push_sample(&mut self, pressure: f32) {
         if self.sample_count == MAX_SAMPLES {
             self.samples.copy_within(1.., 0);
@@ -72,6 +76,34 @@ impl PenState {
         }
         self.samples[self.sample_count] = pressure;
         self.sample_count += 1;
+    }
+
+    /// Record one pen reading from a backend that reports it as plain numbers
+    /// (Windows, Linux): `pressure` 0..=1 (0 = lifted), `tilt` -1..=1 each way
+    /// (x right, y down), `rotation` in degrees.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn report(&mut self, pressure: f32, tilt: (f32, f32), rotation: f32, description: &'static str) {
+        self.events_seen += 1;
+        self.pen_events_seen += 1;
+        self.is_pen = true;
+        self.in_proximity = true;
+        self.last_event = Some(Instant::now());
+        self.last_description = description;
+        self.last_raw_pressure = pressure;
+        self.pressure = finite_or(pressure, 0.0).clamp(0.0, 1.0);
+        self.push_sample(self.pressure);
+        self.tilt = (finite_or(tilt.0, 0.0).clamp(-1.0, 1.0), finite_or(tilt.1, 0.0).clamp(-1.0, 1.0));
+        self.rotation = finite_or(rotation, 0.0);
+    }
+
+    /// The pen left the tablet's range.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn leave(&mut self) {
+        self.in_proximity = false;
+        self.is_pen = false;
+        self.pressure = 0.0;
+        self.last_event = Some(Instant::now());
+        self.last_description = "pen out of range";
     }
 
     /// Is the pen tip on the tablet right now? (Pressure counts even if the
@@ -89,16 +121,34 @@ pub struct PenInput {
     state: Arc<Mutex<PenState>>,
     #[cfg(target_os = "macos")]
     _monitor: Option<mac::Monitor>,
+    #[cfg(windows)]
+    _win: Option<win::Subclass>,
+    #[cfg(target_os = "linux")]
+    wayland: Mutex<Option<wayland::Tablet>>,
 }
 
 impl PenInput {
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-    pub fn new(ctx: &eframe::egui::Context) -> Self {
+    #[cfg_attr(not(any(target_os = "macos", windows, target_os = "linux")), allow(unused_variables))]
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let ctx = &cc.egui_ctx;
         let state = Arc::new(Mutex::new(PenState::default()));
         PenInput {
             #[cfg(target_os = "macos")]
             _monitor: mac::install(state.clone(), ctx.clone()),
+            #[cfg(windows)]
+            _win: win::install(cc, state.clone(), ctx.clone()),
+            #[cfg(target_os = "linux")]
+            wayland: Mutex::new(wayland::install(cc, state.clone(), ctx.clone())),
             state,
+        }
+    }
+
+    /// Collect pen events that need polling (Linux/Wayland). Call once a frame;
+    /// the other platforms deliver events on their own.
+    pub fn pump(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(tablet) = self.wayland.lock().expect("pen backend lock").as_mut() {
+            tablet.pump();
         }
     }
 
@@ -119,7 +169,11 @@ impl PenInput {
     pub fn available(&self) -> bool {
         #[cfg(target_os = "macos")]
         return self._monitor.is_some();
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        return self._win.is_some();
+        #[cfg(target_os = "linux")]
+        return self.wayland.lock().expect("pen backend lock").is_some();
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         return false;
     }
 }
@@ -165,7 +219,7 @@ pub fn adjust_rotation(degrees: f32, invert: bool) -> f32 {
 }
 
 /// Turn a value from the driver into a safe number (non-numbers become `fallback`).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
@@ -271,6 +325,183 @@ mod mac {
             ("mouse drag", true) => "mouse drag (pen)",
             ("mouse move", true) => "mouse move (pen)",
             (n, _) => n,
+        }
+    }
+}
+
+/// Windows Ink: `WM_POINTER` messages carry the pen's pressure, tilt and
+/// rotation. We subclass the window to see them first, then pass every
+/// message on unchanged so winit still gets the pen as a mouse.
+#[cfg(windows)]
+mod win {
+    use std::sync::{Arc, Mutex};
+
+    use eframe::egui;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Input::Pointer::{GetPointerPenInfo, GetPointerType, POINTER_FLAG_INCONTACT, POINTER_PEN_INFO};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        PEN_FLAG_ERASER, PEN_MASK_PRESSURE, PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, WM_POINTERDOWN, WM_POINTERLEAVE,
+        WM_POINTERUP, WM_POINTERUPDATE,
+    };
+
+    use super::PenState;
+
+    const SUBCLASS_ID: usize = 0x0A1D;
+
+    struct Shared {
+        state: Arc<Mutex<PenState>>,
+        ctx: egui::Context,
+    }
+
+    /// Keeps the window subclass (and what it reads from) alive.
+    pub struct Subclass {
+        hwnd: HWND,
+        shared: *mut Shared,
+    }
+
+    impl Drop for Subclass {
+        fn drop(&mut self) {
+            // SAFETY: we installed this subclass on this window with this id, and
+            // nothing uses `shared` after it's removed.
+            unsafe {
+                RemoveWindowSubclass(self.hwnd, Some(proc), SUBCLASS_ID);
+                drop(Box::from_raw(self.shared));
+            }
+        }
+    }
+
+    pub fn install(cc: &eframe::CreationContext<'_>, state: Arc<Mutex<PenState>>, ctx: egui::Context) -> Option<Subclass> {
+        let RawWindowHandle::Win32(handle) = cc.window_handle().ok()?.as_raw() else { return None };
+        let hwnd = handle.hwnd.get() as HWND;
+        let shared = Box::into_raw(Box::new(Shared { state, ctx }));
+        // SAFETY: `hwnd` is eframe's live window, and we're on the thread that made it
+        // (SetWindowSubclass requires that). `shared` stays valid until `Drop`.
+        let ok = unsafe { SetWindowSubclass(hwnd, Some(proc), SUBCLASS_ID, shared as usize) };
+        if ok == 0 {
+            // SAFETY: the subclass wasn't installed, so we still own `shared`.
+            drop(unsafe { Box::from_raw(shared) });
+            return None;
+        }
+        Some(Subclass { hwnd, shared })
+    }
+
+    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, refdata: usize) -> LRESULT {
+        if matches!(msg, WM_POINTERUPDATE | WM_POINTERDOWN | WM_POINTERUP | WM_POINTERLEAVE) {
+            // SAFETY: `refdata` is the `Shared` we passed to SetWindowSubclass.
+            let shared = unsafe { &*(refdata as *const Shared) };
+            // The pointer id is the low word of wparam.
+            read(shared, (wparam & 0xFFFF) as u32, msg);
+        }
+        // SAFETY: forwarding the message we were given.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    fn read(shared: &Shared, id: u32, msg: u32) {
+        let mut kind = 0;
+        // SAFETY: plain Win32 queries with valid out-pointers.
+        if unsafe { GetPointerType(id, &mut kind) } == 0 {
+            return;
+        }
+        let Ok(mut pen) = shared.state.lock() else { return };
+        if kind != PT_PEN {
+            // Touch or mouse: not the pen.
+            pen.is_pen = false;
+            return;
+        }
+        if msg == WM_POINTERLEAVE {
+            pen.leave();
+            drop(pen);
+            shared.ctx.request_repaint();
+            return;
+        }
+        let mut info: POINTER_PEN_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: valid out-pointer.
+        if unsafe { GetPointerPenInfo(id, &mut info) } == 0 {
+            return;
+        }
+        let touching = info.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT != 0 && msg != WM_POINTERUP;
+        // The eraser end isn't supported separately; it paints like the tip.
+        let _eraser = info.penFlags & PEN_FLAG_ERASER != 0;
+        let pressure = if !touching {
+            0.0
+        } else if info.penMask & PEN_MASK_PRESSURE != 0 {
+            // 0..=1024; a pen that doesn't report it counts as full pressure.
+            info.pressure as f32 / 1024.0
+        } else {
+            1.0
+        };
+        // Degrees from upright, -90..=90 each way.
+        let tilt_x = if info.penMask & PEN_MASK_TILT_X != 0 { info.tiltX as f32 / 90.0 } else { 0.0 };
+        let tilt_y = if info.penMask & PEN_MASK_TILT_Y != 0 { info.tiltY as f32 / 90.0 } else { 0.0 };
+        let rotation = if info.penMask & PEN_MASK_ROTATION != 0 { info.rotation as f32 } else { 0.0 };
+        pen.report(pressure, (tilt_x, tilt_y), rotation, if touching { "pointer (pen, touching)" } else { "pointer (pen, hovering)" });
+        drop(pen);
+        // Pen-only messages don't always wake egui.
+        shared.ctx.request_repaint();
+    }
+}
+
+/// Linux Wayland: the compositor's tablet protocol, read with `octotablet`.
+#[cfg(target_os = "linux")]
+mod wayland {
+    use std::sync::{Arc, Mutex};
+
+    use eframe::egui;
+    use octotablet::events::{Event, ToolEvent};
+
+    use super::PenState;
+
+    pub struct Tablet {
+        manager: octotablet::Manager,
+        state: Arc<Mutex<PenState>>,
+        ctx: egui::Context,
+        /// Is the tool pressed (touching) right now?
+        down: bool,
+    }
+
+    pub fn install(cc: &eframe::CreationContext<'_>, state: Arc<Mutex<PenState>>, ctx: egui::Context) -> Option<Tablet> {
+        // SAFETY: eframe keeps the window and display alive for as long as the
+        // app runs, and the app (which owns this) is dropped before they go away.
+        let manager = unsafe { octotablet::Builder::new().build_raw(cc) }.ok()?;
+        Some(Tablet { manager, state, ctx, down: false })
+    }
+
+    impl Tablet {
+        pub fn pump(&mut self) {
+            let Ok(events) = self.manager.pump() else { return };
+            let Ok(mut pen) = self.state.lock() else { return };
+            let mut any = false;
+            for event in events {
+                let Event::Tool { event, .. } = event else { continue };
+                any = true;
+                match event {
+                    ToolEvent::Down => self.down = true,
+                    ToolEvent::Up => {
+                        self.down = false;
+                        let (tilt, rotation) = (pen.tilt, pen.rotation);
+                        pen.report(0.0, tilt, rotation, "tablet: pen up");
+                    }
+                    ToolEvent::Out => {
+                        self.down = false;
+                        pen.leave();
+                    }
+                    ToolEvent::Pose(pose) => {
+                        // Pressure is 0..=1; tilt and roll are radians.
+                        let pressure = if self.down { pose.pressure.get().unwrap_or(1.0) } else { 0.0 };
+                        let half_pi = std::f32::consts::FRAC_PI_2;
+                        let tilt = pose.tilt.map_or((0.0, 0.0), |[x, y]| (x / half_pi, y / half_pi));
+                        let rotation = pose.roll.get().map_or(0.0, f32::to_degrees);
+                        pen.report(pressure, tilt, rotation, if self.down { "tablet: pen touching" } else { "tablet: pen hovering" });
+                    }
+                    _ => {}
+                }
+            }
+            drop(pen);
+            if any {
+                self.ctx.request_repaint();
+            }
         }
     }
 }

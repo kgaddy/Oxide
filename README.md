@@ -15,7 +15,8 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 - **Impasto and surfaces:** thick paint keeps its height and is lit. Paper, canvas, linen and panel surfaces have adjustable depth and lighting.
 - **More tools:** Ink, Pencil, Marker, Airbrush, Eraser, Smudge, Palette Knife, Hatch (engraving-style line fills), Select and Picker.
 - **Layers:** groups, blend modes, locks, a tracing layer, and a Reference Image window to paint from.
-- **Pen tablets (macOS):** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing.
+- **Color picker:** a hue wheel (with a painter's RYB option) or a classic saturation/brightness square with hue, saturation and brightness sliders. Choose in Settings.
+- **Pen tablets:** pressure, tilt and barrel rotation, with a pressure curve and stroke smoothing. Tested on macOS; written for Windows and Linux (Wayland) but untried.
 - **Files:** a native `.oxide` format that keeps wet paint and impasto. Export to PNG, JPEG, BMP, TIFF, WebP and layered PSD.
 - **Scripting and AI agents:** an MCP server (`oxide-mcp`) and a JSON command runner (`oxide-run`). The app can also record what you paint as a replayable script.
 
@@ -107,7 +108,7 @@ scripts/bundle-macos.sh --install
 |---|---|---|---|
 | Builds | ✅ tested | ✅ compiles | ✅ compiles (X11 and Wayland) |
 | Run on a real machine | ✅ daily use | not yet tried | not yet tried |
-| Pen pressure, tilt, rotation | ✅ | ❌ the pen works as a mouse | ❌ the pen works as a mouse |
+| Pen pressure, tilt, rotation | ✅ | ⚠️ implemented (Windows Ink), untested | ⚠️ Wayland only, untested; on X11 the pen works as a mouse |
 | Menu bar | native Mac menu bar | menus inside the window | menus inside the window |
 | Open `.oxide` from the file manager | ✅ (with Oxide.app) | ❌ use File → Open or drag onto the window | ❌ use File → Open or drag onto the window |
 | App bundle / installer | `scripts/bundle-macos.sh` | none yet: run `cargo run` or `target\release\oxide-app.exe` | none yet: run `cargo run` or `target/release/oxide-app` |
@@ -127,10 +128,12 @@ The headless tools (`oxide-mcp`, `oxide-run`) don't open a window, so they work 
 
 ### Pen tablets
 
-On macOS, Oxide reads pressure, tilt and rotation straight from the system's tablet events. On Windows and Linux a pen works like a mouse for now, and the **Pressure** slider sets a fixed pressure.
+On macOS, Oxide reads pressure, tilt and rotation straight from the system's tablet events. On Windows it reads Windows Ink pointer messages, and on Linux the Wayland tablet protocol. Both are written but have not been tried on real hardware yet. On Linux under X11 a pen still works like a mouse, and the **Pressure** slider sets a fixed pressure.
 
-- Install your tablet maker's macOS driver.
-- In **System Settings → Privacy & Security**, allow the driver under **Accessibility** and **Input Monitoring**. Without this, macOS's generic tablet support reports no pressure.
+- **Windows:** install your tablet maker's driver and make sure **Windows Ink** is turned on in its settings. If the tilt direction is flipped, turn on **Invert tilt** in Pen Settings.
+- **Linux:** needs a Wayland session whose compositor supports the tablet protocol.
+- **macOS:** install your tablet maker's driver.
+- On macOS, in **System Settings → Privacy & Security**, allow the driver under **Accessibility** and **Input Monitoring**. Without this, macOS's generic tablet support reports no pressure.
 - Check it in **Window → Pen Settings**: "Pressure from the pen" should move as you press. If light touches don't register, choose a softer pressure curve there.
 - To print every pen event to the terminal:
 
@@ -203,7 +206,7 @@ Settings, saved brushes, brush tips, palettes and themes live in an `Oxide` fold
 | Windows | `%APPDATA%\Oxide\` |
 | Linux | `~/.local/share/Oxide/` (or `$XDG_DATA_HOME/Oxide/`) |
 
-Most preferences are set in the app (View → Theme, Window → Pen Settings, and so on) and saved there automatically.
+Most preferences are set in the app (View → Theme, Window → Pen Settings, Settings → Color picker, and so on) and saved there automatically.
 
 ## Development
 

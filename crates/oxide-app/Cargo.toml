@@ -31,3 +31,12 @@ muda = "0.21.2"
 # Linux needs a window system: eframe's defaults are off above, so turn X11 and Wayland back on.
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["x11", "wayland"] }
+
+# Windows: read the pen from WM_POINTER messages (winit turns it into a mouse).
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_Pointer"] }
+
+# Linux: tablet events over X11 (XInput2) and Wayland (tablet protocol).
+[target.'cfg(target_os = "linux")'.dependencies.octotablet]
+version = "0.1.0"
