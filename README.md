@@ -30,6 +30,20 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 | ![The canvas rotated for a comfortable stroke angle, with the navigator](assets/screenshots/paprika-rotated.jpg) | |
 | Rotate the canvas to paint at a natural angle | |
 
+## Download
+
+Ready-made builds are on the [**Releases** page](https://github.com/kgaddy/Oxide/releases) (no Rust needed):
+
+| Platform | Download | Status |
+|---|---|---|
+| **macOS** (Apple Silicon: M1 and later) | `Oxide-<version>-macos-arm64.zip` | Tested |
+| **Windows** (64-bit) | `Oxide-<version>-windows-x64.zip` | Untested |
+| **Linux** (64-bit) | `Oxide-<version>-linux-x64.tar.gz` | Untested |
+
+**Opening Oxide on a Mac:** the app isn't signed with an Apple Developer ID yet, so macOS warns the first time. Unzip it, drag **Oxide** into **Applications**, then **right-click → Open** and click **Open**. If macOS says it "is damaged", run `xattr -dr com.apple.quarantine /Applications/Oxide.app` once and try again.
+
+On Windows and Linux, unzip and run `oxide-app`. Those builds haven't been run on a real machine yet, so please [tell us how it went](https://github.com/kgaddy/Oxide/issues/new/choose) with the "Tested on Windows or Linux" form. To build it yourself instead, see [Installation](#installation).
+
 ## Requirements
 
 | What | Notes |
