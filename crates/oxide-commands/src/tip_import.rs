@@ -615,10 +615,11 @@ fn parse_procreate(bytes: &[u8], stem: &str) -> Result<Vec<ImportedTip>, String>
     for i in 0..zip.len() {
         let Ok(entry) = zip.by_index(i) else { continue };
         let Ok(name) = entry.name().map(|n| n.to_string()) else { continue };
-        if let Some(dir) = name.strip_suffix("Shape.png").filter(|d| d.is_empty() || d.ends_with('/')) {
-            if !dir.starts_with("__MACOSX") && !folders.iter().any(|f| f == dir) {
-                folders.push(dir.to_string());
-            }
+        if let Some(dir) = name.strip_suffix("Shape.png").filter(|d| d.is_empty() || d.ends_with('/'))
+            && !dir.starts_with("__MACOSX")
+            && !folders.iter().any(|f| f == dir)
+        {
+            folders.push(dir.to_string());
         }
     }
     // The pack's own order, if it tells us.

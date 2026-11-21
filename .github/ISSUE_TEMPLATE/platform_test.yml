@@ -1,0 +1,42 @@
+name: Tested on Windows or Linux
+description: Tell us how Oxide ran on your Windows or Linux machine (it's only been tried on macOS so far)
+labels: [platform-testing]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! Windows and Linux builds compile but haven't been run on real machines much. Reports of what **works** are as useful as bugs.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, "Linux (Wayland)", "Linux (X11)"]
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Version, distribution and graphics card
+      placeholder: "e.g. Fedora 41, GNOME on Wayland, AMD RX 6600"
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What worked?
+      options:
+        - label: It builds (`cargo build --release -p oxide-app`)
+        - label: The window opens and I can paint
+        - label: Opening and saving a .oxide file
+        - label: Exporting a PNG
+        - label: Importing brushes (File → Import Brushes…)
+        - label: Pen pressure
+        - label: Pen tilt
+  - type: textarea
+    id: notes
+    attributes:
+      label: What didn't work, or looked odd?
+      description: Error messages, a screenshot, or "tilt goes the wrong way" (try Window → Pen Settings → Invert tilt).
+  - type: input
+    id: pen
+    attributes:
+      label: Pen tablet
+      description: Make, model and driver, if you used one.

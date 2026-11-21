@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in Oxide doesn't work or looks wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead? A screenshot helps a lot for painting problems.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Tool, brush and settings, and what you painted. For import problems, say which kind of file (.abr, .brush, .brushset, .gbr, .gih or an image). If you can, attach the file or a small one that shows the problem (only if you're allowed to share it).
+      placeholder: |
+        1. Choose the Oils & Acrylics tool and the "Bristle Flat" brush
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Windows, "Linux (Wayland)", "Linux (X11)"]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Oxide version or commit
+      description: From Oxide's About, or `git rev-parse --short HEAD` in your clone.
+  - type: input
+    id: pen
+    attributes:
+      label: Pen tablet (if it matters)
+      description: Make and model, and whether you're using its driver.

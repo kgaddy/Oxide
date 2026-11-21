@@ -36,7 +36,7 @@ A natural-media painting app written in Rust. It's developed on macOS and also b
 |---|---|
 | **macOS, Windows or Linux** | See [Platform support](#platform-support). The GPU drawing goes through wgpu (Metal on macOS, DirectX 12 or Vulkan on Windows, Vulkan on Linux). |
 | **A C linker** | macOS: Xcode Command Line Tools. Windows: Visual Studio Build Tools with the "Desktop development with C++" workload. Linux: your distribution's compiler package (for example `build-essential`). |
-| **Rust (stable, via rustup)** | The crates use the 2024 edition, so you need Rust 1.85 or newer. |
+| **Rust (stable, via rustup)** | The crates use the 2024 edition, so you need Rust 1.88 or newer (the code uses "let chains"). |
 | **Python 3** *(optional)* | Only for the generative painting scripts in `scripts/abstract/`. They use only the standard library. |
 | **A pen tablet** *(optional)* | A mouse works. For pressure, see [Pen tablets](#pen-tablets). |
 
@@ -260,7 +260,20 @@ New to Rust? *[The Rust Programming Language](https://doc.rust-lang.org/book/)*,
 
 ## Contributing
 
-<!-- TODO: contribution guidelines (issues, pull requests, code style) once the repo is public. -->
+Pull requests, bug reports and ideas are welcome. The full guide is in [CONTRIBUTING.md](CONTRIBUTING.md); the short version:
+
+- **Open an issue first** for anything big, so we can agree on the approach. Small fixes can go straight to a pull request.
+- **Build and run:** `cargo run --release -p oxide-app` (see [Installation](#installation)).
+- **Before you open a pull request**, run:
+
+  ```bash
+  cargo test --workspace
+  cargo clippy --workspace --all-targets -- -D warnings
+  ```
+
+  The same checks run automatically on macOS, Windows and Linux.
+- **Good places to start:** issues labelled `good first issue` or `help wanted`. **Trying Oxide on Windows or Linux and reporting what works** is a big help, since those builds haven't been run on real machines much: use the "Tested on Windows or Linux" issue form.
+
 
 ## Support
 

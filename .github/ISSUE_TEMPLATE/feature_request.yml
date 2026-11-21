@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest something Oxide could do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to be able to do?
+      description: Describe the painting task or workflow, not just the feature. "I want to ..." is a good start.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How might it work?
+      description: Optional. A rough idea, or how a tool you know handles it.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Want to help build it?
+      options:
+        - label: I'd be willing to try a pull request for this
