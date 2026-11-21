@@ -234,8 +234,14 @@ impl Recorder {
             a.tracing = changed(was.tracing != now.tracing).map(|_| now.tracing);
             a.impasto_depth = changed(was.impasto != now.impasto).map(|_| now.impasto.map_or(-1.0, |d| d * 10.0));
             a.blend = changed(was.blend != now.blend).map(|_| now.blend.key());
-            if a.name.is_some() || a.opacity.is_some() || a.visible.is_some() || a.locked.is_some() || a.lock_transparency.is_some()
-                || a.tracing.is_some() || a.impasto_depth.is_some() || a.blend.is_some()
+            if a.name.is_some()
+                || a.opacity.is_some()
+                || a.visible.is_some()
+                || a.locked.is_some()
+                || a.lock_transparency.is_some()
+                || a.tracing.is_some()
+                || a.impasto_depth.is_some()
+                || a.blend.is_some()
             {
                 self.push(Command::SetLayer(a));
             }
@@ -330,10 +336,13 @@ impl Recorder {
             rail_a: rail(rails.0),
             rail_b: rail(rails.1),
             edge: rails.2.map(rail),
-            direction: Some(match settings.direction {
-                HatchDirection::Across => "across",
-                HatchDirection::Along => "along",
-            }.into()),
+            direction: Some(
+                match settings.direction {
+                    HatchDirection::Across => "across",
+                    HatchDirection::Along => "along",
+                }
+                .into(),
+            ),
             spacing: Some(settings.spacing),
             fade: Some(settings.fade),
             wobble: Some(settings.wobble),
@@ -456,9 +465,7 @@ impl Recorder {
 /// One command as a line of JSON, like the Python scripts write it:
 /// `{"command": "set_brush", "size": 40}`, without the settings left out.
 pub fn command_line(command: &Command) -> String {
-    let Value::Object(map) = serde_json::to_value(command).expect("commands are plain data") else {
-        unreachable!("a command is a JSON object")
-    };
+    let Value::Object(map) = serde_json::to_value(command).expect("commands are plain data") else { unreachable!("a command is a JSON object") };
     let mut parts = vec![format!("\"command\": {}", map["command"])];
     for (key, value) in &map {
         if key != "command" && !value.is_null() {

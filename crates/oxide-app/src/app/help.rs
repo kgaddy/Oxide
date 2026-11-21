@@ -55,15 +55,7 @@ pub struct Help {
 
 impl Default for Help {
     fn default() -> Self {
-        Self {
-            open: false,
-            book: None,
-            page: HOME.into(),
-            back: Vec::new(),
-            search: String::new(),
-            cache: CommonMarkCache::default(),
-            scroll_to_top: false,
-        }
+        Self { open: false, book: None, page: HOME.into(), back: Vec::new(), search: String::new(), cache: CommonMarkCache::default(), scroll_to_top: false }
     }
 }
 
@@ -210,12 +202,7 @@ impl OxideApp {
             self.help.load(ctx);
         }
         let mut open = true;
-        egui::Window::new("Oxide Help")
-            .open(&mut open)
-            .default_size([820.0, 580.0])
-            .min_size([520.0, 320.0])
-            .resizable(true)
-            .show(ctx, |ui| self.help.ui(ui));
+        egui::Window::new("Oxide Help").open(&mut open).default_size([820.0, 580.0]).min_size([520.0, 320.0]).resizable(true).show(ctx, |ui| self.help.ui(ui));
         self.help.open &= open;
     }
 }
@@ -462,10 +449,7 @@ fn html_pictures(src: &str) -> String {
         let block = &rest[start..start + end];
         for cell in block.split("<td").skip(1) {
             let Some((url, _)) = between(cell, "src=\"", "\"") else { continue };
-            let caption = between(cell, "<em>", "</em>")
-                .map(|(c, _)| c)
-                .or_else(|| between(cell, "alt=\"", "\"").map(|(a, _)| a))
-                .unwrap_or("Picture");
+            let caption = between(cell, "<em>", "</em>").map(|(c, _)| c).or_else(|| between(cell, "alt=\"", "\"").map(|(a, _)| a)).unwrap_or("Picture");
             out.push_str(&format!("*{}*: [open the picture online]({url})\n\n", caption.trim()));
         }
         rest = &rest[start + end + "</table>".len()..];
@@ -585,11 +569,9 @@ mod tests {
 
     #[test]
     fn tables_become_wrapping_lists() {
-        let src = "Before\n\n| Setting | What it does |\n|---|---|\n| Spacing | Pixels \\| apart |\n| Fade | Thins |\n\nAfter\n```\n| a | b |\n|---|---|\n```\n";
-        assert_eq!(
-            tables_to_lists(src),
-            "Before\n\n- **Spacing**: Pixels | apart\n- **Fade**: Thins\n\n\nAfter\n```\n| a | b |\n|---|---|\n```\n"
-        );
+        let src =
+            "Before\n\n| Setting | What it does |\n|---|---|\n| Spacing | Pixels \\| apart |\n| Fade | Thins |\n\nAfter\n```\n| a | b |\n|---|---|\n```\n";
+        assert_eq!(tables_to_lists(src), "Before\n\n- **Spacing**: Pixels | apart\n- **Fade**: Thins\n\n\nAfter\n```\n| a | b |\n|---|---|\n```\n");
         let wide = "| Panel | Does | Tier |\n|---|---|---|\n| Layers | A list | v1 |\n";
         assert_eq!(tables_to_lists(wide), "- **Layers**: *Does:* A list · *Tier:* v1\n\n");
     }

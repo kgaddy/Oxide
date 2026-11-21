@@ -210,10 +210,7 @@ impl Mask {
                         let n = fbm(u * 14.0, v * 14.0, seed, 3);
                         disk * smoothstep(0.35, 0.75, 0.55 * n + 0.45 * grain)
                     }
-                    Tip::Splatter => drops
-                        .iter()
-                        .map(|&(x, y, s)| smoothstep(s, s * 0.6, ((u - x).powi(2) + (v - y).powi(2)).sqrt()))
-                        .fold(0.0, f32::max),
+                    Tip::Splatter => drops.iter().map(|&(x, y, s)| smoothstep(s, s * 0.6, ((u - x).powi(2) + (v - y).powi(2)).sqrt())).fold(0.0, f32::max),
                     Tip::DryBrush => {
                         // Streaks run along v (the direction of travel for a tip
                         // that follows the stroke); their ends are ragged.

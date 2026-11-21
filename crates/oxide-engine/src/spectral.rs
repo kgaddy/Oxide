@@ -334,5 +334,3 @@ mod tests {
         assert!(shade[0] < red[0], "shade darker: {shade:?}");
     }
 }
-
-

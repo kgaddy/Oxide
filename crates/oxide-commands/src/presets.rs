@@ -154,7 +154,30 @@ impl BrushPreset {
 }
 
 fn builtin(name: &str, radius: f32, hardness: f32, spacing: f32, roundness: f32, angle: f32) -> BrushPreset {
-    BrushPreset { name: name.to_string(), group: String::new(), radius, hardness, spacing, roundness, angle, roughness: 0.0, streaks: 0.0, lift_off: 0.0, taper: 0.0, taper_ends: TaperEnds::Both, rough_ends: 0.0, rotation: Rotation::None, size_pressure: None, opacity_pressure: None, grain: None, bristles: None, tip: Tip::Round, jitter_angle: 0.0, jitter_size: 0.0, scatter: 0.0 }
+    BrushPreset {
+        name: name.to_string(),
+        group: String::new(),
+        radius,
+        hardness,
+        spacing,
+        roundness,
+        angle,
+        roughness: 0.0,
+        streaks: 0.0,
+        lift_off: 0.0,
+        taper: 0.0,
+        taper_ends: TaperEnds::Both,
+        rough_ends: 0.0,
+        rotation: Rotation::None,
+        size_pressure: None,
+        opacity_pressure: None,
+        grain: None,
+        bristles: None,
+        tip: Tip::Round,
+        jitter_angle: 0.0,
+        jitter_size: 0.0,
+        scatter: 0.0,
+    }
 }
 
 /// A built-in preset whose tip turns to follow the stroke (flat brushes, knives).
@@ -272,10 +295,7 @@ pub fn load_saved() -> (Vec<(BrushPreset, PathBuf)>, Vec<String>) {
     let (mut presets, mut errors) = (Vec::new(), Vec::new());
     let Some(dir) = brushes_dir().filter(|d| d.exists()) else { return (presets, errors) };
     let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
-            .collect(),
+        Ok(entries) => entries.filter_map(|entry| entry.ok().map(|e| e.path())).filter(|path| path.extension().is_some_and(|ext| ext == "toml")).collect(),
         Err(e) => {
             errors.push(format!("{}: {e}", dir.display()));
             return (presets, errors);

@@ -2,13 +2,13 @@ use std::collections::VecDeque;
 
 mod bristle;
 
-use crate::canvas::{Bands, Flow, ReliefDab, unpremultiply};
-use crate::paint::mix_paint;
-use crate::tip::{DabTexture, hash2};
 use crate::brush::{PaintMode, Rotation};
-use crate::paint::Mixing;
-use crate::spectral::Pigment;
 use crate::canvas::Buffers;
+use crate::canvas::{Bands, Flow, ReliefDab, unpremultiply};
+use crate::paint::Mixing;
+use crate::paint::mix_paint;
+use crate::spectral::Pigment;
+use crate::tip::{DabTexture, hash2};
 use crate::{Brush, Canvas, Color, DabMode, DabStyle, Region, Wetness};
 
 /// One continuous brush stroke, from pen-down to pen-up.
@@ -46,9 +46,7 @@ impl StrokePoint {
     /// The tip angle (degrees, before the brush's own angle) the pen asks for
     /// in the given rotation mode, if any.
     fn pen_angle(&self, mode: Rotation) -> Option<f32> {
-        let tilt_angle = || {
-            self.tilt.filter(|(x, y)| x * x + y * y > 0.01).map(|(x, y)| y.atan2(x).to_degrees())
-        };
+        let tilt_angle = || self.tilt.filter(|(x, y)| x * x + y * y > 0.01).map(|(x, y)| y.atan2(x).to_degrees());
         match mode {
             Rotation::PenTilt => tilt_angle(),
             // Pens without barrel rotation fall back to tilt.
@@ -287,7 +285,17 @@ impl Stroke {
         }
         if gap && brush.ends_length() <= 0.0 {
             let p = self.last_point;
-            let dab = PendingDab { x: cx, y: cy, pressure: p.pressure, pen_angle: p.pen_angle(brush.rotation), dir: ghost.dir, has_direction: ghost.has_direction, dist: end, taper: 1.0, rough: 0.0 };
+            let dab = PendingDab {
+                x: cx,
+                y: cy,
+                pressure: p.pressure,
+                pen_angle: p.pen_angle(brush.rotation),
+                dir: ghost.dir,
+                has_direction: ghost.has_direction,
+                dist: end,
+                taper: 1.0,
+                rough: 0.0,
+            };
             ghost.paint(canvas, brush, dab, 1.0);
         }
         Some(Preview { region, saved })
@@ -399,8 +407,13 @@ impl Stroke {
         let flow = self.flow_share(brush.spacing_share());
 
         let Some(wet) = &mut self.wet else {
-            let texture = (brush.is_textured() || lift_dryness > 0.0)
-                .then_some(DabTexture { dir, stroke_seed: self.seed, dab_seed, dryness: lift_dryness, pattern_radius });
+            let texture = (brush.is_textured() || lift_dryness > 0.0).then_some(DabTexture {
+                dir,
+                stroke_seed: self.seed,
+                dab_seed,
+                dryness: lift_dryness,
+                pattern_radius,
+            });
             // A firmer, more opaque touch presses further into the paper's tooth.
             let reach = (0.4 + 0.5 * brush.opacity.clamp(0.0, 1.0)) * (1.0 - 0.7 * lift_dryness);
             let style = DabStyle {
@@ -766,13 +779,7 @@ mod tests {
         // yellow (it doesn't build up in thin layers that mix to green), even
         // with a light touch and opacity on pressure.
         let blue = Brush { color: Color::rgb(0.15, 0.1, 0.85), radius: 10.0, wet_medium: true, mixing: Mixing::Pigment, ..Brush::default() };
-        let yellow = Brush {
-            color: Color::rgb(0.85, 0.75, 0.05),
-            paint_mode: PaintMode::PaintMix,
-            oiliness: 0.03,
-            opacity_pressure: 0.43,
-            ..blue.clone()
-        };
+        let yellow = Brush { color: Color::rgb(0.85, 0.75, 0.05), paint_mode: PaintMode::PaintMix, oiliness: 0.03, opacity_pressure: 0.43, ..blue.clone() };
         let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
         line(&mut canvas, &blue, (20.0, 20.0), (180.0, 20.0));
         let at = |pressure: f32| StrokePoint { pressure, ..StrokePoint::mouse(0.0, 0.0) };
@@ -945,13 +952,23 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         // Wet red paint (a block painted with the wet medium).
         let red_block = Brush { color: RED, radius: 20.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: RED,
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         canvas.dab_with(60.0, 10.0, &red_block, &wet);
 
         // RGB mixing here: this test is about the pickup *mechanics*. (Loading
         // 0.6: a lightly loaded brush cleans itself slowly, so it stays dirty.)
-        let oily_blue =
-            Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.6, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+        let oily_blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.8, loading: 0.6, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let stroke = line(&mut canvas, &oily_blue, (20.0, 10.0), (90.0, 10.0));
 
         // Just after passing through red, the blue paint is tinted red.
@@ -975,7 +992,18 @@ mod tests {
     fn loaded_brush_stays_mostly_its_own_color_over_wet_paint() {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: RED,
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         canvas.dab_with(100.0, 10.0, &red_block, &wet);
 
         // A freshly loaded brush with moderate oiliness (like the default oils).
@@ -989,7 +1017,18 @@ mod tests {
     fn brush_cleans_up_after_leaving_wet_paint() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         let red_block = Brush { color: RED, radius: 15.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: RED,
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         canvas.dab_with(40.0, 10.0, &red_block, &wet);
 
         let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.6, loading: 0.9, spacing: 0.05, ..Brush::default() };
@@ -1002,8 +1041,7 @@ mod tests {
     fn dirty_tip_starts_dirty_then_cleans() {
         let mut canvas = Canvas::new(300, 20, Color::WHITE);
         // Loading 1 so the brush never runs dry (dry streaks would leave gaps to measure).
-        let blue =
-            Brush { color: BLUE, radius: 5.0, oiliness: 0.4, loading: 1.0, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+        let blue = Brush { color: BLUE, radius: 5.0, oiliness: 0.4, loading: 1.0, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let mut stroke = Stroke::begin_with_tip(&mut canvas, &blue, DabMode::Paint, 10.0, 10.0, Some(RED));
         stroke.line_to(&mut canvas, &blue, 290.0, 10.0);
         stroke.finish(&mut canvas, &blue);
@@ -1018,7 +1056,18 @@ mod tests {
         let mut canvas = Canvas::new(200, 20, Color::WHITE);
         let yellow = Color::rgb(0.988, 0.827, 0.0);
         let block = Brush { color: yellow, radius: 40.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: yellow, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: yellow,
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         canvas.dab_with(100.0, 10.0, &block, &wet);
 
         let blue = Color::rgb(0.0, 0.129, 0.522);
@@ -1069,14 +1118,26 @@ mod tests {
     fn red_field() -> Canvas {
         let mut canvas = Canvas::new(200, 40, Color::TRANSPARENT);
         let block = Brush { color: RED, radius: 60.0, hardness: 1.0, ..Brush::default() };
-        let wet = DabStyle { color: RED, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: RED,
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         canvas.dab_with(50.0, 20.0, &block, &wet);
         canvas
     }
 
     fn stroke_through_red(mode: PaintMode, pressure: f32) -> (Color, Color) {
         let mut canvas = red_field();
-        let brush = Brush { color: BLUE, radius: 6.0, oiliness: 0.6, wet_medium: true, paint_mode: mode, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
+        let brush =
+            Brush { color: BLUE, radius: 6.0, oiliness: 0.6, wet_medium: true, paint_mode: mode, spacing: 0.05, mixing: Mixing::Rgb, ..Brush::default() };
         let p = |x| StrokePoint { x, y: 20.0, pressure, tilt: None, rotation: None };
         let mut s = Stroke::begin_at(&mut canvas, &brush, DabMode::Paint, p(20.0), None);
         s.line_to_point(&mut canvas, &brush, p(80.0));

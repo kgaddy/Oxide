@@ -27,7 +27,10 @@ enum Grip {
     Move,
     Rotate,
     /// Which side of the box is dragged: -1, 0 or 1 on each axis (0 = edge handle).
-    Scale { hx: f32, hy: f32 },
+    Scale {
+        hx: f32,
+        hy: f32,
+    },
 }
 
 struct Drag {
@@ -241,79 +244,75 @@ impl OxideApp {
         let mut apply = false;
         let mut cancel = false;
 
-        egui::Window::new("Transform")
-            .anchor(egui::Align2::CENTER_TOP, [0.0, 36.0])
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                egui::Grid::new("transform-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label("Move");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut t.dx).prefix("x ").suffix(" px").max_decimals(0));
-                        ui.add(egui::DragValue::new(&mut t.dy).prefix("y ").suffix(" px").max_decimals(0));
-                    });
-                    ui.end_row();
+        egui::Window::new("Transform").anchor(egui::Align2::CENTER_TOP, [0.0, 36.0]).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Grid::new("transform-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label("Move");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut t.dx).prefix("x ").suffix(" px").max_decimals(0));
+                    ui.add(egui::DragValue::new(&mut t.dy).prefix("y ").suffix(" px").max_decimals(0));
+                });
+                ui.end_row();
 
-                    ui.label("Size");
-                    ui.horizontal(|ui| {
-                        let (mut pw, mut ph) = (t.sx.abs() * 100.0, t.sy.abs() * 100.0);
-                        let cw = ui.add(egui::DragValue::new(&mut pw).prefix("W ").suffix("%").range(1.0..=2000.0).max_decimals(1)).changed();
-                        let ch = ui.add(egui::DragValue::new(&mut ph).prefix("H ").suffix("%").range(1.0..=2000.0).max_decimals(1)).changed();
-                        if cw {
-                            if tool.keep_ratio {
-                                ph *= pw / (t.sx.abs() * 100.0).max(0.01);
-                            }
-                        } else if ch && tool.keep_ratio {
-                            pw *= ph / (t.sy.abs() * 100.0).max(0.01);
+                ui.label("Size");
+                ui.horizontal(|ui| {
+                    let (mut pw, mut ph) = (t.sx.abs() * 100.0, t.sy.abs() * 100.0);
+                    let cw = ui.add(egui::DragValue::new(&mut pw).prefix("W ").suffix("%").range(1.0..=2000.0).max_decimals(1)).changed();
+                    let ch = ui.add(egui::DragValue::new(&mut ph).prefix("H ").suffix("%").range(1.0..=2000.0).max_decimals(1)).changed();
+                    if cw {
+                        if tool.keep_ratio {
+                            ph *= pw / (t.sx.abs() * 100.0).max(0.01);
                         }
-                        if cw || ch {
-                            t.sx = pw / 100.0 * t.sx.signum();
-                            t.sy = ph / 100.0 * t.sy.signum();
-                        }
-                        ui.checkbox(&mut tool.keep_ratio, "🔗").on_hover_text("Keep proportions (Shift while dragging a corner does the opposite)");
-                    });
-                    ui.end_row();
+                    } else if ch && tool.keep_ratio {
+                        pw *= ph / (t.sy.abs() * 100.0).max(0.01);
+                    }
+                    if cw || ch {
+                        t.sx = pw / 100.0 * t.sx.signum();
+                        t.sy = ph / 100.0 * t.sy.signum();
+                    }
+                    ui.checkbox(&mut tool.keep_ratio, "🔗").on_hover_text("Keep proportions (Shift while dragging a corner does the opposite)");
+                });
+                ui.end_row();
 
-                    ui.label("Angle");
-                    ui.add(egui::DragValue::new(&mut t.rotation).suffix("°").range(-180.0..=180.0).max_decimals(1));
-                    ui.end_row();
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("⟲ 90°").clicked() {
-                        t.rotation = super::canvas_view::wrap_degrees(t.rotation - 90.0);
-                    }
-                    if ui.button("⟳ 90°").clicked() {
-                        t.rotation = super::canvas_view::wrap_degrees(t.rotation + 90.0);
-                    }
-                    if ui.button("Flip ↔").clicked() {
-                        t.sx = -t.sx;
-                    }
-                    if ui.button("Flip ↕").clicked() {
-                        t.sy = -t.sy;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Fit canvas").on_hover_text("Scale to fit inside the canvas, centered").clicked() {
-                        t = t.fitted(tool.bounds, w, h, false);
-                    }
-                    if ui.button("Fill canvas").on_hover_text("Scale to cover the whole canvas, centered").clicked() {
-                        t = t.fitted(tool.bounds, w, h, true);
-                    }
-                    if ui.button("Reset").clicked() {
-                        t = Transform::default();
-                    }
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("  Apply  ").fill(ui.visuals().selection.bg_fill)).on_hover_text("Enter").clicked() {
-                        apply = true;
-                    }
-                    if ui.button("Cancel").on_hover_text("Esc").clicked() {
-                        cancel = true;
-                    }
-                });
+                ui.label("Angle");
+                ui.add(egui::DragValue::new(&mut t.rotation).suffix("°").range(-180.0..=180.0).max_decimals(1));
+                ui.end_row();
             });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("⟲ 90°").clicked() {
+                    t.rotation = super::canvas_view::wrap_degrees(t.rotation - 90.0);
+                }
+                if ui.button("⟳ 90°").clicked() {
+                    t.rotation = super::canvas_view::wrap_degrees(t.rotation + 90.0);
+                }
+                if ui.button("Flip ↔").clicked() {
+                    t.sx = -t.sx;
+                }
+                if ui.button("Flip ↕").clicked() {
+                    t.sy = -t.sy;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Fit canvas").on_hover_text("Scale to fit inside the canvas, centered").clicked() {
+                    t = t.fitted(tool.bounds, w, h, false);
+                }
+                if ui.button("Fill canvas").on_hover_text("Scale to cover the whole canvas, centered").clicked() {
+                    t = t.fitted(tool.bounds, w, h, true);
+                }
+                if ui.button("Reset").clicked() {
+                    t = Transform::default();
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("  Apply  ").fill(ui.visuals().selection.bg_fill)).on_hover_text("Enter").clicked() {
+                    apply = true;
+                }
+                if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                    cancel = true;
+                }
+            });
+        });
 
         // Keys (not while typing a number in the panel).
         if !ctx.egui_wants_keyboard_input() {

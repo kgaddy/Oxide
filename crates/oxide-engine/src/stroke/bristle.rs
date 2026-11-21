@@ -112,17 +112,8 @@ impl Stroke {
         let follow = |b: &Bristle| 0.25 + 0.75 * (set.stiffness.clamp(0.0, 1.0) * b.stiffness).min(1.0);
 
         // One small round tip for the hairs; each sets its own radius.
-        let mut tip = Brush {
-            radius: hair,
-            hardness: 0.75,
-            roundness: 1.0,
-            angle: 0.0,
-            roughness: 0.0,
-            streaks: 0.0,
-            lift_off: 0.0,
-            bristles: None,
-            ..brush.clone()
-        };
+        let mut tip =
+            Brush { radius: hair, hardness: 0.75, roundness: 1.0, angle: 0.0, roughness: 0.0, streaks: 0.0, lift_off: 0.0, bristles: None, ..brush.clone() };
 
         // Brush-level paint state (oils): how much fresh paint, how oily, the
         // thickness under the brush (for plowing through wet impasto).
@@ -179,7 +170,8 @@ impl Stroke {
                     if under_alpha > 0.01 && oiliness > 0.0 {
                         let under_color = Color { a: 1.0, ..unpremultiply(under) };
                         if color_diff(under_color, b.color) > 0.02 {
-                            let rate = if !started { if own <= 0.0 { 1.0 } else { (1.0 - own) * oiliness } } else { 1.0 - (1.0 - oiliness * 0.95).powf(travel) };
+                            let rate =
+                                if !started { if own <= 0.0 { 1.0 } else { (1.0 - own) * oiliness } } else { 1.0 - (1.0 - oiliness * 0.95).powf(travel) };
                             b.color = mix_paint(b.color, under_color, rate * under_alpha, brush.mixing);
                         }
                     }
@@ -226,10 +218,7 @@ impl Stroke {
                         }),
                         bands: None, // each hair already carries its own color
                         // About three of a hair's dabs overlap a pixel.
-                        flow: Some(Flow {
-                            share: tap_or(0.3),
-                            firm: brush.opacity / brush.pressure_opacity(pressure).max(0.01) * cover,
-                        }),
+                        flow: Some(Flow { share: tap_or(0.3), firm: brush.opacity / brush.pressure_opacity(pressure).max(0.01) * cover }),
                     }
                 }
             };

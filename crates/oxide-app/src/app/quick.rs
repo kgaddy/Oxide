@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Rect, Vec2};
 
-use super::panels::{loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, flat_checkbox};
+use super::panels::{flat_checkbox, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider};
 use super::{Command, OxideApp};
 use crate::quick_panel::{QuickGroup, QuickItem};
 use crate::tools::Tool;

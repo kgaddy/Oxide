@@ -12,7 +12,6 @@ use crate::tiles::TiledTexture;
 use crate::tools::Tool;
 use oxide_commands::palette::{PALETTE_SIZE, add_note_line, add_paint_swatch, new_palette, parse_hex, to_hex};
 
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteTool {
     Paint,
@@ -103,7 +102,6 @@ impl MixingPalette {
     }
 }
 
-
 impl OxideApp {
     pub(super) fn mixing_palette_window(&mut self, ctx: &egui::Context) {
         if !self.mixing_palette.open {
@@ -192,9 +190,7 @@ impl OxideApp {
             if !name.trim().is_empty() {
                 let palette = self.document.palette.as_ref().expect("made above");
                 let result = self.mixing_palette.library.save(ui.ctx(), &name, palette);
-                self.mixing_palette.message = Some(
-                    result.map(|()| format!("Saved \"{}\" to the library ({})", name.trim(), palette_library::display_dir())),
-                );
+                self.mixing_palette.message = Some(result.map(|()| format!("Saved \"{}\" to the library ({})", name.trim(), palette_library::display_dir())));
             }
             self.mixing_palette.save_name = None;
         }
@@ -310,11 +306,7 @@ impl OxideApp {
                         picked = palette.composite_pixel(p.x as usize, p.y as usize);
                     }
                 } else {
-                    let pressure = if pen.is_pen && pen.pressure > 0.0 {
-                        crate::pen::apply_curve(pen.pressure, self.app_settings.pressure_curve)
-                    } else {
-                        1.0
-                    };
+                    let pressure = if pen.is_pen && pen.pressure > 0.0 { crate::pen::apply_curve(pen.pressure, self.app_settings.pressure_curve) } else { 1.0 };
                     let point = StrokePoint { x: p.x, y: p.y, pressure, tilt: None, rotation: None };
                     match &mut mp.stroke {
                         None => {
@@ -517,4 +509,3 @@ impl MixingPalette {
         self.save_name.as_ref().is_some_and(|n| n.is_empty())
     }
 }
-

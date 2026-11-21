@@ -55,8 +55,8 @@ impl Document {
         let theirs = (to >= 0 && (to as usize) < self.layers.len()).then(|| self.layers[to as usize].group);
         let new_group = match (mine, theirs) {
             (Some(_), Some(t)) if t != mine => Some(None), // leave my group
-            (Some(_), None) => Some(None),                  // leave (at the end of the list)
-            (None, Some(Some(g))) => Some(Some(g)),         // join the group next to me
+            (Some(_), None) => Some(None),                 // leave (at the end of the list)
+            (None, Some(Some(g))) => Some(Some(g)),        // join the group next to me
             _ => None,
         };
         if let Some(group) = new_group {
@@ -183,7 +183,13 @@ impl Document {
         // (A layer from another group brings that group's opacity along.)
         let in_other_group = u.group != b.group;
         let (uo, bo) = (
-            if in_other_group { self.layer_weight(upper) } else if u.visible { u.opacity } else { 0.0 },
+            if in_other_group {
+                self.layer_weight(upper)
+            } else if u.visible {
+                u.opacity
+            } else {
+                0.0
+            },
             if b.visible { b.opacity } else { 0.0 },
         );
         // The upper layer's blend mode is baked in; the merged layer keeps the lower one's.
@@ -266,9 +272,7 @@ impl Document {
                 if global > 0.0 { w * self.layer_impasto(i) / global } else { w }
             })
             .collect();
-        let relief = (0..n)
-            .map(|i| self.layers.iter().zip(&weights).map(|(l, w)| l.canvas.relief()[i] * w).sum::<f32>().min(MAX_RELIEF))
-            .collect();
+        let relief = (0..n).map(|i| self.layers.iter().zip(&weights).map(|(l, w)| l.canvas.relief()[i] * w).sum::<f32>().min(MAX_RELIEF)).collect();
         let mut layer = self.new_layer(name);
         layer.canvas.set_pixels(pixels, None);
         layer.canvas.set_relief(relief, None);

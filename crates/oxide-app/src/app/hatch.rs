@@ -176,7 +176,10 @@ impl OxideApp {
                 }
                 let step = if i.modifiers.shift { 10.0 } else { 1.0 };
                 let key = |k, v: Vec2| if i.key_pressed(k) { v * step } else { Vec2::ZERO };
-                key(egui::Key::ArrowLeft, -Vec2::X) + key(egui::Key::ArrowRight, Vec2::X) + key(egui::Key::ArrowUp, -Vec2::Y) + key(egui::Key::ArrowDown, Vec2::Y)
+                key(egui::Key::ArrowLeft, -Vec2::X)
+                    + key(egui::Key::ArrowRight, Vec2::X)
+                    + key(egui::Key::ArrowUp, -Vec2::Y)
+                    + key(egui::Key::ArrowDown, Vec2::Y)
             });
             self.move_hatch(nudge);
         }
@@ -257,8 +260,7 @@ impl OxideApp {
         if s.direction == HatchDirection::Across {
             ui.add(egui::Slider::new(&mut s.slant, -1.0..=1.0).text("Slant"))
                 .on_hover_text("Lines lean along the rails, toward where you finished drawing them (like veins toward a leaf's tip)");
-            ui.add(egui::Slider::new(&mut s.bend, -1.0..=1.0).text("Bend"))
-                .on_hover_text("Lines curve to one side");
+            ui.add(egui::Slider::new(&mut s.bend, -1.0..=1.0).text("Bend")).on_hover_text("Lines curve to one side");
         }
         ui.add(egui::Slider::new(&mut s.wobble, 0.0..=1.0).text("Wobble"))
             .on_hover_text("Hand-made irregularity: lines bow and stop short a little (0 = ruled)");

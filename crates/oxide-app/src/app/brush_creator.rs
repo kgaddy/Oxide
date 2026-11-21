@@ -3,8 +3,8 @@
 
 use eframe::egui::{self, Vec2};
 
-use crate::settings::DialogFolder;
 use super::OxideApp;
+use crate::settings::DialogFolder;
 use crate::tools::BrushShape;
 use oxide_engine::Brush;
 
@@ -39,11 +39,7 @@ pub struct BrushCreator {
 impl OxideApp {
     pub(super) fn brush_creator_window(&mut self, ctx: &egui::Context) {
         let mut open = self.brush_creator.open;
-        egui::Window::new("Brush Creator")
-            .open(&mut open)
-            .default_width(320.0)
-            .resizable(false)
-            .show(ctx, |ui| self.brush_creator_contents(ui));
+        egui::Window::new("Brush Creator").open(&mut open).default_width(320.0).resizable(false).show(ctx, |ui| self.brush_creator_contents(ui));
         self.brush_creator.open = open;
     }
 
@@ -153,8 +149,7 @@ impl OxideApp {
                 .on_hover_text("None: the tip keeps its angle.\nFollow stroke: turns with the stroke direction (flat brushes, knives).\nPen tilt: turns toward where the pen leans.\nPen rotation: turns with the pen barrel (falls back to tilt).");
                 ui.add(egui::Slider::new(&mut shape.jitter_angle, 0.0..=1.0).text("Jitter angle"))
                     .on_hover_text("Turn each dab at random (1 = any angle). Makes texture tips look natural instead of stamped.");
-                ui.add(egui::Slider::new(&mut shape.jitter_size, 0.0..=1.0).text("Jitter size"))
-                    .on_hover_text("Make each dab a random size, down to 30% at 1");
+                ui.add(egui::Slider::new(&mut shape.jitter_size, 0.0..=1.0).text("Jitter size")).on_hover_text("Make each dab a random size, down to 30% at 1");
                 ui.add(egui::Slider::new(&mut shape.scatter, 0.0..=1.0).text("Scatter"))
                     .on_hover_text("Throw each dab off the stroke's path, up to one brush radius at 1");
                 ui.add(egui::Slider::new(&mut shape.lift_off, 0.0..=1.0).text("Lift-off"))
@@ -200,8 +195,7 @@ impl OxideApp {
                 ui.add(egui::Slider::new(&mut shape.roundness, 0.05..=1.0).text("Roundness"))
                     .on_hover_text("1 = round; lower = flat, like a chisel or calligraphy nib");
                 ui.add(egui::Slider::new(&mut shape.angle, -90.0..=90.0).suffix("°").max_decimals(0).text("Angle"));
-                ui.add(egui::Slider::new(&mut shape.roughness, 0.0..=1.0).text("Roughness"))
-                    .on_hover_text("Ragged, grainy edges instead of a perfect outline");
+                ui.add(egui::Slider::new(&mut shape.roughness, 0.0..=1.0).text("Roughness")).on_hover_text("Ragged, grainy edges instead of a perfect outline");
                 ui.add(egui::Slider::new(&mut shape.streaks, 0.0..=1.0).text("Bristle streaks"))
                     .on_hover_text("Streaks along the stroke, like the hairs of a real brush");
                 ui.add(egui::Slider::new(&mut shape.grain, 0.0..=1.0).text("Grain"))
@@ -217,16 +211,17 @@ impl OxideApp {
                 }
                 if let Some(b) = &mut shape.bristles {
                     let mut count = b.count as f32;
-                    if ui.add(egui::Slider::new(&mut count, 4.0..=300.0).logarithmic(true).max_decimals(0).text("Bristles"))
+                    if ui
+                        .add(egui::Slider::new(&mut count, 4.0..=300.0).logarithmic(true).max_decimals(0).text("Bristles"))
                         .on_hover_text("How many hairs. Few = sparse, scratchy strokes; many = full strokes with fine streaks")
                         .changed()
                     {
                         b.count = count.round() as u32;
                     }
-                    ui.add(egui::Slider::new(&mut b.thickness, 0.0..=1.0).text("Thickness"))
-                        .on_hover_text("How thick each hair is: 0 = thin hairs with gaps between them (scratchy), 0.5 = solid with fine streaks, 1 = fat hairs");
-                    ui.add(egui::Slider::new(&mut b.spread, 0.0..=1.0).text("Spread"))
-                        .on_hover_text("How much the hairs splay apart when you press harder");
+                    ui.add(egui::Slider::new(&mut b.thickness, 0.0..=1.0).text("Thickness")).on_hover_text(
+                        "How thick each hair is: 0 = thin hairs with gaps between them (scratchy), 0.5 = solid with fine streaks, 1 = fat hairs",
+                    );
+                    ui.add(egui::Slider::new(&mut b.spread, 0.0..=1.0).text("Spread")).on_hover_text("How much the hairs splay apart when you press harder");
                     ui.add(egui::Slider::new(&mut b.stiffness, 0.0..=1.0).text("Stiffness"))
                         .on_hover_text("Stiff hairs follow the brush exactly; soft hairs lag and fan out on curves");
                     ui.weak("With bristles, Hardness, Roughness and Bristle streaks don't apply: the hairs make the texture.");

@@ -54,11 +54,7 @@ impl ReferenceImage {
 
     fn load(&mut self, ctx: &egui::Context, bytes: &[u8]) -> Result<(), String> {
         let img = image::load_from_memory(bytes).map_err(|e| format!("Couldn't show the reference photo: {e}"))?;
-        let img = if img.width().max(img.height()) > MAX_SIDE {
-            img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::CatmullRom)
-        } else {
-            img
-        };
+        let img = if img.width().max(img.height()) > MAX_SIDE { img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::CatmullRom) } else { img };
         self.image = Some(img.to_rgba8());
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
@@ -97,11 +93,7 @@ impl ReferenceImage {
 impl OxideApp {
     /// File → Open Reference Image…: pick a photo for this painting and show it.
     pub(super) fn open_reference_image(&mut self) {
-        let Some(path) = self
-            .dialog(DialogFolder::Images)
-            .add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"])
-            .pick_file()
-        else {
+        let Some(path) = self.dialog(DialogFolder::Images).add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"]).pick_file() else {
             return;
         };
         self.remember_folder(DialogFolder::Images, &path);
@@ -159,7 +151,13 @@ impl OxideApp {
                 let painter = ui.painter_at(area);
                 painter.rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
                 let (Some(texture), Some(rect)) = (&r.texture, r.image_rect(area)) else {
-                    painter.text(area.center(), egui::Align2::CENTER_CENTER, "Open… a photo to paint from", egui::FontId::proportional(14.0), ui.visuals().weak_text_color());
+                    painter.text(
+                        area.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Open… a photo to paint from",
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().weak_text_color(),
+                    );
                     return;
                 };
                 painter.image(texture.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);

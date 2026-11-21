@@ -7,10 +7,18 @@ use eframe::egui;
 use super::{Command, OxideApp, SHORTCUTS};
 
 pub enum Entry {
-    Item { label: String, command: Command, enabled: bool, checked: Option<bool> },
+    Item {
+        label: String,
+        command: Command,
+        enabled: bool,
+        checked: Option<bool>,
+    },
     Separator,
     /// A submenu whose items change (File → Open Recent).
-    Submenu { label: &'static str, entries: Vec<Entry> },
+    Submenu {
+        label: &'static str,
+        entries: Vec<Entry>,
+    },
 }
 
 pub struct Menu {

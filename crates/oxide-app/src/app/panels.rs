@@ -2,8 +2,8 @@
 //! presets, Navigator, Color, Wet Media, Layers, Paper). Drag a section's
 //! title to move it up or down, or over to the other side.
 
-use eframe::egui::{self, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
 use eframe::egui::collapsing_header::{CollapsingState, paint_default_icon};
+use eframe::egui::{self, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
@@ -169,12 +169,10 @@ impl OxideApp {
     fn tools_section(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             for tool in Tool::ALL {
-                ui.selectable_value(&mut self.tool, tool, icon_text(tool_icon(tool)))
-                    .on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()));
+                ui.selectable_value(&mut self.tool, tool, icon_text(tool_icon(tool))).on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()));
             }
             for name in FUTURE_TOOLS {
-                ui.add_enabled(false, egui::Button::new(icon_text(future_tool_icon(name))))
-                    .on_disabled_hover_text(format!("{name} (coming later)"));
+                ui.add_enabled(false, egui::Button::new(icon_text(future_tool_icon(name)))).on_disabled_hover_text(format!("{name} (coming later)"));
             }
         });
     }
@@ -237,8 +235,7 @@ impl OxideApp {
         self.paint_mode_buttons(ui);
         self.dirty_brush_row(ui);
         let mut off = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush"))
-            .on_disabled_hover_text("Load several colors on the brush: coming later");
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Multicolor brush")).on_disabled_hover_text("Load several colors on the brush: coming later");
 
         // ----- Sliders -----
         ui.add_space(4.0);
@@ -415,9 +412,8 @@ impl OxideApp {
                 continue;
             }
             let holds_current = members.iter().any(|&i| self.presets.entries[i].preset.matches(&current));
-            let header = egui::CollapsingHeader::new(format!("{group}  ({})", members.len()))
-                .id_salt(("brush-group", group.as_str()))
-                .default_open(holds_current);
+            let header =
+                egui::CollapsingHeader::new(format!("{group}  ({})", members.len())).id_salt(("brush-group", group.as_str())).default_open(holds_current);
             // While searching, show every matching group open.
             let header = if search.is_empty() { header } else { header.open(Some(true)) };
             header.show(ui, |ui| {
@@ -535,7 +531,11 @@ impl OxideApp {
             // A real button (a selectable label looks like plain text until it's on);
             // highlighted while the view is fitted.
             let fit = egui::Button::new("Fit to Window").selected(self.view.fit);
-            if ui.add(fit).on_hover_text("Show the whole canvas, as big as the window allows (up to 100%); it stays fitted when the window resizes (. or ⌘0)").clicked() {
+            if ui
+                .add(fit)
+                .on_hover_text("Show the whole canvas, as big as the window allows (up to 100%); it stays fitted when the window resizes (. or ⌘0)")
+                .clicked()
+            {
                 self.view.fit = true;
             }
             if ui.button("100%").on_hover_text("Actual size (0 or ⌘1)").clicked() {
@@ -558,7 +558,11 @@ impl OxideApp {
             if ui.button("⟲").on_hover_text("Rotate view left 15° (⌘⌥←)").clicked() {
                 rotate_by = -15.0;
             }
-            if ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).suffix("°").max_decimals(0)).on_hover_text("Rotate the view (or hold R and drag on the canvas)").changed() {
+            if ui
+                .add(egui::Slider::new(&mut rotation, -180.0..=180.0).suffix("°").max_decimals(0))
+                .on_hover_text("Rotate the view (or hold R and drag on the canvas)")
+                .changed()
+            {
                 rotate_by = rotation - self.view.rotation;
             }
             if ui.button("⟳").on_hover_text("Rotate view right 15° (⌘⌥→)").clicked() {
@@ -776,17 +780,23 @@ impl OxideApp {
         let dry_layer_fill = c(245, 175, 40);
         let rewet_fill = c(45, 110, 200);
         let big = |text: &str, fill: egui::Color32, ink: egui::Color32| {
-            egui::Button::new(egui::RichText::new(text).size(14.0).strong().color(ink))
-                .fill(fill)
-                .min_size(Vec2::new(0.0, 30.0))
+            egui::Button::new(egui::RichText::new(text).size(14.0).strong().color(ink)).fill(fill).min_size(Vec2::new(0.0, 30.0))
         };
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
-            if ui.add_enabled(wet_here, big(&format!("{}  Dry layer", egui_phosphor::regular::HAIR_DRYER), dry_layer_fill, egui::Color32::WHITE)).on_hover_text("Lock the paint in (⌘D)").clicked() {
+            if ui
+                .add_enabled(wet_here, big(&format!("{}  Dry layer", egui_phosphor::regular::HAIR_DRYER), dry_layer_fill, egui::Color32::WHITE))
+                .on_hover_text("Lock the paint in (⌘D)")
+                .clicked()
+            {
                 self.run(Command::DryLayer, ui.ctx());
             }
-            if ui.add(big(&format!("{}  Rewet", egui_phosphor::regular::SHOWER), rewet_fill, egui::Color32::WHITE)).on_hover_text("Make this layer's paint wet again so it can be blended").clicked() {
+            if ui
+                .add(big(&format!("{}  Rewet", egui_phosphor::regular::SHOWER), rewet_fill, egui::Color32::WHITE))
+                .on_hover_text("Make this layer's paint wet again so it can be blended")
+                .clicked()
+            {
                 self.run(Command::RewetLayer, ui.ctx());
             }
         });
@@ -797,11 +807,7 @@ impl OxideApp {
 /// A small clickable color square.
 fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-    let stroke = if response.hovered() {
-        LineStroke::new(2.0, ui.visuals().text_color())
-    } else {
-        LineStroke::new(1.0, crate::theme::outline(ui))
-    };
+    let stroke = if response.hovered() { LineStroke::new(2.0, ui.visuals().text_color()) } else { LineStroke::new(1.0, crate::theme::outline(ui)) };
     ui.painter().rect_filled(rect, 2.0, to_color32(color));
     ui.painter().rect_stroke(rect, 2.0, stroke, StrokeKind::Inside);
     response
@@ -823,13 +829,13 @@ pub(super) fn opacity_slider(ui: &mut egui::Ui, tool: Tool, state: &mut ToolStat
 }
 
 pub(super) fn loading_slider(ui: &mut egui::Ui, state: &mut ToolState) {
-    ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading"))
-        .on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
+    ui.add(egui::Slider::new(&mut state.loading, 0.0..=1.0).text("Loading")).on_hover_text("How much paint the brush lays down (⌘-drag up/down on the canvas)");
 }
 
 pub(super) fn oiliness_slider(ui: &mut egui::Ui, state: &mut ToolState) {
-    ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness"))
-        .on_hover_text("Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)");
+    ui.add(egui::Slider::new(&mut state.oiliness, 0.0..=1.0).text("Oiliness")).on_hover_text(
+        "Low = acrylic-like: covers wet paint and stays clean.\nHigh = oil-like: picks up and blends wet paint.\n(Dried paint is never picked up.)",
+    );
 }
 
 pub(super) fn thickness_slider(ui: &mut egui::Ui, state: &mut ToolState) {

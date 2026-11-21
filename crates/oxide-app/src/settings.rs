@@ -253,10 +253,8 @@ impl Default for AppSettings {
 impl AppSettings {
     /// Load saved settings, or defaults if there are none (or they can't be read).
     pub fn load() -> Self {
-        let mut settings: AppSettings = settings_path()
-            .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default();
+        let mut settings: AppSettings =
+            settings_path().and_then(|path| fs::read_to_string(path).ok()).and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
         settings.panels.repair();
         settings
     }

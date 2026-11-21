@@ -246,14 +246,11 @@ impl OxideApp {
                     // Changing DPI keeps the *physical* size for cm/inch (more pixels),
                     // and the pixel size for pixels.
                     let old = na.dpi;
-                    egui::ComboBox::from_id_salt("dpi")
-                        .selected_text(format!("{}", na.dpi))
-                        .width(70.0)
-                        .show_ui(ui, |ui| {
-                            for dpi in [72.0, 96.0, 150.0, 200.0, 300.0, 600.0] {
-                                ui.selectable_value(&mut na.dpi, dpi, format!("{dpi}"));
-                            }
-                        });
+                    egui::ComboBox::from_id_salt("dpi").selected_text(format!("{}", na.dpi)).width(70.0).show_ui(ui, |ui| {
+                        for dpi in [72.0, 96.0, 150.0, 200.0, 300.0, 600.0] {
+                            ui.selectable_value(&mut na.dpi, dpi, format!("{dpi}"));
+                        }
+                    });
                     ui.add(egui::DragValue::new(&mut na.dpi).range(10.0..=2400.0).speed(1.0));
                     if na.dpi != old && na.unit != Unit::Pixel {
                         let k = na.dpi / old;
@@ -287,9 +284,8 @@ impl OxideApp {
                 let mb = w * h * BYTES_PER_PIXEL_PER_LAYER / (1024.0 * 1024.0);
                 let text = format!("≈ {mb:.0} MB per layer");
                 if mb > 1024.0 {
-                    ui.colored_label(ui.visuals().warn_fg_color, text).on_hover_text(
-                        "Very large: each layer (plus undo) needs this much memory. Painting may be slow.",
-                    );
+                    ui.colored_label(ui.visuals().warn_fg_color, text)
+                        .on_hover_text("Very large: each layer (plus undo) needs this much memory. Painting may be slow.");
                 } else {
                     ui.weak(text);
                 }
@@ -431,9 +427,7 @@ impl OxideApp {
         // Click the preview (or the button) to open Select Canvas.
         let mut open_picker = false;
         if let Some(texture) = &na.preview {
-            let image = egui::Image::new(texture)
-                .fit_to_exact_size(Vec2::new(size[0] as f32, size[1] as f32))
-                .sense(egui::Sense::click());
+            let image = egui::Image::new(texture).fit_to_exact_size(Vec2::new(size[0] as f32, size[1] as f32)).sense(egui::Sense::click());
             // A square slot as big as the long side, so flipping the orientation
             // doesn't move the controls below it.
             let slot = Vec2::splat(PREVIEW[0].max(PREVIEW[1]) as f32);

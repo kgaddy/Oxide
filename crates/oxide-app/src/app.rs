@@ -3,39 +3,38 @@
 mod brush_creator;
 mod canvas_view;
 pub use canvas_view::ViewXform;
+mod bench;
 mod export_dialog;
 mod files;
 mod hatch;
+mod help;
 mod layers;
-mod bench;
 mod menus;
-mod theming;
 mod mixing_palette;
 mod new_artwork;
-mod select_canvas;
-mod select_tool;
-mod settings_window;
-mod transform;
 mod panels;
 mod quick;
 mod recording;
-mod help;
 mod reference_image;
+mod select_canvas;
+mod select_tool;
+mod settings_window;
+mod theming;
+mod transform;
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use eframe::egui::ecolor::{hsv_from_rgb, rgb_from_hsv};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use oxide_engine::{Brush, Color, Document, Mixing, PaintMode, PaperKind, PaperSettings, Stroke};
 
 use crate::panel_layout::Side;
-use crate::presets::PresetLibrary;
 use crate::pen::{PenInput, apply_curve};
+use crate::presets::PresetLibrary;
 use crate::settings::AppSettings;
 use crate::tiles::TiledTexture;
-use files::{PendingAction, Status};
 use crate::tools::{Tool, ToolState};
-
+use files::{PendingAction, Status};
 
 /// Warm off-white, like real paper.
 pub const PAPER: Color = Color::rgb(0.96, 0.94, 0.89);
@@ -314,9 +313,33 @@ impl Command {
         use Command::*;
         matches!(
             self,
-            Fit | ActualSize | ZoomIn | ZoomOut | RotateLeft | RotateRight | ResetRotation | FlipView | Greyscale | MixingPalette
-                | NaturalColors | MultiColor | SwapColors | ToggleLeft | ToggleRight | ResetPanels | ToggleReference | ToggleBrushCreator | TogglePenSettings | ShowShortcuts | ShowHelp | ToolHelp | OpenWiki | Settings
-                | Theme(_) | OpenThemesFolder | ReloadThemes | Record
+            Fit | ActualSize
+                | ZoomIn
+                | ZoomOut
+                | RotateLeft
+                | RotateRight
+                | ResetRotation
+                | FlipView
+                | Greyscale
+                | MixingPalette
+                | NaturalColors
+                | MultiColor
+                | SwapColors
+                | ToggleLeft
+                | ToggleRight
+                | ResetPanels
+                | ToggleReference
+                | ToggleBrushCreator
+                | TogglePenSettings
+                | ShowShortcuts
+                | ShowHelp
+                | ToolHelp
+                | OpenWiki
+                | Settings
+                | Theme(_)
+                | OpenThemesFolder
+                | ReloadThemes
+                | Record
         )
     }
 }
@@ -563,10 +586,7 @@ impl OxideApp {
             return self.info("Nothing below to merge into");
         }
         if changes_look {
-            self.info(format!(
-                "Merged. Where the layer below was empty, the {} paint now covers instead of blending (⌘Z to undo).",
-                mode.label()
-            ));
+            self.info(format!("Merged. Where the layer below was empty, the {} paint now covers instead of blending (⌘Z to undo).", mode.label()));
         }
     }
 
@@ -648,10 +668,7 @@ impl OxideApp {
             // event with the key press; adding another would paste twice.
             let already = ctx.input(|i| {
                 i.events.iter().any(|e| {
-                    matches!(
-                        (command, e),
-                        (Command::Copy, egui::Event::Copy) | (Command::Cut, egui::Event::Cut) | (Command::Paste, egui::Event::Paste(_))
-                    )
+                    matches!((command, e), (Command::Copy, egui::Event::Copy) | (Command::Cut, egui::Event::Cut) | (Command::Paste, egui::Event::Paste(_)))
                 })
             });
             if !already {
@@ -859,7 +876,10 @@ impl OxideApp {
         #[cfg(target_os = "macos")]
         return self.native_menu.as_ref().is_some_and(|m| m.handles_shortcut(command));
         #[cfg(not(target_os = "macos"))]
-        return { let _ = command; false };
+        return {
+            let _ = command;
+            false
+        };
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -918,8 +938,13 @@ impl OxideApp {
             }
             if self.tool == Tool::OilsAcrylics && i.modifiers.is_none() {
                 // Paint modes 1–5.
-                let modes = [(Key::Num1, Some(PaintMode::Paint)), (Key::Num2, Some(PaintMode::PaintMix)),
-                    (Key::Num3, Some(PaintMode::PaintBlend)), (Key::Num4, Some(PaintMode::Blend)), (Key::Num5, None)];
+                let modes = [
+                    (Key::Num1, Some(PaintMode::Paint)),
+                    (Key::Num2, Some(PaintMode::PaintMix)),
+                    (Key::Num3, Some(PaintMode::PaintBlend)),
+                    (Key::Num4, Some(PaintMode::Blend)),
+                    (Key::Num5, None),
+                ];
                 for (key, mode) in modes {
                     if i.key_pressed(key) {
                         self.set_paint_mode(mode);
@@ -1023,7 +1048,8 @@ impl OxideApp {
             ui.strong("Smoothing");
             let s = &mut self.app_settings;
             let mut stroke = s.stroke_smoothing * 100.0;
-            if ui.add(egui::Slider::new(&mut stroke, 0.0..=100.0).max_decimals(0).text("Stroke"))
+            if ui
+                .add(egui::Slider::new(&mut stroke, 0.0..=100.0).max_decimals(0).text("Stroke"))
                 .on_hover_text("Steadier lines: the brush trails the pen on a string and ignores small wobbles. Higher = steadier, with more lag.")
                 .changed()
             {
@@ -1031,7 +1057,8 @@ impl OxideApp {
                 changed = true;
             }
             let mut pressure = s.pressure_smoothing * 100.0;
-            if ui.add(egui::Slider::new(&mut pressure, 0.0..=100.0).max_decimals(0).text("Pressure"))
+            if ui
+                .add(egui::Slider::new(&mut pressure, 0.0..=100.0).max_decimals(0).text("Pressure"))
                 .on_hover_text("Steadier pressure: smooths sudden jumps in size and opacity")
                 .changed()
             {
@@ -1042,7 +1069,8 @@ impl OxideApp {
             ui.separator();
             ui.strong("Tilt & rotation");
             changed |= ui.checkbox(&mut s.invert_tilt, "Invert tilt").on_hover_text("If flat brushes lean the wrong way").changed();
-            changed |= ui.add(egui::Slider::new(&mut s.tilt_offset, -180.0..=180.0).suffix("°").max_decimals(0).text("Tilt offset"))
+            changed |= ui
+                .add(egui::Slider::new(&mut s.tilt_offset, -180.0..=180.0).suffix("°").max_decimals(0).text("Tilt offset"))
                 .on_hover_text("Turn the tilt direction (e.g. if the tablet is rotated)")
                 .changed();
             changed |= ui.checkbox(&mut s.invert_rotation, "Invert pen rotation").changed();
@@ -1087,7 +1115,8 @@ impl OxideApp {
                     ui.colored_label(ui.visuals().error_fg_color, format!("⏺ REC · {strokes} strokes"));
                 }
                 None => {
-                    if ui.button("⏺ Record").on_hover_text("Write down what you paint and do as an oxide-run script (.jsonl), to replay or build on").clicked() {
+                    if ui.button("⏺ Record").on_hover_text("Write down what you paint and do as an oxide-run script (.jsonl), to replay or build on").clicked()
+                    {
                         self.run(Command::Record, ui.ctx());
                     }
                 }
@@ -1153,7 +1182,8 @@ impl eframe::App for OxideApp {
             self.handle_shortcuts(&ctx);
         }
         // Files dropped on the window, or sent by Finder (double-click, Open With).
-        let mut arrived: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        let mut arrived: Vec<PathBuf> =
+            ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         arrived.extend(crate::open_files::take());
         if !arrived.is_empty() && self.pending.is_none() {
             self.open_files(arrived, &ctx);
@@ -1181,22 +1211,14 @@ impl eframe::App for OxideApp {
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
 
         if self.show_left {
-            egui::Panel::left("left_panel")
-                .default_size(250.0)
-                .min_size(200.0)
-                .show(ui, |ui| self.side_panel(ui, Side::Left));
+            egui::Panel::left("left_panel").default_size(250.0).min_size(200.0).show(ui, |ui| self.side_panel(ui, Side::Left));
         }
         if self.show_right {
-            egui::Panel::right("right_panel")
-                .default_size(270.0)
-                .min_size(220.0)
-                .show(ui, |ui| self.side_panel(ui, Side::Right));
+            egui::Panel::right("right_panel").default_size(270.0).min_size(220.0).show(ui, |ui| self.side_panel(ui, Side::Right));
         }
         self.section_drop(&ctx);
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(self.themes.theme.colors.workspace))
-            .show(ui, |ui| self.canvas_view(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(self.themes.theme.colors.workspace)).show(ui, |ui| self.canvas_view(ui));
 
         self.brush_creator_window(&ctx);
         self.new_group_dialog(&ctx);

@@ -16,30 +16,27 @@ impl OxideApp {
             self.select_canvas.open_for(super::select_canvas::CanvasTarget::Document, settings, paper);
         }
 
-        egui::ComboBox::from_id_salt("paper-kind")
-            .selected_text(settings.kind.label())
-            .width(ui.available_width() - 8.0)
-            .show_ui(ui, |ui| {
-                for kind in PaperKind::ALL {
-                    ui.selectable_value(&mut settings.kind, kind, kind.label());
-                }
-            });
-        ui.add(egui::Slider::new(&mut settings.depth, 0.0..=1.0).text("Depth"))
-            .on_hover_text("How deep the texture is. 0 = perfectly smooth");
-        ui.add(egui::Slider::new(&mut settings.scale, 0.5..=3.0).text("Scale"))
-            .on_hover_text("Size of the bumps or the weave");
+        egui::ComboBox::from_id_salt("paper-kind").selected_text(settings.kind.label()).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            for kind in PaperKind::ALL {
+                ui.selectable_value(&mut settings.kind, kind, kind.label());
+            }
+        });
+        ui.add(egui::Slider::new(&mut settings.depth, 0.0..=1.0).text("Depth")).on_hover_text("How deep the texture is. 0 = perfectly smooth");
+        ui.add(egui::Slider::new(&mut settings.scale, 0.5..=3.0).text("Scale")).on_hover_text("Size of the bumps or the weave");
         ui.add(egui::Slider::new(&mut settings.light_angle, 0.0..=360.0).suffix("°").max_decimals(0).text("Light"))
             .on_hover_text("Direction the light comes from (225° = top-left)");
         // Canvas visibility (Paper Texture / Paint Texture, 0–10).
         let mut paper_texture = settings.paper_visibility * 10.0;
-        if ui.add(egui::Slider::new(&mut paper_texture, 0.0..=10.0).max_decimals(1).text("Paper texture"))
+        if ui
+            .add(egui::Slider::new(&mut paper_texture, 0.0..=10.0).max_decimals(1).text("Paper texture"))
             .on_hover_text("How visible the texture is on bare paper")
             .changed()
         {
             settings.paper_visibility = paper_texture / 10.0;
         }
         let mut paint_texture = settings.paint_visibility * 10.0;
-        if ui.add(egui::Slider::new(&mut paint_texture, 0.0..=10.0).max_decimals(1).text("Paint texture"))
+        if ui
+            .add(egui::Slider::new(&mut paint_texture, 0.0..=10.0).max_decimals(1).text("Paint texture"))
             .on_hover_text("How much of the texture shows through the paint (thick paint hides the weave)")
             .changed()
         {
@@ -48,28 +45,32 @@ impl OxideApp {
         ui.add_space(4.0);
         ui.label("Thick paint (impasto)");
         let mut depth = settings.impasto_depth * 10.0;
-        if ui.add(egui::Slider::new(&mut depth, 0.0..=10.0).max_decimals(1).text("Impasto depth"))
+        if ui
+            .add(egui::Slider::new(&mut depth, 0.0..=10.0).max_decimals(1).text("Impasto depth"))
             .on_hover_text("How strongly thick paint is lit: its ridges and brush marks. 0 = paint looks flat. (Brush thickness: Properties → Thickness.)")
             .changed()
         {
             settings.impasto_depth = depth / 10.0;
         }
         let mut gloss = settings.gloss * 10.0;
-        if ui.add(egui::Slider::new(&mut gloss, 0.0..=10.0).max_decimals(1).text("Gloss"))
+        if ui
+            .add(egui::Slider::new(&mut gloss, 0.0..=10.0).max_decimals(1).text("Gloss"))
             .on_hover_text("How shiny thick paint is: highlights on ridges that face the light")
             .changed()
         {
             settings.gloss = gloss / 10.0;
         }
         let mut shadows = settings.shadows * 10.0;
-        if ui.add(egui::Slider::new(&mut shadows, 0.0..=10.0).max_decimals(1).text("Shadows"))
+        if ui
+            .add(egui::Slider::new(&mut shadows, 0.0..=10.0).max_decimals(1).text("Shadows"))
             .on_hover_text("How dark the shadows thick paint casts on the paint and paper beside it")
             .changed()
         {
             settings.shadows = shadows / 10.0;
         }
-        ui.add(egui::Slider::new(&mut settings.light_height, 10.0..=80.0).suffix("°").max_decimals(0).text("Light height"))
-            .on_hover_text("How high the light is: low = long, raking shadows that show every brush mark; high = short shadows. (Its direction is the Light slider above.)");
+        ui.add(egui::Slider::new(&mut settings.light_height, 10.0..=80.0).suffix("°").max_decimals(0).text("Light height")).on_hover_text(
+            "How high the light is: low = long, raking shadows that show every brush mark; high = short shadows. (Its direction is the Light slider above.)",
+        );
         if settings != before {
             self.document.set_surface(settings);
         }
@@ -156,11 +157,7 @@ impl OxideApp {
                 if layer.blend != oxide_engine::BlendMode::Normal {
                     label.push_str(&format!("  · {}", layer.blend.label()));
                 }
-                let name = if layer.visible {
-                    egui::RichText::new(label)
-                } else {
-                    egui::RichText::new(label).weak()
-                };
+                let name = if layer.visible { egui::RichText::new(label) } else { egui::RichText::new(label).weak() };
                 // Renaming in place: Enter or clicking away keeps it, Esc doesn't.
                 if let Some((_, text, focused)) = self.renaming_row.as_mut().filter(|r| r.0 == i) {
                     let response = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width()));
@@ -239,14 +236,19 @@ impl OxideApp {
             if ui.button("Duplicate").on_hover_text("Copy this layer (⌘J)").clicked() {
                 self.run(Command::DuplicateLayer, ui.ctx());
             }
-            if ui.add_enabled(active > 0, egui::Button::new("Merge ⏷")).on_hover_text("Merge into the layer below (⌘E). The merged paint is dried.").clicked() {
+            if ui.add_enabled(active > 0, egui::Button::new("Merge ⏷")).on_hover_text("Merge into the layer below (⌘E). The merged paint is dried.").clicked()
+            {
                 self.run(Command::MergeDown, ui.ctx());
             }
             if ui.button("Clear").on_hover_text("Erase everything on this layer (⌘⌫)").clicked() {
                 self.run(Command::ClearLayer, ui.ctx());
             }
             let in_group = self.document.layers()[active].group.is_some();
-            if ui.add_enabled(!in_group, egui::Button::new("Group")).on_hover_text("Put this layer in a new group (⌥⌘G). Move other layers into it with ⏶/⏷.").clicked() {
+            if ui
+                .add_enabled(!in_group, egui::Button::new("Group"))
+                .on_hover_text("Put this layer in a new group (⌥⌘G). Move other layers into it with ⏶/⏷.")
+                .clicked()
+            {
                 self.run(Command::GroupLayer, ui.ctx());
             }
         });
@@ -315,7 +317,9 @@ impl OxideApp {
             let mut has_own = own.is_some();
             if ui
                 .checkbox(&mut has_own, "Own impasto depth")
-                .on_hover_text("Give this layer its own impasto depth instead of the painting's (Paper panel). E.g. 0 for a flat glaze or detail layer over thick paint.")
+                .on_hover_text(
+                    "Give this layer its own impasto depth instead of the painting's (Paper panel). E.g. 0 for a flat glaze or detail layer over thick paint.",
+                )
                 .changed()
             {
                 let depth = has_own.then(|| self.document.layer_impasto(active));
@@ -347,7 +351,8 @@ impl OxideApp {
                 }
             });
             let mut opacity = group.opacity * 100.0;
-            if ui.add(egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%").max_decimals(0).text("Group opacity"))
+            if ui
+                .add(egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%").max_decimals(0).text("Group opacity"))
                 .on_hover_text("Fades the whole group as one picture")
                 .changed()
             {

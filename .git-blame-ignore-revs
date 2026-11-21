@@ -1,0 +1,5 @@
+# Commits for `git blame` to skip: they only changed formatting.
+# GitHub uses this file automatically. To use it locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Add the full hash of the "Format everything with rustfmt" commit below.

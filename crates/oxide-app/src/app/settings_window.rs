@@ -5,7 +5,7 @@ use oxide_engine::PaintMode;
 
 use super::OxideApp;
 use super::panels::{
-    brush_combo, icon_text, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, flat_checkbox, tool_icon,
+    brush_combo, flat_checkbox, icon_text, loading_slider, oiliness_slider, opacity_slider, size_slider, taper_controls, thickness_slider, tool_icon,
 };
 use crate::settings::ToolStart;
 use crate::tools::{Tool, ToolState};
@@ -46,8 +46,12 @@ impl OxideApp {
             ui.horizontal(|ui| {
                 use crate::settings::ColorStyle;
                 let style = &mut self.app_settings.color_style;
-                let mut changed = ui.selectable_value(style, ColorStyle::Wheel, "Wheel").on_hover_text("A hue ring with a saturation/brightness square inside").changed();
-                changed |= ui.selectable_value(style, ColorStyle::Classic, "Classic").on_hover_text("A saturation/brightness square with hue, saturation and brightness sliders").changed();
+                let mut changed =
+                    ui.selectable_value(style, ColorStyle::Wheel, "Wheel").on_hover_text("A hue ring with a saturation/brightness square inside").changed();
+                changed |= ui
+                    .selectable_value(style, ColorStyle::Classic, "Classic")
+                    .on_hover_text("A saturation/brightness square with hue, saturation and brightness sliders")
+                    .changed();
                 if changed {
                     self.settings.unsaved = true;
                 }
@@ -93,11 +97,7 @@ impl OxideApp {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui
-                .button("Use Current")
-                .on_hover_text(format!("Start with {} as it's set up right now", tool.label()))
-                .clicked()
-            {
+            if ui.button("Use Current").on_hover_text(format!("Start with {} as it's set up right now", tool.label())).clicked() {
                 let start = ToolStart::new(&self.tool_states[tool.index()], self.brush_names[tool.index()].clone());
                 self.app_settings.set_tool_start(tool, Some(start));
                 self.settings.unsaved = true;
@@ -106,11 +106,7 @@ impl OxideApp {
                 self.tool_states[tool.index()] = state;
                 self.brush_names[tool.index()] = brush;
             }
-            if ui
-                .add_enabled(saved, egui::Button::new("Reset"))
-                .on_hover_text(format!("Start {} with the built-in values again", tool.label()))
-                .clicked()
-            {
+            if ui.add_enabled(saved, egui::Button::new("Reset")).on_hover_text(format!("Start {} with the built-in values again", tool.label())).clicked() {
                 self.app_settings.set_tool_start(tool, None);
                 self.settings.unsaved = true;
             }
@@ -134,12 +130,7 @@ fn start_controls(ui: &mut egui::Ui, tool: Tool, state: &mut ToolState) {
             ui.selectable_value(&mut state.scrape, true, "Scrape").on_hover_text("An empty knife: scrapes wet paint off");
         });
     } else if tool.is_wet_medium() {
-        let modes = [
-            (PaintMode::Paint, "Paint"),
-            (PaintMode::PaintMix, "Paint & Mix"),
-            (PaintMode::PaintBlend, "Paint & Blend"),
-            (PaintMode::Blend, "Blend"),
-        ];
+        let modes = [(PaintMode::Paint, "Paint"), (PaintMode::PaintMix, "Paint & Mix"), (PaintMode::PaintBlend, "Paint & Blend"), (PaintMode::Blend, "Blend")];
         let label = modes.iter().find(|(m, _)| *m == state.paint_mode).map_or("", |(_, l)| l);
         egui::ComboBox::from_label("Paint mode").selected_text(label).show_ui(ui, |ui| {
             for (mode, label) in modes {
@@ -156,7 +147,6 @@ fn start_controls(ui: &mut egui::Ui, tool: Tool, state: &mut ToolState) {
     ui.add_space(4.0);
     ui.weak("Pen pressure changes");
     ui.add(egui::Slider::new(&mut state.shape.size_pressure, 0.0..=1.0).text("Size")).on_hover_text("0 = pressure doesn't change the size");
-    ui.add(egui::Slider::new(&mut state.shape.opacity_pressure, 0.0..=1.0).text("Opacity"))
-        .on_hover_text("0 = pressure doesn't change the opacity");
+    ui.add(egui::Slider::new(&mut state.shape.opacity_pressure, 0.0..=1.0).text("Opacity")).on_hover_text("0 = pressure doesn't change the opacity");
     ui.add(egui::Slider::new(&mut state.shape.grain, 0.0..=1.0).text("Paper grain")).on_hover_text("How much the paper texture shows in the stroke");
 }

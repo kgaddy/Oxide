@@ -7,7 +7,8 @@ use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
 
 use oxide_engine::{
-    Bristles, Brush, Color, SelectMode, SelectShape, Tip, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, Stroke, StrokePoint, TaperEnds, Transform,
+    Bristles, Brush, Color, DabMode, Document, Mixing, PaintMode, PaperKind, PaperSettings, Rotation, SelectMode, SelectShape, Stroke, StrokePoint, TaperEnds,
+    Tip, Transform,
 };
 use serde_json::{Value, json};
 
@@ -28,7 +29,11 @@ pub enum Output {
     Text(String),
     Json(Value),
     /// A PNG image (snapshot).
-    Png { bytes: Vec<u8>, width: u32, height: u32 },
+    Png {
+        bytes: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
 }
 
 pub struct Session {
@@ -94,9 +99,7 @@ impl Session {
             Command::Export(a) => self.export(a),
             Command::Info(_) => Ok(Output::Json(self.info())),
             Command::Describe(_) => Ok(Output::Text(DESCRIBE.to_string())),
-            Command::ListPigments(_) => Ok(Output::Json(
-                SWATCHES.iter().map(|(name, c)| json!({"name": name, "hex": to_hex(*c)})).collect(),
-            )),
+            Command::ListPigments(_) => Ok(Output::Json(SWATCHES.iter().map(|(name, c)| json!({"name": name, "hex": to_hex(*c)})).collect())),
             Command::ListBrushes(_) => Ok(Output::Json(presets::all().iter().map(|(p, saved)| preset_json(p, *saved)).collect())),
             Command::SetColor(a) => {
                 self.color = color_from(a.hex.as_deref(), a.pigment.as_deref())?;
@@ -107,8 +110,11 @@ impl Session {
                 if a.colors.len() == 1 || a.colors.len() > 6 {
                     return Err("Give 2–6 colors (or none to go back to one color).".into());
                 }
-                self.multicolor =
-                    a.colors.iter().map(|c| if c.starts_with('#') { color_from(Some(c), None) } else { color_from(None, Some(c)) }).collect::<Result<_, _>>()?;
+                self.multicolor = a
+                    .colors
+                    .iter()
+                    .map(|c| if c.starts_with('#') { color_from(Some(c), None) } else { color_from(None, Some(c)) })
+                    .collect::<Result<_, _>>()?;
                 self.carried = None;
                 Ok(Output::Text(match self.multicolor.len() {
                     0 => "MultiColored brush off".to_string(),
@@ -201,7 +207,11 @@ impl Session {
                 Ok(Output::Text(format!("Copied {} × {} px", c.w, c.h)))
             }
             Command::Cut(_) => {
-                self.clip = Some(self.document.cut_selected().ok_or("Nothing to cut (the selected part of this layer is empty, or it can't be erased: locked or lock transparency).")?);
+                self.clip = Some(
+                    self.document
+                        .cut_selected()
+                        .ok_or("Nothing to cut (the selected part of this layer is empty, or it can't be erased: locked or lock transparency).")?,
+                );
                 let c = self.clip.as_ref().expect("just set");
                 Ok(Output::Text(format!("Cut {} × {} px", c.w, c.h)))
             }
@@ -235,7 +245,9 @@ impl Session {
                     other => return Err(format!("Unknown selection action \"{other}\" (all, none, invert, feather, fill, clear).")),
                 };
                 if !done {
-                    return Err("Nothing selected, or the current layer can't be painted on (hidden, locked, tracing; clear also needs lock transparency off).".into());
+                    return Err(
+                        "Nothing selected, or the current layer can't be painted on (hidden, locked, tracing; clear also needs lock transparency off).".into(),
+                    );
                 }
                 Ok(Output::Json(self.selection_json()))
             }
@@ -477,26 +489,46 @@ impl Session {
                 })
             })
             .transpose()?;
-        let preset = a
-            .preset
-            .as_deref()
-            .map(|name| presets::find(name).ok_or_else(|| format!("No brush named \"{name}\" (see list_brushes).")))
-            .transpose()?;
+        let preset = a.preset.as_deref().map(|name| presets::find(name).ok_or_else(|| format!("No brush named \"{name}\" (see list_brushes)."))).transpose()?;
         let s = self.state_mut();
         let unit = |v: f32| v.clamp(0.0, 1.0);
         // The preset goes first, so the settings in this same command override it.
-        if let Some(p) = &preset { s.shape = p.apply_to(&s.shape) }
-        if let Some(t) = tip { s.shape.tip = t }
-        if let Some(v) = a.spacing { s.shape.spacing = v.clamp(0.02, 1.0) }
-        if let Some(v) = a.jitter_angle { s.shape.jitter_angle = unit(v) }
-        if let Some(v) = a.jitter_size { s.shape.jitter_size = unit(v) }
-        if let Some(v) = a.scatter { s.shape.scatter = unit(v) }
-        if let Some(v) = a.size { s.shape.radius = v.clamp(0.5, 200.0) }
-        if let Some(v) = a.opacity { s.opacity = v.clamp(0.01, 1.0) }
-        if let Some(v) = a.loading { s.loading = unit(v) }
-        if let Some(v) = a.oiliness { s.oiliness = unit(v) }
-        if let Some(v) = a.thickness { s.thickness = unit(v) }
-        if let Some(v) = a.flat { s.flat = v }
+        if let Some(p) = &preset {
+            s.shape = p.apply_to(&s.shape)
+        }
+        if let Some(t) = tip {
+            s.shape.tip = t
+        }
+        if let Some(v) = a.spacing {
+            s.shape.spacing = v.clamp(0.02, 1.0)
+        }
+        if let Some(v) = a.jitter_angle {
+            s.shape.jitter_angle = unit(v)
+        }
+        if let Some(v) = a.jitter_size {
+            s.shape.jitter_size = unit(v)
+        }
+        if let Some(v) = a.scatter {
+            s.shape.scatter = unit(v)
+        }
+        if let Some(v) = a.size {
+            s.shape.radius = v.clamp(0.5, 200.0)
+        }
+        if let Some(v) = a.opacity {
+            s.opacity = v.clamp(0.01, 1.0)
+        }
+        if let Some(v) = a.loading {
+            s.loading = unit(v)
+        }
+        if let Some(v) = a.oiliness {
+            s.oiliness = unit(v)
+        }
+        if let Some(v) = a.thickness {
+            s.thickness = unit(v)
+        }
+        if let Some(v) = a.flat {
+            s.flat = v
+        }
         match a.bristles {
             Some(0) => s.shape.bristles = None,
             Some(n) => s.shape.bristles = Some(Bristles { count: n.clamp(4, 300), ..s.shape.bristles.unwrap_or_default() }),
@@ -507,23 +539,55 @@ impl Session {
             return Err("Those settings are for bristle brushes; set bristles (e.g. 60) first.".into());
         }
         if let Some(b) = &mut s.shape.bristles {
-            if let Some(v) = a.bristle_thickness { b.thickness = unit(v) }
-            if let Some(v) = a.bristle_spread { b.spread = unit(v) }
-            if let Some(v) = a.bristle_stiffness { b.stiffness = unit(v) }
+            if let Some(v) = a.bristle_thickness {
+                b.thickness = unit(v)
+            }
+            if let Some(v) = a.bristle_spread {
+                b.spread = unit(v)
+            }
+            if let Some(v) = a.bristle_stiffness {
+                b.stiffness = unit(v)
+            }
         }
-        if let Some(v) = a.hardness { s.shape.hardness = unit(v) }
-        if let Some(v) = a.roundness { s.shape.roundness = v.clamp(0.05, 1.0) }
-        if let Some(v) = a.angle { s.shape.angle = v }
-        if let Some(v) = rotation { s.shape.rotation = v }
-        if let Some(v) = a.roughness { s.shape.roughness = unit(v) }
-        if let Some(v) = a.streaks { s.shape.streaks = unit(v) }
-        if let Some(v) = a.lift_off { s.shape.lift_off = unit(v) }
-        if let Some(v) = a.taper { s.shape.taper = unit(v) }
-        if let Some(v) = taper_ends { s.shape.taper_ends = v }
-        if let Some(v) = a.rough_ends { s.shape.rough_ends = unit(v) }
-        if let Some(v) = a.grain { s.shape.grain = unit(v) }
-        if let Some(v) = a.size_pressure { s.shape.size_pressure = unit(v) }
-        if let Some(v) = a.opacity_pressure { s.shape.opacity_pressure = unit(v) }
+        if let Some(v) = a.hardness {
+            s.shape.hardness = unit(v)
+        }
+        if let Some(v) = a.roundness {
+            s.shape.roundness = v.clamp(0.05, 1.0)
+        }
+        if let Some(v) = a.angle {
+            s.shape.angle = v
+        }
+        if let Some(v) = rotation {
+            s.shape.rotation = v
+        }
+        if let Some(v) = a.roughness {
+            s.shape.roughness = unit(v)
+        }
+        if let Some(v) = a.streaks {
+            s.shape.streaks = unit(v)
+        }
+        if let Some(v) = a.lift_off {
+            s.shape.lift_off = unit(v)
+        }
+        if let Some(v) = a.taper {
+            s.shape.taper = unit(v)
+        }
+        if let Some(v) = taper_ends {
+            s.shape.taper_ends = v
+        }
+        if let Some(v) = a.rough_ends {
+            s.shape.rough_ends = unit(v)
+        }
+        if let Some(v) = a.grain {
+            s.shape.grain = unit(v)
+        }
+        if let Some(v) = a.size_pressure {
+            s.shape.size_pressure = unit(v)
+        }
+        if let Some(v) = a.opacity_pressure {
+            s.shape.opacity_pressure = unit(v)
+        }
         Ok(Output::Json(self.brush_json()))
     }
 
@@ -562,7 +626,11 @@ impl Session {
                 return Err("The current layer has no mask (mask action \"add\" first).".into());
             }
             let value = if erasing { 1.0 } else { 0.299 * self.color.r + 0.587 * self.color.g + 0.114 * self.color.b };
-            let dab = |p: &StrokePoint| Brush { radius: (brush.radius * brush.pressure_size(p.pressure)).max(0.5), opacity: brush.opacity * brush.pressure_opacity(p.pressure), ..brush.clone() };
+            let dab = |p: &StrokePoint| Brush {
+                radius: (brush.radius * brush.pressure_size(p.pressure)).max(0.5),
+                opacity: brush.opacity * brush.pressure_opacity(p.pressure),
+                ..brush.clone()
+            };
             self.document.mask_dab(points[0].x, points[0].y, &dab(&points[0]), value);
             for pair in points.windows(2) {
                 self.document.mask_line((pair[0].x, pair[0].y), (pair[1].x, pair[1].y), &dab(&pair[1]), value);
@@ -610,10 +678,13 @@ impl Session {
             if points.len() < 2 || points.len() > MAX_POINTS {
                 return Err(format!("{name} needs 2–{MAX_POINTS} points."));
             }
-            points.iter().map(|p| match p.as_slice() {
-                [x, y, ..] => Ok((*x, *y)),
-                _ => Err(format!("Each {name} point is [x, y].")),
-            }).collect()
+            points
+                .iter()
+                .map(|p| match p.as_slice() {
+                    [x, y, ..] => Ok((*x, *y)),
+                    _ => Err(format!("Each {name} point is [x, y].")),
+                })
+                .collect()
         };
         let (rail_a, rail_b) = (rail(&a.rail_a, "rail_a")?, rail(&a.rail_b, "rail_b")?);
         let edge = a.edge.as_deref().map(|e| rail(e, "edge")).transpose()?;
@@ -678,7 +749,11 @@ impl Session {
         let done = self.document.transform_layer(t, fit)?;
         Ok(Output::Text(format!(
             "Transformed: moved {:.0}, {:.0} px, scaled {:.0}% × {:.0}%, rotated {:.1}°",
-            done.dx, done.dy, done.sx.abs() * 100.0, done.sy.abs() * 100.0, done.rotation
+            done.dx,
+            done.dy,
+            done.sx.abs() * 100.0,
+            done.sy.abs() * 100.0,
+            done.rotation
         )))
     }
 
@@ -785,15 +860,33 @@ impl Session {
         if let Some(kind) = a.kind.as_deref() {
             s.kind = parse_paper_kind(kind)?;
         }
-        if let Some(v) = a.depth { s.depth = v.clamp(0.0, 1.0) }
-        if let Some(v) = a.scale { s.scale = v.clamp(0.5, 3.0) }
-        if let Some(v) = a.light_angle { s.light_angle = v }
-        if let Some(v) = a.paper_texture { s.paper_visibility = (v / 10.0).clamp(0.0, 1.0) }
-        if let Some(v) = a.paint_texture { s.paint_visibility = (v / 10.0).clamp(0.0, 1.0) }
-        if let Some(v) = a.impasto_depth { s.impasto_depth = (v / 10.0).clamp(0.0, 1.0) }
-        if let Some(v) = a.gloss { s.gloss = (v / 10.0).clamp(0.0, 1.0) }
-        if let Some(v) = a.shadows { s.shadows = (v / 10.0).clamp(0.0, 1.0) }
-        if let Some(v) = a.light_height { s.light_height = v.clamp(10.0, 80.0) }
+        if let Some(v) = a.depth {
+            s.depth = v.clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.scale {
+            s.scale = v.clamp(0.5, 3.0)
+        }
+        if let Some(v) = a.light_angle {
+            s.light_angle = v
+        }
+        if let Some(v) = a.paper_texture {
+            s.paper_visibility = (v / 10.0).clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.paint_texture {
+            s.paint_visibility = (v / 10.0).clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.impasto_depth {
+            s.impasto_depth = (v / 10.0).clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.gloss {
+            s.gloss = (v / 10.0).clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.shadows {
+            s.shadows = (v / 10.0).clamp(0.0, 1.0)
+        }
+        if let Some(v) = a.light_height {
+            s.light_height = v.clamp(10.0, 80.0)
+        }
         self.document.set_surface(s);
         self.document.seal_history();
         if let Some(hex) = a.color.as_deref() {
@@ -805,11 +898,8 @@ impl Session {
 
     fn snapshot(&mut self, a: SnapshotArgs) -> R {
         let max = a.max_size.unwrap_or(1024).clamp(64, 2048);
-        let doc: &Document = if a.target.as_deref() == Some("palette") {
-            self.document.palette.get_or_insert_with(|| Box::new(new_palette()))
-        } else {
-            &self.document
-        };
+        let doc: &Document =
+            if a.target.as_deref() == Some("palette") { self.document.palette.get_or_insert_with(|| Box::new(new_palette())) } else { &self.document };
         let (w, h) = (doc.width() as u32, doc.height() as u32);
         let full = image::RgbaImage::from_raw(w, h, doc.composite_rgba8(doc.bounds())).ok_or("Couldn't render the painting.")?;
         let scale = (max as f32 / w.max(h) as f32).min(1.0);
@@ -1062,9 +1152,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let photo = dir.join("photo.png");
         // Left half red, right half blue.
-        image::RgbaImage::from_fn(32, 16, |x, _| if x < 16 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) })
-            .save(&photo)
-            .unwrap();
+        image::RgbaImage::from_fn(32, 16, |x, _| if x < 16 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) }).save(&photo).unwrap();
 
         let mut s = Session::new(Document::new(64, 32, Color::WHITE));
         let json = format!(r#"{{"command": "import_image", "path": "{}", "reference": true}}"#, photo.display());

@@ -34,8 +34,7 @@ impl OxideApp {
             }
         }
         let space_down = ui.input(|i| i.key_down(egui::Key::Space));
-        let panning = response.dragged_by(PointerButton::Middle)
-            || (space_down && response.dragged_by(PointerButton::Primary));
+        let panning = response.dragged_by(PointerButton::Middle) || (space_down && response.dragged_by(PointerButton::Primary));
         if panning {
             self.view.unfit();
             self.view.pan += response.drag_delta();
@@ -68,7 +67,11 @@ impl OxideApp {
         let command_down = ui.input(|i| i.modifiers.command);
         let mut adjusting = None;
         let transforming = self.transform.is_some();
-        if command_down && primary_down && self.stroke.is_none() && self.tool.paints() && !transforming
+        if command_down
+            && primary_down
+            && self.stroke.is_none()
+            && self.tool.paints()
+            && !transforming
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (start, radius, loading) = *self.adjust_drag.get_or_insert((pos, self.state().shape.radius, self.state().loading));
@@ -338,11 +341,8 @@ impl OxideApp {
         let r = (brush.radius * xf.scale).max(1.5);
         let roundness = brush.roundness.clamp(0.05, 1.0);
         // Follow-stroke tips turn with the (screen) movement; fixed tips turn with the view.
-        let angle = if brush.rotation == oxide_engine::Rotation::FollowStroke {
-            brush.tip_angle(self.cursor_dir).to_radians()
-        } else {
-            xf.screen_angle(brush.angle)
-        };
+        let angle =
+            if brush.rotation == oxide_engine::Rotation::FollowStroke { brush.tip_angle(self.cursor_dir).to_radians() } else { xf.screen_angle(brush.angle) };
         let (sin, cos) = angle.sin_cos();
 
         let outline: Vec<egui::Pos2> = (0..=48)

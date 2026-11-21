@@ -9,8 +9,8 @@ mod canvas;
 mod document;
 mod file;
 mod history;
-mod paint;
 pub mod multicolor;
+mod paint;
 mod paper;
 mod psd;
 mod region;
@@ -32,8 +32,8 @@ pub use paint::{Mixing, mix_paint};
 pub mod spectral_bench {
     pub use crate::spectral::{Pigment, mix_pigments};
 }
-pub use psd::PsdOptions;
 pub use paper::{Paper, PaperKind, PaperSettings, surface_acceptance};
+pub use psd::PsdOptions;
 pub use region::Region;
 pub use stroke::{Preview, Stroke, StrokePoint};
 pub use tip::DabTexture;

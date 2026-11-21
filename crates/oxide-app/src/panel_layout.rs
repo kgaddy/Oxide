@@ -198,7 +198,9 @@ mod tests {
         assert_eq!(layout.left, [Section::Layers, Section::Tools, Section::Quick, Section::Properties, Section::BrushPresets]);
         assert_eq!(layout.right, [Section::Navigator, Section::Color, Section::WetMedia, Section::Paper]);
         // A saved layout from before the Quick section gets it below Tools.
-        let mut old: PanelLayout = toml::from_str("left = [\"Tools\", \"Properties\", \"BrushPresets\"]\nright = [\"Navigator\", \"Color\", \"WetMedia\", \"Layers\", \"Paper\"]").unwrap();
+        let mut old: PanelLayout =
+            toml::from_str("left = [\"Tools\", \"Properties\", \"BrushPresets\"]\nright = [\"Navigator\", \"Color\", \"WetMedia\", \"Layers\", \"Paper\"]")
+                .unwrap();
         old.repair();
         assert_eq!(old.left, [Section::Tools, Section::Quick, Section::Properties, Section::BrushPresets]);
     }

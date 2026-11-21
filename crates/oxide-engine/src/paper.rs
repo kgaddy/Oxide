@@ -246,12 +246,7 @@ fn generate_height(s: &PaperSettings) -> Vec<f32> {
                     // Long fibers in several directions: noise stretched along each direction.
                     // (Integer combinations of x and y keep the tile seamless.)
                     let along = |u: f32, v: f32, seed| fbm(u * 0.08, v, 2.5 * scale, 2, seed);
-                    let fibers = [
-                        along(fx, fy, 81),
-                        along(fy, fx, 82),
-                        along(fx + fy, fx - fy, 83),
-                        along(fx - fy, fx + fy, 84),
-                    ];
+                    let fibers = [along(fx, fy, 81), along(fy, fx, 82), along(fx + fy, fx - fy, 83), along(fx - fy, fx + fy, 84)];
                     let strongest = fibers.iter().cloned().fold(0.0_f32, f32::max);
                     0.7 * strongest + 0.3 * fbm(fx, fy, 20.0 * scale, 2, 85)
                 }
@@ -286,11 +281,7 @@ fn weave(x: f32, y: f32, thread: f32, irregular: f32, seed: u32) -> f32 {
     let weft_lumps = 1.0 - irregular * 0.5 * value_noise_1d(x / (period * 6.0), hash2(iv as u32, seed + 1), count as u32);
 
     let warp_on_top = (iu as i64 + iv as i64) % 2 == 0;
-    let h = if warp_on_top {
-        bump(fu) * warp_lumps * (0.7 + 0.3 * bump(fv))
-    } else {
-        bump(fv) * weft_lumps * (0.7 + 0.3 * bump(fu))
-    };
+    let h = if warp_on_top { bump(fu) * warp_lumps * (0.7 + 0.3 * bump(fv)) } else { bump(fv) * weft_lumps * (0.7 + 0.3 * bump(fu)) };
     // A little fiber fuzz.
     0.85 * h + 0.15 * fbm(x, y, 2.0, 2, seed + 7)
 }
@@ -418,9 +409,10 @@ mod tests {
     fn paint_hides_the_texture_more_than_bare_paper() {
         let paper = Paper::new(PaperSettings { kind: PaperKind::Canvas, depth: 0.6, paper_visibility: 1.0, paint_visibility: 0.2, ..PaperSettings::default() });
         // Find a strongly lit or shadowed spot.
-        let (x, y) = (0..TILE * TILE).map(|i| (i % TILE, i / TILE)).max_by(|a, b| {
-            (paper.shade_at(a.0, a.1) - 1.0).abs().total_cmp(&(paper.shade_at(b.0, b.1) - 1.0).abs())
-        }).unwrap();
+        let (x, y) = (0..TILE * TILE)
+            .map(|i| (i % TILE, i / TILE))
+            .max_by(|a, b| (paper.shade_at(a.0, a.1) - 1.0).abs().total_cmp(&(paper.shade_at(b.0, b.1) - 1.0).abs()))
+            .unwrap();
         let bare = (paper.visible_shade_at(x, y, 0.0) - 1.0).abs();
         let painted = (paper.visible_shade_at(x, y, 1.0) - 1.0).abs();
         assert!(bare > 0.05, "texture shows on bare paper: {bare}");

@@ -7,11 +7,7 @@ use std::path::Path;
 /// otherwise it's placed at its own size, centered and cropped.
 pub fn image_layer_pixels(path: &Path, width: usize, height: usize, fit: bool) -> Result<Vec<[f32; 4]>, String> {
     let img = image::open(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
-    let img = if fit {
-        img.resize(width as u32, height as u32, image::imageops::FilterType::Lanczos3).to_rgba8()
-    } else {
-        img.to_rgba8()
-    };
+    let img = if fit { img.resize(width as u32, height as u32, image::imageops::FilterType::Lanczos3).to_rgba8() } else { img.to_rgba8() };
     let (w, h) = (width as i64, height as i64);
     let (iw, ih) = (img.width() as i64, img.height() as i64);
     // Top-left corner that centers the image on the canvas (negative if it's larger).

@@ -33,15 +33,14 @@ struct OxideServer {
 /// runtime (see `main`). If a command panics, the agent gets an error and
 /// the server keeps going: the lock is recovered instead of staying poisoned.
 fn run(session: &Mutex<Session>, command: Command) -> Result<CallToolResult, McpError> {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).execute(command)
-    }))
-    .unwrap_or_else(|_| Err("Oxide hit an internal error running that command (a bug; details on stderr). The painting is still open; check it with info or snapshot.".into()));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).execute(command)))
+        .unwrap_or_else(|_| {
+            Err("Oxide hit an internal error running that command (a bug; details on stderr). The painting is still open; check it with info or snapshot."
+                .into())
+        });
     Ok(match result {
         Ok(Output::Text(text)) => CallToolResult::success(vec![ContentBlock::text(text)]),
-        Ok(Output::Json(value)) => {
-            CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&value).unwrap_or_default())])
-        }
+        Ok(Output::Json(value)) => CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&value).unwrap_or_default())]),
         Ok(Output::Png { bytes, width, height }) => CallToolResult::success(vec![
             ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(bytes), "image/png"),
             ContentBlock::text(format!("{width}×{height} snapshot")),
@@ -126,7 +125,9 @@ impl OxideServer {
         run(&self.session, Command::Stroke(a))
     }
 
-    #[tool(description = "Engraving-style hatching: evenly spaced, tapered lines fill the space between two guide curves (rail_a, rail_b), across or along them; along, an optional edge curve sets where the lines start. Uses the current tool and brush (set_tool hatch first).")]
+    #[tool(
+        description = "Engraving-style hatching: evenly spaced, tapered lines fill the space between two guide curves (rail_a, rail_b), across or along them; along, an optional edge curve sets where the lines start. Uses the current tool and brush (set_tool hatch first)."
+    )]
     async fn hatch(&self, Parameters(a): Parameters<HatchArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::Hatch(a))
     }
@@ -136,7 +137,9 @@ impl OxideServer {
         run(&self.session, Command::PickColor(a))
     }
 
-    #[tool(description = "Load an image as a layer. With reference: true it becomes the locked tracing layer (scaled to fit) and strokes take their color from it.")]
+    #[tool(
+        description = "Load an image as a layer. With reference: true it becomes the locked tracing layer (scaled to fit) and strokes take their color from it."
+    )]
     async fn import_image(&self, Parameters(a): Parameters<ImportImageArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::ImportImage(a))
     }
@@ -151,7 +154,9 @@ impl OxideServer {
         run(&self.session, Command::TransformLayer(a))
     }
 
-    #[tool(description = "Import brush tips from a Photoshop .abr (brush packs), a Procreate .brush/.brushset (shape images only), GIMP .gbr/.gih, or an image (PNG/JPEG). They're saved in Oxide's tip library; the first one becomes the current tip.")]
+    #[tool(
+        description = "Import brush tips from a Photoshop .abr (brush packs), a Procreate .brush/.brushset (shape images only), GIMP .gbr/.gih, or an image (PNG/JPEG). They're saved in Oxide's tip library; the first one becomes the current tip."
+    )]
     async fn import_tip(&self, Parameters(a): Parameters<PathArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::ImportTip(a))
     }
@@ -171,7 +176,9 @@ impl OxideServer {
         run(&self.session, Command::Paste(NoArgs {}))
     }
 
-    #[tool(description = "Select a rectangle, ellipse (box) or lasso (points); painting, fill and clear then stay inside it. Mode: replace / add / subtract / intersect.")]
+    #[tool(
+        description = "Select a rectangle, ellipse (box) or lasso (points); painting, fill and clear then stay inside it. Mode: replace / add / subtract / intersect."
+    )]
     async fn select(&self, Parameters(a): Parameters<SelectArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::Select(a))
     }
@@ -226,7 +233,9 @@ impl OxideServer {
         run(&self.session, Command::SelectLayer(a))
     }
 
-    #[tool(description = "Rename a layer, change its opacity, visibility, blend mode or impasto depth, lock it, lock its transparency, or make it the tracing layer.")]
+    #[tool(
+        description = "Rename a layer, change its opacity, visibility, blend mode or impasto depth, lock it, lock its transparency, or make it the tracing layer."
+    )]
     async fn set_layer(&self, Parameters(a): Parameters<SetLayerArgs>) -> Result<CallToolResult, McpError> {
         run(&self.session, Command::SetLayer(a))
     }

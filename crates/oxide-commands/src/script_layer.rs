@@ -108,15 +108,18 @@ mod tests {
     #[test]
     fn a_script_becomes_one_layer_of_paint() {
         let out = std::env::temp_dir().join("oxide-script-layer-should-not-exist.png");
-        let path = script("basic", &[
-            "# a comment",
-            r##"{"command": "set_color", "hex": "#C2151B"}"##,
-            r#"{"command": "stroke", "points": [[10, 10], [80, 60]]}"#,
-            r#"{"command": "add_layer", "name": "Two"}"#,
-            r#"{"command": "stroke", "points": [[10, 60], [80, 10]]}"#,
-            &format!(r#"{{"command": "export", "path": "{}"}}"#, out.display()),
-            r#"{"command": "no_such_thing"}"#,
-        ]);
+        let path = script(
+            "basic",
+            &[
+                "# a comment",
+                r##"{"command": "set_color", "hex": "#C2151B"}"##,
+                r#"{"command": "stroke", "points": [[10, 10], [80, 60]]}"#,
+                r#"{"command": "add_layer", "name": "Two"}"#,
+                r#"{"command": "stroke", "points": [[10, 60], [80, 10]]}"#,
+                &format!(r#"{{"command": "export", "path": "{}"}}"#, out.display()),
+                r#"{"command": "no_such_thing"}"#,
+            ],
+        );
         let layer = paint_script(&path, 100, 80).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(layer.buffers.dry.len(), 100 * 80);
@@ -138,11 +141,14 @@ mod tests {
 
     #[test]
     fn another_size_is_centered() {
-        let path = script("size", &[
-            r#"{"command": "new_painting", "width": 40, "height": 40}"#,
-            r#"{"command": "set_brush", "size": 30}"#,
-            r#"{"command": "stroke", "points": [[20, 20]]}"#,
-        ]);
+        let path = script(
+            "size",
+            &[
+                r#"{"command": "new_painting", "width": 40, "height": 40}"#,
+                r#"{"command": "set_brush", "size": 30}"#,
+                r#"{"command": "stroke", "points": [[20, 20]]}"#,
+            ],
+        );
         let layer = paint_script(&path, 100, 80).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(layer.other_size, Some((40, 40)));

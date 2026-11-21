@@ -8,8 +8,18 @@ use rayon::prelude::*;
 /// A shape to select (canvas pixels).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SelectShape {
-    Rect { x0: f32, y0: f32, x1: f32, y1: f32 },
-    Ellipse { x0: f32, y0: f32, x1: f32, y1: f32 },
+    Rect {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    },
+    Ellipse {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    },
     /// A closed outline (lasso), at least 3 points.
     Polygon(Vec<(f32, f32)>),
 }

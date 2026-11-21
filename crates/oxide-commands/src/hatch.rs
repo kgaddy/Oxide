@@ -73,13 +73,7 @@ pub fn hatch_lines(a: &[(f32, f32)], b: &[(f32, f32)], settings: &HatchSettings,
 /// the straight line between the rails' ends there, say the round edge of a
 /// form. Only the part of it between the two rails is used; the lines ease
 /// back into the rails' shape by their other end.
-pub fn hatch_lines_with_edge(
-    a: &[(f32, f32)],
-    b: &[(f32, f32)],
-    edge: Option<&[(f32, f32)]>,
-    settings: &HatchSettings,
-    seed: u32,
-) -> Vec<Vec<StrokePoint>> {
+pub fn hatch_lines_with_edge(a: &[(f32, f32)], b: &[(f32, f32)], edge: Option<&[(f32, f32)]>, settings: &HatchSettings, seed: u32) -> Vec<Vec<StrokePoint>> {
     let (len_a, len_b) = (path_length(a), path_length(b));
     if len_a < 1.0 || len_b < 1.0 {
         return Vec::new();

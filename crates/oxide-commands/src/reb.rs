@@ -118,11 +118,7 @@ pub fn read_reb<R: Read + Seek>(reader: R) -> Result<Document, String> {
     for (index, tag) in layer_tags.iter().enumerate() {
         layers.push(read_layer(&mut zip, index, tag, width, height)?);
     }
-    let active = tags(&xml, "layers")
-        .first()
-        .and_then(|t| t.get("active_pos"))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(layers.len() - 1);
+    let active = tags(&xml, "layers").first().and_then(|t| t.get("active_pos")).and_then(|v| v.parse().ok()).unwrap_or(layers.len() - 1);
     Ok(Document::from_layers(width, height, paper, surface, layers, active))
 }
 
@@ -150,7 +146,8 @@ fn read_layer<R: Read + Seek>(zip: &mut ZipArchive<R>, index: usize, tag: &Attrs
     }
 
     let stem = file.trim_end_matches(".png");
-    let wetness = read_grid(zip, &format!("{stem}_flow.dat"), width, height, FLOW_BORDER)?.map(|g| g.into_iter().map(|v| (v / 255.0).clamp(0.0, 1.0)).collect::<Vec<_>>());
+    let wetness = read_grid(zip, &format!("{stem}_flow.dat"), width, height, FLOW_BORDER)?
+        .map(|g| g.into_iter().map(|v| (v / 255.0).clamp(0.0, 1.0)).collect::<Vec<_>>());
     let relief = read_grid(zip, &format!("{stem}_structure.dat"), width, height, 0)?.map(|g| {
         let g = smooth(&g, width, height, RELIEF_BLUR);
         g.into_iter().map(|v| (v * RELIEF_SCALE).min(MAX_RELIEF)).collect::<Vec<_>>()
@@ -441,7 +438,14 @@ mod tests {
         st.extend(vals.iter().flat_map(|v| v.to_be_bytes()));
 
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        for (name, data) in [("artwork.xml", xml.as_bytes()), ("layer0.png", &l0), ("layer1.png", &l1), ("layer1_flow.dat", &flow), ("layer1_structure.dat", &st), ("layer0_flow.dat", b"ZERO\0\0\0\x50")] {
+        for (name, data) in [
+            ("artwork.xml", xml.as_bytes()),
+            ("layer0.png", &l0),
+            ("layer1.png", &l1),
+            ("layer1_flow.dat", &flow),
+            ("layer1_structure.dat", &st),
+            ("layer0_flow.dat", b"ZERO\0\0\0\x50"),
+        ] {
             zip.start_file(name, SimpleFileOptions::default()).unwrap();
             zip.write_all(data).unwrap();
         }

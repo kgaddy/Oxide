@@ -4,6 +4,7 @@
 
 ## How I checked it
 
+- [ ] `cargo fmt` has been run
 - [ ] `cargo test --workspace` passes
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean
 - [ ] I tried it in the app (say on which OS)

@@ -4,9 +4,9 @@ mod app;
 // Shared with the AI-agent server and CLI (see crates/oxide-commands).
 use oxide_commands::{export, tools};
 mod color_wheel;
+mod open_files;
 mod palette_library;
 mod panel_layout;
-mod open_files;
 mod pen;
 mod presets;
 mod quick_panel;
@@ -30,9 +30,5 @@ fn main() -> eframe::Result {
             .with_icon(egui::IconData::default()),
         ..Default::default()
     };
-    eframe::run_native(
-        "Oxide",
-        options,
-        Box::new(|cc| Ok(Box::new(app::OxideApp::new(cc)))),
-    )
+    eframe::run_native("Oxide", options, Box::new(|cc| Ok(Box::new(app::OxideApp::new(cc)))))
 }

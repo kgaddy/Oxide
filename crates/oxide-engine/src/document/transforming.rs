@@ -48,8 +48,7 @@ impl Document {
             }
         };
         self.history.seal();
-        self.transforming =
-            Some(TransformSource { layer: self.active, original, lifted, has_wet, has_relief, bounds, current: Transform::default() });
+        self.transforming = Some(TransformSource { layer: self.active, original, lifted, has_wet, has_relief, bounds, current: Transform::default() });
         Some(bounds)
     }
 

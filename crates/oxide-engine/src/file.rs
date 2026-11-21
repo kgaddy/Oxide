@@ -245,10 +245,7 @@ impl Document {
         zip.by_name("document.toml")?.read_to_string(&mut text)?;
         let manifest: Manifest = toml::from_str(&text).map_err(|e| FileError::Invalid(e.to_string()))?;
         if manifest.format_version > FORMAT_VERSION {
-            return Err(FileError::Invalid(format!(
-                "made by a newer Oxide (format {}); please update",
-                manifest.format_version
-            )));
+            return Err(FileError::Invalid(format!("made by a newer Oxide (format {}); please update", manifest.format_version)));
         }
         if manifest.layers.is_empty() || manifest.width == 0 || manifest.height == 0 {
             return Err(FileError::Invalid("no layers or zero size".into()));
@@ -292,22 +289,11 @@ impl Document {
         }
 
         let [r, g, b] = manifest.paper;
-        let mut doc = Document::from_layers(
-            manifest.width,
-            manifest.height,
-            Color::rgb(r, g, b),
-            manifest.surface,
-            layers,
-            manifest.active_layer,
-        );
+        let mut doc = Document::from_layers(manifest.width, manifest.height, Color::rgb(r, g, b), manifest.surface, layers, manifest.active_layer);
         doc.set_dpi(manifest.dpi);
         doc.notes = manifest.notes;
         doc.set_groups(
-            manifest
-                .groups
-                .into_iter()
-                .map(|g| crate::LayerGroup { id: g.id, name: g.name, visible: g.visible, opacity: g.opacity, open: g.open })
-                .collect(),
+            manifest.groups.into_iter().map(|g| crate::LayerGroup { id: g.id, name: g.name, visible: g.visible, opacity: g.opacity, open: g.open }).collect(),
         );
 
         // Optional mixing palette (older files don't have one).
@@ -344,12 +330,7 @@ fn read_floats<R: Read + Seek>(zip: &mut ZipArchive<R>, path: &str, pixel_count:
     Ok(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
-fn read_pixels<R: Read + Seek>(
-    zip: &mut ZipArchive<R>,
-    path: &str,
-    pixel_count: usize,
-    layer_name: &str,
-) -> Result<Vec<[f32; 4]>, FileError> {
+fn read_pixels<R: Read + Seek>(zip: &mut ZipArchive<R>, path: &str, pixel_count: usize, layer_name: &str) -> Result<Vec<[f32; 4]>, FileError> {
     let mut bytes = Vec::with_capacity(pixel_count * 16);
     zip.by_name(path)?.read_to_end(&mut bytes)?;
     if bytes.len() != pixel_count * 16 {
@@ -379,7 +360,18 @@ mod tests {
         doc.begin_stroke();
         let soft = Brush { color: Color::rgb(0.2, 0.4, 0.9), opacity: 0.3, hardness: 0.0, ..Brush::default() };
         let relief = Some(crate::ReliefDab { build: 0.7, smear_to: 0.0, smear: 0.0, plow: 0.0, push: 0.0, flat: false, scrape: 0.0, level: false });
-        let wet = DabStyle { color: soft.color, opacity: 0.3, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief, bands: None, flow: None };
+        let wet = DabStyle {
+            color: soft.color,
+            opacity: 0.3,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief,
+            bands: None,
+            flow: None,
+        };
         doc.active_canvas().dab_with(10.0, 10.0, &soft, &wet);
         doc.end_stroke();
         doc.add_layer();
@@ -438,7 +430,18 @@ mod tests {
     fn mixing_palette_is_saved_inside_the_painting() {
         let mut doc = Document::new(20, 20, Color::WHITE);
         let mut palette = Document::new(16, 8, Color::rgb(0.9, 0.9, 0.9));
-        let wet = DabStyle { color: Color::rgb(0.0, 0.5, 0.2), opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Wet, texture: None, reach: 1.0, pigment: None, relief: None, bands: None, flow: None };
+        let wet = DabStyle {
+            color: Color::rgb(0.0, 0.5, 0.2),
+            opacity: 1.0,
+            mode: DabMode::Paint,
+            wetness: Wetness::Wet,
+            texture: None,
+            reach: 1.0,
+            pigment: None,
+            relief: None,
+            bands: None,
+            flow: None,
+        };
         palette.active_canvas().dab_with(8.0, 4.0, &Brush { radius: 3.0, ..Brush::default() }, &wet);
         palette.notes = "Paints:\n• Ultramarine Blue (#1C2A6B)\n• Burnt Umber \"quoted\" — ok".into();
         doc.palette = Some(Box::new(palette));

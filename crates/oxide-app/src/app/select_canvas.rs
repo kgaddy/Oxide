@@ -76,13 +76,7 @@ pub struct SelectCanvas {
 
 impl Default for SelectCanvas {
     fn default() -> Self {
-        SelectCanvas {
-            open: false,
-            target: CanvasTarget::Document,
-            settings: PaperSettings::default(),
-            color: PAPER,
-            thumbnails: Vec::new(),
-        }
+        SelectCanvas { open: false, target: CanvasTarget::Document, settings: PaperSettings::default(), color: PAPER, thumbnails: Vec::new() }
     }
 }
 
@@ -208,8 +202,7 @@ impl OxideApp {
             });
         });
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Import paper…"))
-                .on_disabled_hover_text("Use a scan of your own paper: coming later");
+            ui.add_enabled(false, egui::Button::new("Import paper…")).on_disabled_hover_text("Use a scan of your own paper: coming later");
         });
         ui.add_space(4.0);
         let mut percent = sc.settings.scale * 100.0;
@@ -218,8 +211,7 @@ impl OxideApp {
         }
         ui.add(egui::Slider::new(&mut sc.settings.depth, 0.0..=1.0).text("Depth"));
         let mut off = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Use Deckled Edges"))
-            .on_disabled_hover_text("Torn, uneven paper edges: coming later");
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Use Deckled Edges")).on_disabled_hover_text("Torn, uneven paper edges: coming later");
     }
 
     fn color_column(&mut self, ui: &mut egui::Ui) {
@@ -233,11 +225,8 @@ impl OxideApp {
         });
 
         let custom = self.app_settings.custom_paper_colors.clone();
-        let colors: Vec<(Color, bool)> = CANVAS_COLORS
-            .iter()
-            .map(|&[r, g, b]| (Color::rgb(r, g, b), false))
-            .chain(custom.iter().map(|&[r, g, b]| (Color::rgb(r, g, b), true)))
-            .collect();
+        let colors: Vec<(Color, bool)> =
+            CANVAS_COLORS.iter().map(|&[r, g, b]| (Color::rgb(r, g, b), false)).chain(custom.iter().map(|&[r, g, b]| (Color::rgb(r, g, b), true))).collect();
 
         let mut picked = None;
         egui::Frame::new().fill(ui.visuals().extreme_bg_color).inner_margin(6.0).show(ui, |ui| {
@@ -259,7 +248,13 @@ impl OxideApp {
                     if i == 0 {
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Default", egui::FontId::proportional(10.0), Color32::from_gray(60));
                     }
-                    let tip = if i == 0 { "Default paper color" } else if *is_custom { "Your color" } else { "Paper tone" };
+                    let tip = if i == 0 {
+                        "Default paper color"
+                    } else if *is_custom {
+                        "Your color"
+                    } else {
+                        "Paper tone"
+                    };
                     if response.on_hover_text(tip).clicked() {
                         picked = Some(*color);
                     }
@@ -277,9 +272,7 @@ impl OxideApp {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add_enabled(is_saved, egui::Button::new("−")).on_hover_text("Remove this color from your palette").clicked() {
-                    self.app_settings
-                        .custom_paper_colors
-                        .retain(|c| to_color32(Color::rgb(c[0], c[1], c[2])) != to_color32(current));
+                    self.app_settings.custom_paper_colors.retain(|c| to_color32(Color::rgb(c[0], c[1], c[2])) != to_color32(current));
                     self.save_app_settings();
                 }
                 if ui.add_enabled(!is_saved, egui::Button::new("+")).on_hover_text("Add the current color to the palette").clicked() {

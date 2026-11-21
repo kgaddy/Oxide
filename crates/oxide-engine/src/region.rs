@@ -29,11 +29,6 @@ impl Region {
 
     /// The smallest region containing both.
     pub fn union(self, other: Region) -> Region {
-        Region {
-            x0: self.x0.min(other.x0),
-            y0: self.y0.min(other.y0),
-            x1: self.x1.max(other.x1),
-            y1: self.y1.max(other.y1),
-        }
+        Region { x0: self.x0.min(other.x0), y0: self.y0.min(other.y0), x1: self.x1.max(other.x1), y1: self.y1.max(other.y1) }
     }
 }

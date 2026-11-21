@@ -10,10 +10,10 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::blend::{BlendMode, blend};
-use crate::selection::{self, SelectMode, SelectShape};
 use crate::canvas::{Buffers, MAX_RELIEF, over, premultiply, scale};
-use crate::paper::{Paper, PaperSettings};
 use crate::history::{Edit, History, LayerFlagSet};
+use crate::paper::{Paper, PaperSettings};
+use crate::selection::{self, SelectMode, SelectShape};
 use crate::transform::{self, Transform};
 use crate::{Brush, Canvas, Color, Region};
 
@@ -23,10 +23,10 @@ mod groups;
 mod layers;
 mod masks;
 mod select;
-mod transforming;
-mod undo;
 #[cfg(test)]
 mod tests;
+mod transforming;
+mod undo;
 
 pub use clipboard::Clip;
 pub(crate) use groups::GroupState;
@@ -187,14 +187,7 @@ impl Document {
 
     /// Build a document from saved parts (used when opening a file).
     /// Starts with empty history.
-    pub fn from_layers(
-        width: usize,
-        height: usize,
-        paper: Color,
-        surface: PaperSettings,
-        mut layers: Vec<Layer>,
-        active: usize,
-    ) -> Self {
+    pub fn from_layers(width: usize, height: usize, paper: Color, surface: PaperSettings, mut layers: Vec<Layer>, active: usize) -> Self {
         assert!(!layers.is_empty(), "a document needs at least one layer");
         let next_layer_number = layers.len() + 1;
         let active = active.min(layers.len() - 1);
@@ -294,10 +287,8 @@ impl Document {
         let canvas = &mut self.layers[layer].canvas;
         canvas.take_changed();
         // Reuse the previous snapshot's memory if we have one (saves big allocations).
-        let mut snapshot = self
-            .stroke_snapshot
-            .take()
-            .unwrap_or(StrokeSnapshot { layer, dry: Vec::new(), wet: Vec::new(), relief: Vec::new(), wet_relief: Vec::new() });
+        let mut snapshot =
+            self.stroke_snapshot.take().unwrap_or(StrokeSnapshot { layer, dry: Vec::new(), wet: Vec::new(), relief: Vec::new(), wet_relief: Vec::new() });
         snapshot.layer = layer;
         // Paint only inside the selection.
         canvas.set_clip(self.selection.clone());
@@ -329,12 +320,7 @@ impl Document {
         let Some(region) = canvas.take_changed() else { return };
         let after = canvas.read_region(region);
         let n = region.width() * region.height();
-        let mut before = Buffers {
-            dry: Vec::with_capacity(n),
-            wet: Vec::with_capacity(n),
-            relief: Vec::with_capacity(n),
-            wet_relief: Vec::with_capacity(n),
-        };
+        let mut before = Buffers { dry: Vec::with_capacity(n), wet: Vec::with_capacity(n), relief: Vec::with_capacity(n), wet_relief: Vec::with_capacity(n) };
         for y in region.y0..region.y1 {
             let row = y * self.width + region.x0..y * self.width + region.x1;
             before.dry.extend_from_slice(&snapshot.dry[row.clone()]);
@@ -401,11 +387,7 @@ impl Document {
         let mut changed = Vec::new();
         for i in layers {
             let canvas = &mut self.layers[i].canvas;
-            let has_something_to_move = if to_wet {
-                canvas.dry_pixels().iter().any(|p| p[3] > 0.0)
-            } else {
-                canvas.has_wet_paint()
-            };
+            let has_something_to_move = if to_wet { canvas.dry_pixels().iter().any(|p| p[3] > 0.0) } else { canvas.has_wet_paint() };
             if !has_something_to_move {
                 continue;
             }
@@ -437,7 +419,6 @@ impl Document {
             self.all_dirty = true;
         }
     }
-
 }
 
 fn read_mask(data: &[f32], width: usize, r: Region) -> Vec<f32> {

@@ -1,0 +1,4 @@
+# Oxide's style: long lines, and short calls and structs kept on one line.
+# (Chosen as the setting closest to how the code was already written.)
+max_width = 160
+use_small_heuristics = "Max"

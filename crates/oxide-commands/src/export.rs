@@ -19,8 +19,7 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    pub const ALL: [ExportFormat; 6] =
-        [ExportFormat::Png, ExportFormat::Jpeg, ExportFormat::Bmp, ExportFormat::Tiff, ExportFormat::WebP, ExportFormat::Psd];
+    pub const ALL: [ExportFormat; 6] = [ExportFormat::Png, ExportFormat::Jpeg, ExportFormat::Bmp, ExportFormat::Tiff, ExportFormat::WebP, ExportFormat::Psd];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -100,9 +99,7 @@ pub fn export(document: &Document, path: &Path, options: &ExportOptions) -> Resu
     // JPEG: flatten onto a background color instead of the textured paper
     // only if the user picked a custom background.
     let pixels = match (options.format, options.jpeg_background) {
-        (ExportFormat::Jpeg, Some([r, g, b])) => {
-            flatten_onto(&document.composite_rgba_f32(document.bounds(), false), Color::rgb(r, g, b))
-        }
+        (ExportFormat::Jpeg, Some([r, g, b])) => flatten_onto(&document.composite_rgba_f32(document.bounds(), false), Color::rgb(r, g, b)),
         _ => document.composite_rgba_f32(document.bounds(), include_paper),
     };
 
@@ -115,12 +112,10 @@ pub fn export(document: &Document, path: &Path, options: &ExportOptions) -> Resu
             encoder.encode(&rgb8(&pixels), w, h, image::ExtendedColorType::Rgb8).map_err(|e| err(&e))
         }
         ExportFormat::Bmp => {
-            image::save_buffer_with_format(path, &rgba8(&pixels), w, h, image::ExtendedColorType::Rgba8, image::ImageFormat::Bmp)
-                .map_err(|e| err(&e))
+            image::save_buffer_with_format(path, &rgba8(&pixels), w, h, image::ExtendedColorType::Rgba8, image::ImageFormat::Bmp).map_err(|e| err(&e))
         }
         ExportFormat::WebP => {
-            image::save_buffer_with_format(path, &rgba8(&pixels), w, h, image::ExtendedColorType::Rgba8, image::ImageFormat::WebP)
-                .map_err(|e| err(&e))
+            image::save_buffer_with_format(path, &rgba8(&pixels), w, h, image::ExtendedColorType::Rgba8, image::ImageFormat::WebP).map_err(|e| err(&e))
         }
         ExportFormat::Tiff => write_tiff(path, &pixels, w, h, dpi, sixteen),
         ExportFormat::Psd => unreachable!("handled above"),

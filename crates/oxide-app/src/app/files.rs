@@ -148,9 +148,7 @@ impl OxideApp {
         if oxide_commands::reb::is_reb(&path) {
             return self.import_reb(&path);
         }
-        let result = File::open(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|f| Document::load(BufReader::new(f)).map_err(|e| e.to_string()));
+        let result = File::open(&path).map_err(|e| e.to_string()).and_then(|f| Document::load(BufReader::new(f)).map_err(|e| e.to_string()));
         match result {
             Ok(document) => {
                 self.replace_document(document, Some(path.clone()));
@@ -184,11 +182,8 @@ impl OxideApp {
     }
 
     pub(super) fn save_as(&mut self) -> bool {
-        let Some(path) = self
-            .dialog(DialogFolder::Paintings)
-            .add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1)
-            .set_file_name(format!("{}.oxide", self.file_stem()))
-            .save_file()
+        let Some(path) =
+            self.dialog(DialogFolder::Paintings).add_filter(OXIDE_FILTER.0, OXIDE_FILTER.1).set_file_name(format!("{}.oxide", self.file_stem())).save_file()
         else {
             return false;
         };
@@ -207,9 +202,7 @@ impl OxideApp {
     }
 
     fn save_to(&mut self, path: &Path) -> bool {
-        let result = File::create(path)
-            .map_err(|e| e.to_string())
-            .and_then(|f| self.document.save(BufWriter::new(f)).map_err(|e| e.to_string()));
+        let result = File::create(path).map_err(|e| e.to_string()).and_then(|f| self.document.save(BufWriter::new(f)).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
                 self.file_path = Some(path.to_path_buf());
@@ -245,12 +238,8 @@ impl OxideApp {
     }
 
     pub(super) fn file_stem(&self) -> String {
-        self.file_path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map_or("Untitled".into(), |s| s.to_string_lossy().into_owned())
+        self.file_path.as_ref().and_then(|p| p.file_stem()).map_or("Untitled".into(), |s| s.to_string_lossy().into_owned())
     }
-
 
     /// Put a PNG/JPEG on a new layer at its own size, centered, then go
     /// straight into Transform to size and place it.
@@ -336,7 +325,10 @@ impl OxideApp {
                 "abr" | "brush" | "brushset" | "gbr" | "gih" => tips.push(path),
                 "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp" | "bmp" => self.import_image_file(&path),
                 "jsonl" => self.import_script_file(&path),
-                _ => self.error(format!("Oxide can't open {} (paintings: .oxide, .reb; images; scripts: .jsonl; brushes: .abr, .brush, .brushset, .gbr, .gih)", path.display())),
+                _ => self.error(format!(
+                    "Oxide can't open {} (paintings: .oxide, .reb; images; scripts: .jsonl; brushes: .abr, .brush, .brushset, .gbr, .gih)",
+                    path.display()
+                )),
             }
         }
         if !tips.is_empty() {
@@ -407,9 +399,7 @@ fn next_iteration_path(current: &Path) -> PathBuf {
     let stem = current.file_stem().map_or("Untitled".into(), |s| s.to_string_lossy().into_owned());
     // Strip an existing _NNN suffix so we count up instead of adding another.
     let (base, mut n) = match stem.rsplit_once('_') {
-        Some((base, num)) if num.len() == 3 && num.chars().all(|c| c.is_ascii_digit()) => {
-            (base.to_string(), num.parse::<u32>().unwrap_or(0))
-        }
+        Some((base, num)) if num.len() == 3 && num.chars().all(|c| c.is_ascii_digit()) => (base.to_string(), num.parse::<u32>().unwrap_or(0)),
         _ => (stem.clone(), 0),
     };
     loop {

@@ -3,8 +3,8 @@
 //! primaries, so complements sit opposite as in paint: red–green,
 //! yellow–purple, blue–orange) instead of the screen's RGB hues.
 
-use eframe::egui::{self, Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use eframe::egui::ecolor::rgb_from_hsv;
+use eframe::egui::{self, Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
 /// Which part of the wheel the current drag started on.
 #[derive(Clone, Copy, PartialEq)]

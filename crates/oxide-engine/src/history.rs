@@ -22,40 +22,99 @@ pub(crate) enum Edit {
     },
     /// Whole layers' dry/wet buffers were replaced (Dry layer / Dry all / Rewet).
     /// Holds the *other* buffers for each layer; flipping swaps them.
-    Wetness { layers: Vec<(usize, Buffers)>, label: &'static str },
+    Wetness {
+        layers: Vec<(usize, Buffers)>,
+        label: &'static str,
+    },
     /// A layer was inserted at `index`.
-    AddLayer { index: usize },
+    AddLayer {
+        index: usize,
+    },
     /// A layer was removed from `index`; we keep it so it can come back.
-    RemoveLayer { index: usize, layer: Layer },
+    RemoveLayer {
+        index: usize,
+        layer: Layer,
+    },
     /// The layer at `from` moved to `to`.
-    MoveLayer { from: usize, to: usize },
+    MoveLayer {
+        from: usize,
+        to: usize,
+    },
     /// A layer's visibility was toggled.
-    Visibility { layer: usize },
-    Opacity { layer: usize, before: f32, after: f32 },
+    Visibility {
+        layer: usize,
+    },
+    Opacity {
+        layer: usize,
+        before: f32,
+        after: f32,
+    },
     /// Layer groups or which group layers belong to changed. Holds the *other*
     /// state; flipping swaps it in.
-    Groups { other: crate::document::GroupState, label: &'static str },
+    Groups {
+        other: crate::document::GroupState,
+        label: &'static str,
+    },
     /// A layer's mask was added, removed or replaced. Holds the *other* one.
-    LayerMask { layer: usize, other: Option<crate::document::LayerMask>, label: &'static str },
+    LayerMask {
+        layer: usize,
+        other: Option<crate::document::LayerMask>,
+        label: &'static str,
+    },
     /// A layer's mask was switched on or off.
-    MaskEnabled { layer: usize },
+    MaskEnabled {
+        layer: usize,
+    },
     /// Painting on a layer's mask changed `region`.
-    MaskPixels { layer: usize, region: Region, before: Vec<f32>, after: Vec<f32> },
+    MaskPixels {
+        layer: usize,
+        region: Region,
+        before: Vec<f32>,
+        after: Vec<f32>,
+    },
     /// The selection changed inside `region` (outside it, both are empty).
     /// None = nothing selected.
-    Selection { region: Region, before: Option<Vec<f32>>, after: Option<Vec<f32>> },
+    Selection {
+        region: Region,
+        before: Option<Vec<f32>>,
+        after: Option<Vec<f32>>,
+    },
     /// A layer's blend mode changed.
-    LayerBlend { layer: usize, before: crate::BlendMode, after: crate::BlendMode },
+    LayerBlend {
+        layer: usize,
+        before: crate::BlendMode,
+        after: crate::BlendMode,
+    },
     /// A layer's own impasto depth changed (None = uses the painting's).
-    LayerImpasto { layer: usize, before: Option<f32>, after: Option<f32> },
-    Rename { layer: usize, before: String, after: String },
-    Paper { before: Color, after: Color },
+    LayerImpasto {
+        layer: usize,
+        before: Option<f32>,
+        after: Option<f32>,
+    },
+    Rename {
+        layer: usize,
+        before: String,
+        after: String,
+    },
+    Paper {
+        before: Color,
+        after: Color,
+    },
     /// The paper texture changed.
-    Surface { before: PaperSettings, after: PaperSettings },
+    Surface {
+        before: PaperSettings,
+        after: PaperSettings,
+    },
     /// A layer's lock / lock-transparency / tracing flags changed (holds the *other* flags).
-    LayerFlags { layer: usize, flags: LayerFlagSet },
+    LayerFlags {
+        layer: usize,
+        flags: LayerFlagSet,
+    },
     /// Several edits done as one step (e.g. Merge Down). Undone in reverse order.
-    Batch { edits: Vec<Edit>, label: &'static str },
+    Batch {
+        edits: Vec<Edit>,
+        label: &'static str,
+    },
 }
 
 /// The per-layer switches.

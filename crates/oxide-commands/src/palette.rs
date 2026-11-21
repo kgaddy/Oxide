@@ -80,7 +80,6 @@ pub fn add_paint_swatch(palette: &mut Document, color: Color, natural: bool) {
     palette.end_stroke();
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

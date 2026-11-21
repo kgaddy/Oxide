@@ -44,11 +44,8 @@ impl OxideApp {
             return self.info("Recording: strokes and actions are written down. Press Stop to save them as a script.");
         }
         let strokes = self.recorder.as_ref().map_or(0, Recorder::strokes);
-        let Some(path) = self
-            .dialog(DialogFolder::Recordings)
-            .add_filter("oxide-run script", &["jsonl"])
-            .set_file_name(format!("{}.jsonl", self.file_stem()))
-            .save_file()
+        let Some(path) =
+            self.dialog(DialogFolder::Recordings).add_filter("oxide-run script", &["jsonl"]).set_file_name(format!("{}.jsonl", self.file_stem())).save_file()
         else {
             return self.info("Still recording (not saved). Press Stop again to save.");
         };

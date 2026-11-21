@@ -20,13 +20,14 @@ cargo run --release -p oxide-app
 ## Before you open a pull request
 
 ```bash
+cargo fmt
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Both must pass; the same checks run on macOS, Windows and Linux when you open the pull request.
+All three must pass; the same checks run on macOS, Windows and Linux when you open the pull request.
 
-- **Formatting:** the code isn't run through `rustfmt` yet (it would change nearly every file), so please **don't run `cargo fmt` over files you aren't otherwise changing**. Match the style of the code around yours.
+- **Formatting:** run `cargo fmt` before you commit. The settings are in `rustfmt.toml` (long lines, up to 160 characters). CI fails if a file isn't formatted.
 - **Tests:** add one for new behavior. Look at the `tests` module at the bottom of a nearby file (for example `crates/oxide-commands/src/tip_import.rs`) for the pattern.
 - **Comments:** every source file starts with a `//!` comment saying what it's for. Keep that up to date, and explain *why* in comments, not *what*.
 - **Painting changes:** a before/after screenshot in the pull request is the best proof.

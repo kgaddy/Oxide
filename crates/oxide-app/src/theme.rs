@@ -159,7 +159,15 @@ impl Theme {
                 slider_fill: true,
                 shadow: 16,
             },
-            font: Font { family: "system".into(), weight: 440.0, size: 13.0, small_size: 11.0, heading_size: 15.0, heading_weight: 620.0, monospace_size: 12.0 },
+            font: Font {
+                family: "system".into(),
+                weight: 440.0,
+                size: 13.0,
+                small_size: 11.0,
+                heading_size: 15.0,
+                heading_weight: 620.0,
+                monospace_size: 12.0,
+            },
         }
     }
 
@@ -227,7 +235,15 @@ impl Theme {
                 slider_fill: false,
                 shadow: 16,
             },
-            font: Font { family: "default".into(), weight: 400.0, size: 12.5, small_size: 9.0, heading_size: 18.0, heading_weight: 400.0, monospace_size: 12.0 },
+            font: Font {
+                family: "default".into(),
+                weight: 400.0,
+                size: 12.5,
+                small_size: 9.0,
+                heading_size: 18.0,
+                heading_weight: 400.0,
+                monospace_size: 12.0,
+            },
         }
     }
 
@@ -309,7 +325,8 @@ impl Theme {
         v.window_corner_radius = CornerRadius::same(s.window_radius);
         v.menu_corner_radius = CornerRadius::same(s.menu_radius);
         v.window_stroke = Stroke::new(s.border_width, c.border);
-        let shadow = Shadow { offset: [0, (s.shadow / 4) as i8], blur: s.shadow, spread: 0, color: Color32::from_black_alpha(if self.dark { 110 } else { 40 }) };
+        let shadow =
+            Shadow { offset: [0, (s.shadow / 4) as i8], blur: s.shadow, spread: 0, color: Color32::from_black_alpha(if self.dark { 110 } else { 40 }) };
         v.window_shadow = shadow;
         v.popup_shadow = Shadow { blur: s.shadow / 2, offset: [0, (s.shadow / 8) as i8], ..shadow };
         v.slider_trailing_fill = s.slider_fill;
@@ -443,8 +460,11 @@ pub fn available() -> Vec<ThemeChoice> {
         .filter_map(|p| Some(ThemeChoice { name: p.file_stem()?.to_string_lossy().into_owned(), file: Some(p) }))
         .collect();
     files.sort_by_key(|c| c.name.to_lowercase());
-    let mut all: Vec<ThemeChoice> =
-        Theme::built_in().into_iter().filter(|t| !files.iter().any(|f| f.name.eq_ignore_ascii_case(&t.name))).map(|t| ThemeChoice { name: t.name, file: None }).collect();
+    let mut all: Vec<ThemeChoice> = Theme::built_in()
+        .into_iter()
+        .filter(|t| !files.iter().any(|f| f.name.eq_ignore_ascii_case(&t.name)))
+        .map(|t| ThemeChoice { name: t.name, file: None })
+        .collect();
     all.extend(files);
     all
 }

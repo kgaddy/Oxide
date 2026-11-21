@@ -634,9 +634,9 @@ fn parse_procreate(bytes: &[u8], stem: &str) -> Result<Vec<ImportedTip>, String>
     for dir in &folders {
         let Some(png) = read(&mut zip, &format!("{dir}Shape.png")) else { continue };
         let Ok(img) = image::load_from_memory(&png) else { continue };
-        let name = read(&mut zip, &format!("{dir}Brush.archive")).and_then(|b| procreate_name(&b)).unwrap_or_else(|| {
-            if folders.len() == 1 { stem.to_string() } else { format!("{stem} {}", tips.len() + 1) }
-        });
+        let name = read(&mut zip, &format!("{dir}Brush.archive"))
+            .and_then(|b| procreate_name(&b))
+            .unwrap_or_else(|| if folders.len() == 1 { stem.to_string() } else { format!("{stem} {}", tips.len() + 1) });
         let settings = read(&mut zip, &format!("{dir}Brush.archive")).map(|b| procreate_settings(&b)).unwrap_or_default();
         tips.push(ImportedTip { name, frames: vec![frame_from_image(&img)], settings });
     }
@@ -908,8 +908,12 @@ mod tests {
     #[test]
     fn images_either_way_round_become_paint() {
         // White paint on black and black on white (Photoshop) give the same tip.
-        let white_on_black = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(8, 8, |x, y| image::Luma([if (2..6).contains(&x) && (2..6).contains(&y) { 255 } else { 0 }])));
-        let black_on_white = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(8, 8, |x, y| image::Luma([if (2..6).contains(&x) && (2..6).contains(&y) { 0 } else { 255 }])));
+        let white_on_black = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(8, 8, |x, y| {
+            image::Luma([if (2..6).contains(&x) && (2..6).contains(&y) { 255 } else { 0 }])
+        }));
+        let black_on_white = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(8, 8, |x, y| {
+            image::Luma([if (2..6).contains(&x) && (2..6).contains(&y) { 0 } else { 255 }])
+        }));
         let (a, b) = (frame_from_image(&white_on_black), frame_from_image(&black_on_white));
         assert_eq!(a.data, b.data);
         assert_eq!(a.data[3 * 8 + 3], 1.0);

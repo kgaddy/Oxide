@@ -84,14 +84,7 @@ impl OxideApp {
                 ui.label("Size");
                 let doc = &self.document;
                 let inches = |px: usize| px as f32 / doc.dpi();
-                ui.weak(format!(
-                    "{} × {} px at {:.0} DPI ({:.2} × {:.2} in)",
-                    doc.width(),
-                    doc.height(),
-                    doc.dpi(),
-                    inches(doc.width()),
-                    inches(doc.height())
-                ));
+                ui.weak(format!("{} × {} px at {:.0} DPI ({:.2} × {:.2} in)", doc.width(), doc.height(), doc.dpi(), inches(doc.width()), inches(doc.height())));
                 ui.end_row();
             });
 
@@ -127,11 +120,8 @@ impl OxideApp {
     fn export_to_file(&mut self) {
         let options = self.app_settings.export;
         let ext = options.format.extension();
-        let Some(path) = self
-            .dialog(DialogFolder::Exports)
-            .add_filter(options.format.label(), &[ext])
-            .set_file_name(format!("{}.{ext}", self.file_stem()))
-            .save_file()
+        let Some(path) =
+            self.dialog(DialogFolder::Exports).add_filter(options.format.label(), &[ext]).set_file_name(format!("{}.{ext}", self.file_stem())).save_file()
         else {
             return;
         };

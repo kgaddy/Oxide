@@ -6,8 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
-use oxide_commands::presets::{BrushPreset, brushes_dir, builtin_presets, file_stem, load_saved};
 pub use oxide_commands::presets::MY_BRUSHES;
+use oxide_commands::presets::{BrushPreset, brushes_dir, builtin_presets, file_stem, load_saved};
 use oxide_engine::{Brush, Color, DabMode, Document, Stroke};
 
 use crate::app::PAPER;
@@ -49,11 +49,7 @@ impl PresetLibrary {
     }
 
     fn push(&mut self, ctx: &egui::Context, preset: BrushPreset, file: Option<PathBuf>) {
-        let thumbnail = ctx.load_texture(
-            format!("preset-{}", preset.name),
-            thumbnail(&preset),
-            egui::TextureOptions::LINEAR,
-        );
+        let thumbnail = ctx.load_texture(format!("preset-{}", preset.name), thumbnail(&preset), egui::TextureOptions::LINEAR);
         self.entries.push(PresetEntry { preset, thumbnail, file });
     }
 

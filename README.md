@@ -267,6 +267,7 @@ Pull requests, bug reports and ideas are welcome. The full guide is in [CONTRIBU
 - **Before you open a pull request**, run:
 
   ```bash
+  cargo fmt
   cargo test --workspace
   cargo clippy --workspace --all-targets -- -D warnings
   ```

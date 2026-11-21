@@ -140,10 +140,7 @@ fn layer_info(layers: &[PsdLayer], w: usize, h: usize, sixteen: bool) -> Vec<u8>
 /// One channel of an image as big-endian samples.
 fn channel_bytes(pixels: &[[f32; 4]], channel: usize, sixteen: bool) -> Vec<u8> {
     if sixteen {
-        pixels
-            .par_iter()
-            .flat_map_iter(|p| ((p[channel].clamp(0.0, 1.0) * 65535.0).round() as u16).to_be_bytes())
-            .collect()
+        pixels.par_iter().flat_map_iter(|p| ((p[channel].clamp(0.0, 1.0) * 65535.0).round() as u16).to_be_bytes()).collect()
     } else {
         pixels.par_iter().map(|p| (p[channel].clamp(0.0, 1.0) * 255.0).round() as u8).collect()
     }

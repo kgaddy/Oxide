@@ -22,10 +22,7 @@ fn new_document_shows_paper() {
 fn average_sample_mixes_neighbors() {
     let mut doc = Document::new(20, 20, Color::WHITE);
     // Black on the left half, white paper on the right.
-    doc.active_canvas().set_pixels(
-        (0..20 * 20).map(|i| if i % 20 < 10 { [0.0, 0.0, 0.0, 1.0] } else { [0.0; 4] }).collect(),
-        None,
-    );
+    doc.active_canvas().set_pixels((0..20 * 20).map(|i| if i % 20 < 10 { [0.0, 0.0, 0.0, 1.0] } else { [0.0; 4] }).collect(), None);
     assert_eq!(doc.composite_average(9, 5, 1), doc.composite_pixel(9, 5), "size 1 is one pixel");
     // 3x3 on the last black column (x = 9) covers x = 8..=10: 2 black, 1 white.
     let c = doc.composite_average(9, 5, 3).unwrap();
@@ -227,12 +224,20 @@ fn grainy_brush_skips_valleys_on_rough_paper() {
     let rough = PaperSettings { kind: PaperKind::Rough, depth: 1.0, ..PaperSettings::default() };
     let mut doc = Document::with_surface(128, 128, Color::WHITE, rough);
     let pencil = Brush { radius: 60.0, hardness: 1.0, grain: 1.0, ..Brush::default() };
-    let light_touch =
-        DabStyle { color: Color::BLACK, opacity: 1.0, mode: DabMode::Paint, wetness: Wetness::Dry, texture: None, reach: 0.4, pigment: None, relief: None, bands: None, flow: None };
+    let light_touch = DabStyle {
+        color: Color::BLACK,
+        opacity: 1.0,
+        mode: DabMode::Paint,
+        wetness: Wetness::Dry,
+        texture: None,
+        reach: 0.4,
+        pigment: None,
+        relief: None,
+        bands: None,
+        flow: None,
+    };
     doc.active_canvas().dab_with(64.0, 64.0, &pencil, &light_touch);
-    let covered = (0..128 * 128)
-        .filter(|&i| doc.layers()[0].canvas.dry_pixels()[i][3] > 0.5)
-        .count();
+    let covered = (0..128 * 128).filter(|&i| doc.layers()[0].canvas.dry_pixels()[i][3] > 0.5).count();
     // Some of the area gets paint (peaks), some doesn't (valleys).
     let disc = (std::f32::consts::PI * 60.0 * 60.0) as usize;
     assert!(covered > disc / 10 && covered < disc * 9 / 10, "covered {covered} of ~{disc}");

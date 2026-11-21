@@ -159,8 +159,24 @@ fn mix(cb: [f32; 3], cs: [f32; 3], mode: BlendMode) -> [f32; 3] {
         BlendMode::Overlay => each(|b, s| hard_light(s, b)),
         BlendMode::Darken => each(f32::min),
         BlendMode::Lighten => each(f32::max),
-        BlendMode::ColorDodge => each(|b, s| if b <= 0.0 { 0.0 } else if s >= 1.0 { 1.0 } else { (b / (1.0 - s)).min(1.0) }),
-        BlendMode::ColorBurn => each(|b, s| if b >= 1.0 { 1.0 } else if s <= 0.0 { 0.0 } else { 1.0 - ((1.0 - b) / s).min(1.0) }),
+        BlendMode::ColorDodge => each(|b, s| {
+            if b <= 0.0 {
+                0.0
+            } else if s >= 1.0 {
+                1.0
+            } else {
+                (b / (1.0 - s)).min(1.0)
+            }
+        }),
+        BlendMode::ColorBurn => each(|b, s| {
+            if b >= 1.0 {
+                1.0
+            } else if s <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - b) / s).min(1.0)
+            }
+        }),
         BlendMode::HardLight => each(hard_light),
         BlendMode::SoftLight => each(soft_light),
         BlendMode::Difference => each(|b, s| (b - s).abs()),
@@ -173,7 +189,12 @@ fn mix(cb: [f32; 3], cs: [f32; 3], mode: BlendMode) -> [f32; 3] {
 }
 
 fn hard_light(b: f32, s: f32) -> f32 {
-    if s <= 0.5 { b * 2.0 * s } else { let t = 2.0 * s - 1.0; b + t - b * t }
+    if s <= 0.5 {
+        b * 2.0 * s
+    } else {
+        let t = 2.0 * s - 1.0;
+        b + t - b * t
+    }
 }
 
 fn soft_light(b: f32, s: f32) -> f32 {

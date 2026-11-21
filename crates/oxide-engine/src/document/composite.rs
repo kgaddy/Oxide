@@ -101,16 +101,7 @@ impl Document {
     /// over the paper): the paper's texture, which thick paint hides, then the
     /// paint's own relief, lit from the paper's light direction, with gloss.
     #[allow(clippy::too_many_arguments)]
-    fn light_pixel(
-        &self,
-        x: usize,
-        y: usize,
-        p: [f32; 4],
-        coverage: f32,
-        include_paper: bool,
-        lit: &ImpastoLight,
-        relief: Option<&ReliefWindow>,
-    ) -> [f32; 4] {
+    fn light_pixel(&self, x: usize, y: usize, p: [f32; 4], coverage: f32, include_paper: bool, lit: &ImpastoLight, relief: Option<&ReliefWindow>) -> [f32; 4] {
         let h = relief.map_or(0.0, |r| r.at(x as isize, y as isize));
         let mut s = 1.0;
         if include_paper {
@@ -274,13 +265,7 @@ impl Document {
 
     /// Tint a finished pixel blue in proportion to the wettest visible paint there.
     fn tint_wet(&self, p: [f32; 4], i: usize) -> [f32; 4] {
-        let wet = self
-            .layers
-            .iter()
-            .enumerate()
-            .filter(|(n, _)| self.layer_shown(*n))
-            .map(|(_, l)| l.canvas.wet_pixels()[i][3])
-            .fold(0.0_f32, f32::max);
+        let wet = self.layers.iter().enumerate().filter(|(n, _)| self.layer_shown(*n)).map(|(_, l)| l.canvas.wet_pixels()[i][3]).fold(0.0_f32, f32::max);
         let t = 0.45 * wet;
         let tint = [0.25, 0.55, 1.0];
         [p[0] + (tint[0] - p[0]) * t, p[1] + (tint[1] - p[1]) * t, p[2] + (tint[2] - p[2]) * t, p[3]]
