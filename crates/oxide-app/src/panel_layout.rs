@@ -1,10 +1,9 @@
-//! Which sections (Tools, Properties, Layers, …) sit in which side panel, and
-//! in what order. Each section can be dragged by its title to another spot,
-//! on either side; the arrangement is saved with the app settings.
+//! Which sections (Tools, Properties, Layers, …) belong to the left and right
+//! rails and in what order; saved with the app settings.
 
 use serde::{Deserialize, Serialize};
 
-/// One block of a side panel, with its own title and fold arrow.
+/// One block of the interface: a rail button that opens it as a popover.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Section {
     Tools,
@@ -61,21 +60,30 @@ pub enum Side {
     Right,
 }
 
-/// The sections in each side panel, top to bottom.
+/// A popover left open in the minimal layout, remembered between runs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedPopover {
+    pub section: Section,
+    /// Its top-left corner if it was dragged somewhere; otherwise it sits beside its rail.
+    #[serde(default)]
+    pub pos: Option<[f32; 2]>,
+    /// Its height if it was resized; otherwise it fits its content.
+    #[serde(default)]
+    pub height: Option<f32>,
+}
+
+/// The sections on each rail, top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelLayout {
     pub left: Vec<Section>,
     pub right: Vec<Section>,
-    /// Sections folded shut (click a title to fold or open it).
-    pub folded: Vec<Section>,
 }
 
 impl Default for PanelLayout {
     fn default() -> Self {
         let on = |side| Section::ALL.into_iter().filter(|s| s.default_side() == side).collect();
-        // The Quick section has the controls used most, so the full lists start folded.
-        PanelLayout { left: on(Side::Left), right: on(Side::Right), folded: vec![Section::Properties, Section::BrushPresets] }
+        PanelLayout { left: on(Side::Left), right: on(Side::Right) }
     }
 }
 
@@ -117,36 +125,6 @@ impl PanelLayout {
                 list.insert(at, section);
             }
         }
-        self.folded.dedup();
-    }
-
-    pub fn is_folded(&self, section: Section) -> bool {
-        self.folded.contains(&section)
-    }
-
-    pub fn set_folded(&mut self, section: Section, folded: bool) {
-        self.folded.retain(|s| *s != section);
-        if folded {
-            self.folded.push(section);
-        }
-    }
-
-    /// Move `section` so it sits at `index` in `side` (an index into the list
-    /// as it was before the move, as the drop line shows it). Returns whether
-    /// anything changed.
-    pub fn move_section(&mut self, section: Section, side: Side, mut index: usize) -> bool {
-        let before = self.clone();
-        for from in [Side::Left, Side::Right] {
-            if let Some(at) = self.side(from).iter().position(|s| *s == section) {
-                self.side_mut(from).remove(at);
-                if from == side && at < index {
-                    index -= 1;
-                }
-            }
-        }
-        let list = self.side_mut(side);
-        list.insert(index.min(list.len()), section);
-        *self != before
     }
 }
 
@@ -162,35 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn moving_within_a_side_reorders_it() {
-        let mut layout = PanelLayout { left: vec![Section::Tools, Section::Properties, Section::BrushPresets], ..PanelLayout::default() };
-        // Drop Properties above Tools.
-        assert!(layout.move_section(Section::Properties, Side::Left, 0));
-        assert_eq!(layout.left, [Section::Properties, Section::Tools, Section::BrushPresets]);
-        // Drop Properties below Brush presets (index 3 = after the last one).
-        assert!(layout.move_section(Section::Properties, Side::Left, 3));
-        assert_eq!(layout.left, [Section::Tools, Section::BrushPresets, Section::Properties]);
-        // Dropping it right where it is changes nothing.
-        assert!(!layout.move_section(Section::Properties, Side::Left, 2));
-        assert!(!layout.move_section(Section::Properties, Side::Left, 3));
-    }
-
-    #[test]
-    fn moving_across_sides() {
-        let mut layout = PanelLayout::default();
-        assert!(layout.move_section(Section::Layers, Side::Left, 1));
-        assert_eq!(layout.left, [Section::Tools, Section::Layers, Section::Quick, Section::Properties, Section::BrushPresets]);
-        assert!(!layout.right.contains(&Section::Layers));
-        // A side can be emptied, and filled again.
-        for s in layout.left.clone() {
-            layout.move_section(s, Side::Right, 0);
-        }
-        assert!(layout.left.is_empty());
-        layout.move_section(Section::Tools, Side::Left, 5);
-        assert_eq!(layout.left, [Section::Tools]);
-    }
-
-    #[test]
     fn repair_fixes_repeats_and_missing_sections() {
         let mut layout: PanelLayout = toml::from_str("left = [\"Layers\", \"Tools\"]\nright = [\"Tools\", \"Color\"]").unwrap();
         layout.repair();
@@ -203,15 +152,5 @@ mod tests {
                 .unwrap();
         old.repair();
         assert_eq!(old.left, [Section::Tools, Section::Quick, Section::Properties, Section::BrushPresets]);
-    }
-
-    #[test]
-    fn folding_is_remembered_once() {
-        let mut layout = PanelLayout::default();
-        layout.set_folded(Section::Color, true);
-        layout.set_folded(Section::Color, true);
-        assert_eq!(layout.folded.iter().filter(|s| **s == Section::Color).count(), 1);
-        layout.set_folded(Section::Color, false);
-        assert!(!layout.is_folded(Section::Color));
     }
 }

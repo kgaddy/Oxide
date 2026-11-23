@@ -1,97 +1,229 @@
-//! The side panels, each a column of sections (Tools, Properties, Brush
-//! presets, Navigator, Color, Wet Media, Layers, Paper). Drag a section's
-//! title to move it up or down, or over to the other side.
+//! The side rails and their popovers. Each side is a narrow column of icon
+//! buttons (the tools, then one button per section); a section's button opens
+//! it as a floating popover you can drag by its title bar and resize from its
+//! bottom-right grip. Any number can be open at once, and they are remembered.
 
-use eframe::egui::collapsing_header::{CollapsingState, paint_default_icon};
 use eframe::egui::{self, Rect, Sense, Stroke as LineStroke, StrokeKind, Vec2};
 use oxide_engine::{Color, PaintMode};
 
 use super::canvas_view::view_xform;
 use super::{Command, OxideApp, to_color32};
 use crate::color_wheel::{classic_picker, color_wheel};
-use crate::panel_layout::{Section, Side};
+use crate::panel_layout::{SavedPopover, Section, Side};
 use crate::presets::{THUMB_H, THUMB_W};
 use crate::tools::{BrushShape, FUTURE_TOOLS, SWATCHES, Tool, ToolState};
 
-/// Where the sections and columns were drawn this frame, for dropping a
-/// dragged section (see [`OxideApp::section_drop`]).
-#[derive(Default)]
-pub(super) struct DockFrame {
-    /// Each section drawn, top to bottom per side.
-    sections: Vec<(Side, Section, Rect)>,
-    columns: Vec<(Side, Rect)>,
+/// One open popover in the minimal layout.
+#[derive(Clone, Copy)]
+pub(super) struct Popover {
+    section: Section,
+    /// Its rail button, which it sits beside until it's dragged elsewhere.
+    anchor: Rect,
+    /// Where it was dragged to (its top-left corner), if it was.
+    moved: Option<egui::Pos2>,
+    /// Where it was drawn last frame.
+    rect: Rect,
+    /// A height set by dragging the bottom-right grip; otherwise it fits its content.
+    height: Option<f32>,
+    /// How tall its scrolling body was drawn last frame (where a resize starts from).
+    body_h: f32,
+}
+
+/// What one popover reported after being drawn.
+struct PopoverDrawn {
+    rect: Rect,
+    close: bool,
+    /// How far the title bar was dragged this frame.
+    drag: Vec2,
+    body_h: f32,
+    /// How far the resize grip was dragged up or down this frame.
+    resize: f32,
+}
+
+impl Popover {
+    /// A popover opened again from the saved settings; its rail button's rect
+    /// is filled in when the rail is drawn.
+    pub(super) fn from_saved(saved: &SavedPopover) -> Popover {
+        Popover {
+            section: saved.section,
+            anchor: Rect::NOTHING,
+            moved: saved.pos.map(|[x, y]| egui::pos2(x, y)),
+            rect: Rect::NOTHING,
+            height: saved.height,
+            body_h: 0.0,
+        }
+    }
 }
 
 impl OxideApp {
-    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui, side: Side) {
-        self.dock_frame.columns.push((side, ui.max_rect()));
-        // Don't shrink to the content: lay everything out to the panel's width.
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    /// Minimal layout: a narrow column of icon buttons. The tools are shown
+    /// directly; every other section on this side is a button that opens it
+    /// as a popover.
+    pub(super) fn rail(&mut self, ui: &mut egui::Ui, side: Side) {
+        ui.vertical_centered(|ui| {
             for section in self.app_settings.panels.side(side).to_vec() {
-                let rect = self.section(ui, section);
-                self.dock_frame.sections.push((side, section, rect));
+                if section == Section::Tools {
+                    for tool in Tool::ALL {
+                        ui.selectable_value(&mut self.tool, tool, icon_text(tool_icon(tool))).on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()));
+                    }
+                    ui.separator();
+                    continue;
+                }
+                let at = self.popovers.iter().position(|p| p.section == section);
+                let open = at.is_some();
+                let button = ui.add(egui::Button::new(icon_text(section_icon(section))).selected(open));
+                let button = button.on_hover_text(section.title());
+                if let Some(i) = at {
+                    self.popovers[i].anchor = button.rect;
+                }
+                if button.clicked() {
+                    match at {
+                        Some(i) => {
+                            self.popovers.remove(i);
+                        }
+                        None => self.popovers.push(Popover { section, anchor: button.rect, moved: None, rect: button.rect, height: None, body_h: 0.0 }),
+                    }
+                }
             }
         });
     }
 
-    /// One section: a fold arrow and a title you can click (to fold it) or
-    /// drag (to move it), then its contents.
-    fn section(&mut self, ui: &mut egui::Ui, section: Section) -> Rect {
-        // Keyed by the section alone, so it stays folded or open when moved.
-        let id = egui::Id::new(("panel-section", section));
-        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, !self.app_settings.panels.is_folded(section));
-        let was_open = state.is_open();
-        // The Quick section says whose items it's showing.
+    /// Minimal layout: every open section, floating beside its rail. They stay
+    /// open (even while painting) until their rail button or ✕ is clicked.
+    /// Several on one side sit side by side, the first opened nearest the rail;
+    /// drag a title to put one anywhere.
+    pub(super) fn popover_windows(&mut self, ctx: &egui::Context) {
+        let mut offset = [0.0_f32; 2];
+        let mut closed = Vec::new();
+        for i in 0..self.popovers.len() {
+            let pop = self.popovers[i];
+            let right_side = self.app_settings.panels.right.contains(&pop.section);
+            let used = &mut offset[usize::from(right_side)];
+            let drawn = self.popover_window(ctx, pop, right_side, *used);
+            let (rect, close, drag) = (drawn.rect, drawn.close, drawn.drag);
+            if pop.moved.is_none() {
+                *used += rect.width() + 8.0;
+            }
+            self.popovers[i].rect = rect;
+            self.popovers[i].body_h = drawn.body_h;
+            if drag != Vec2::ZERO {
+                self.popovers[i].moved = Some(rect.min + drag);
+            }
+            if drawn.resize != 0.0 {
+                let most = (ctx.content_rect().height() - 120.0).max(200.0);
+                self.popovers[i].height = Some((drawn.body_h + drawn.resize).clamp(80.0, most));
+            }
+            if close {
+                closed.push(pop.section);
+            }
+        }
+        self.popovers.retain(|p| !closed.contains(&p.section));
+        // Remember which are open and where (once the mouse is up, not on every frame of a drag).
+        if !ctx.input(|i| i.pointer.any_down()) {
+            let now: Vec<SavedPopover> =
+                self.popovers.iter().map(|p| SavedPopover { section: p.section, pos: p.moved.map(|m| [m.x, m.y]), height: p.height }).collect();
+            if now != self.app_settings.open_popovers {
+                self.app_settings.open_popovers = now;
+                self.save_app_settings();
+            }
+        }
+    }
+
+    /// One popover, `shift` pixels further out from its rail unless it was
+    /// moved.
+    fn popover_window(&mut self, ctx: &egui::Context, pop: Popover, right_side: bool, shift: f32) -> PopoverDrawn {
+        let Popover { section, anchor, moved, height, .. } = pop;
+        let (pos, pivot) = match moved {
+            Some(p) => (p, egui::Align2::LEFT_TOP),
+            None if right_side => (egui::pos2(anchor.left() - 6.0 - shift, anchor.top()), egui::Align2::RIGHT_TOP),
+            None => (egui::pos2(anchor.right() + 6.0 + shift, anchor.top()), egui::Align2::LEFT_TOP),
+        };
+        // As tall as the window allows: the area is nudged up from the button to fit.
+        let max_height = (ctx.content_rect().height() - 120.0).max(200.0);
+        // A height you set with the grip wins; the body is then exactly that tall.
+        let (body_min, body_max) = match height {
+            Some(h) => (h.min(max_height), h.min(max_height)),
+            None => (0.0, max_height),
+        };
+        let mut body_h = pop.body_h;
+        let mut resize = 0.0;
+        let width = match section {
+            Section::Properties | Section::BrushPresets => 340.0,
+            Section::Color | Section::Layers | Section::Quick => 300.0,
+            _ => 260.0,
+        };
         let title = match section {
             Section::Quick => format!("Quick · {}", self.tool.label()),
             _ => section.title().to_string(),
         };
-        let rect = ui.scope(|ui| {
-            let header = ui.horizontal(|ui| {
-                state.show_toggle_button(ui, paint_default_icon);
-                let title = ui.add(egui::Label::new(title).selectable(false));
-                let handle = egui::RichText::new(egui_phosphor::regular::DOTS_SIX_VERTICAL).weak();
-                // The grip, and for Quick an Edit button, at the right; the
-                // title is draggable up to them (so the button stays clickable).
-                let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(handle).selectable(false));
-                    let help = egui::Button::new(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).small().frame(false);
-                    if ui.add(help).on_hover_text(format!("Help for {}", section.title())).clicked() {
-                        self.help.show_page(&super::help::section_page(section, self.tool));
-                    }
-                    if section == Section::Quick {
-                        let editing = self.quick_editing;
-                        let text = if editing { "Done".to_string() } else { format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE) };
-                        let hint = format!("Choose what's in the Quick section for {}", self.tool.label());
-                        if ui.add(egui::Button::new(text).small().selected(editing)).on_hover_text(hint).clicked() {
-                            self.quick_editing = !editing;
-                            state.set_open(true);
+        let mut close = false;
+        let mut drag = Vec2::ZERO;
+        let area = egui::Area::new(egui::Id::new(("minimal-popover", section)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .pivot(pivot)
+            .constrain_to(ctx.content_rect())
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(width);
+                    // The whole title bar drags the popover. The drag area is added
+                    // first, so the buttons on top of it still win their clicks.
+                    let bar = Rect::from_min_size(ui.cursor().min, Vec2::new(width, ui.spacing().interact_size.y));
+                    let grab = ui.interact(bar, egui::Id::new(("popover-grab", section)), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+                    drag = grab.drag_delta();
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let x = egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).weak()).small().frame(false);
+                            close = ui.add(x).on_hover_text("Close").clicked();
+                            let help = egui::Button::new(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).small().frame(false);
+                            if ui.add(help).on_hover_text(format!("Help for {}", section.title())).clicked() {
+                                self.help.show_page(&super::help::section_page(section, self.tool));
+                            }
+                            if section == Section::Quick {
+                                let editing = self.quick_editing;
+                                let text = if editing { "Done".to_string() } else { format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE) };
+                                if ui.add(egui::Button::new(text).small().selected(editing)).clicked() {
+                                    self.quick_editing = !editing;
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+                    // The area's own room is just what it used last frame, so a short
+                    // first frame would keep it short. Give the contents their own budget.
+                    let room = Rect::from_min_size(ui.cursor().min, Vec2::new(width, max_height + 20.0));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                        let scroll =
+                            egui::ScrollArea::vertical().min_scrolled_height(body_min).max_height(body_max).auto_shrink([false, true]).show(ui, |ui| {
+                                match section {
+                                    Section::Properties => {
+                                        self.current_brush_label(ui);
+                                        self.properties_section(ui);
+                                    }
+                                    Section::BrushPresets => {
+                                        ui.weak(format!("Shapes for {}", self.tool.label()));
+                                        self.presets_section(ui);
+                                    }
+                                    _ => self.section_contents(ui, section),
+                                }
+                                // Room under the last control, so it isn't clipped at the scroll edge.
+                                ui.add_space(14.0);
+                            });
+                        body_h = scroll.inner_rect.height();
+                        // The resize grip, bottom right: drag it up or down (vertical only).
+                        let (strip, grip) = ui.allocate_exact_size(Vec2::new(width, 14.0), Sense::drag());
+                        let grip = grip.on_hover_cursor(egui::CursorIcon::ResizeVertical).on_hover_text("Drag to change the height");
+                        resize = grip.drag_delta().y;
+                        let color = ui.style().visuals.widgets.noninteractive.fg_stroke.color;
+                        let corner = strip.right_bottom() - Vec2::new(2.0, 2.0);
+                        for k in [4.0, 8.0, 12.0] {
+                            ui.painter().line_segment([corner - Vec2::new(k, 0.0), corner - Vec2::new(0.0, k)], LineStroke::new(1.0, color));
                         }
-                    }
-                    ui.min_rect().left()
+                    });
                 });
-                let grab = Rect::from_min_max(title.rect.left_top(), egui::pos2(right.inner - 2.0, title.rect.bottom()));
-                ui.interact(grab, id.with("grab"), Sense::click_and_drag())
-                    .on_hover_cursor(egui::CursorIcon::Grab)
-                    .on_hover_text("Drag to move this section (to the other side, too); click to fold it")
             });
-            let grab = header.inner;
-            if grab.clicked() {
-                state.toggle(ui);
-            }
-            if grab.drag_started() {
-                egui::DragAndDrop::set_payload(ui.ctx(), section);
-            }
-            let open = state.is_open();
-            state.show_body_indented(&header.response, ui, |ui| self.section_contents(ui, section));
-            open
-        });
-        // Remember folding between runs.
-        if rect.inner != was_open {
-            self.app_settings.panels.set_folded(section, !rect.inner);
-            self.save_app_settings();
-        }
-        rect.response.rect
+        PopoverDrawn { rect: area.response.rect, close, drag, body_h, resize }
     }
 
     fn section_contents(&mut self, ui: &mut egui::Ui, section: Section) {
@@ -112,58 +244,6 @@ impl OxideApp {
             Section::Layers => self.layers_section(ui),
             Section::Paper => self.paper_section(ui),
         }
-    }
-
-    /// While a section is dragged: show where it would land, and move it there
-    /// when the mouse is let go. Called after both side panels are drawn.
-    pub(super) fn section_drop(&mut self, ctx: &egui::Context) {
-        let frame = std::mem::take(&mut self.dock_frame);
-        let Some(dragged) = egui::DragAndDrop::payload::<Section>(ctx).map(|s| *s) else { return };
-        let Some(pos) = ctx.pointer_latest_pos() else { return };
-        // The column under the pointer, and the gap between sections nearest it.
-        let target = frame.columns.iter().find(|(_, r)| r.contains(pos)).map(|&(side, column)| {
-            let rects: Vec<Rect> = frame.sections.iter().filter(|(s, ..)| *s == side).map(|(.., r)| *r).collect();
-            let index = rects.iter().filter(|r| r.center().y < pos.y).count();
-            let y = match (index.checked_sub(1).map(|i| rects[i]), rects.get(index)) {
-                (Some(above), Some(below)) => (above.bottom() + below.top()) / 2.0,
-                (Some(above), None) => above.bottom() + 2.0,
-                (None, Some(below)) => below.top() - 2.0,
-                (None, None) => column.top() + 4.0,
-            };
-            (side, index, column, y.clamp(column.top() + 1.0, column.bottom() - 1.0))
-        });
-
-        if ctx.input(|i| i.pointer.any_released()) {
-            egui::DragAndDrop::clear_payload(ctx);
-            if let Some((side, index, ..)) = target
-                && self.app_settings.panels.move_section(dragged, side, index)
-            {
-                self.save_app_settings();
-            }
-            return;
-        }
-
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("section-drop")));
-        let accent = ctx.global_style().visuals.selection.bg_fill;
-        // Dim the section being moved, where it is now.
-        if let Some(&(side, _, rect)) = frame.sections.iter().find(|(_, s, _)| *s == dragged)
-            && let Some(&(_, column)) = frame.columns.iter().find(|(s, _)| *s == side)
-        {
-            painter.with_clip_rect(column).rect_filled(rect, 3.0, accent.gamma_multiply(0.15));
-        }
-        if let Some((_, _, column, y)) = target {
-            let line = Rect::from_x_y_ranges(column.x_range().shrink(4.0), (y - 1.5)..=(y + 1.5));
-            painter.rect_filled(line, 1.5, accent);
-        }
-        // The title, following the pointer.
-        let font = egui::TextStyle::Button.resolve(&ctx.global_style());
-        let text = ctx.global_style().visuals.strong_text_color();
-        let galley = painter.layout_no_wrap(dragged.title().to_string(), font, text);
-        let ghost = Rect::from_min_size(pos + Vec2::new(12.0, 4.0), galley.size()).expand2(Vec2::new(8.0, 4.0));
-        let ghost_painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("section-drag")));
-        ghost_painter.rect(ghost, 4.0, ctx.global_style().visuals.window_fill, LineStroke::new(1.0, accent), StrokeKind::Inside);
-        ghost_painter.galley(ghost.min + Vec2::new(8.0, 4.0), galley, text);
-        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     }
 
     fn tools_section(&mut self, ui: &mut egui::Ui) {
@@ -920,6 +1000,22 @@ fn taper_ends_controls(ui: &mut egui::Ui, shape: &mut crate::tools::BrushShape, 
             }
         }
     });
+}
+
+/// The rail icon for a section in the minimal layout.
+fn section_icon(section: Section) -> &'static str {
+    use egui_phosphor::regular as icon;
+    match section {
+        Section::Tools => icon::PAINT_BRUSH_BROAD,
+        Section::Quick => icon::LIGHTNING,
+        Section::Properties => icon::SLIDERS_HORIZONTAL,
+        Section::BrushPresets => icon::SQUARES_FOUR,
+        Section::Navigator => icon::COMPASS,
+        Section::Color => icon::PALETTE,
+        Section::WetMedia => icon::DROP,
+        Section::Layers => icon::STACK,
+        Section::Paper => icon::NOTEPAD,
+    }
 }
 
 /// A tool button's icon, a little larger than the text so it reads at a glance.

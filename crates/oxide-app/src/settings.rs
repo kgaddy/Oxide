@@ -155,6 +155,8 @@ pub struct AppSettings {
     pub theme: String,
     /// Which sections are in each side panel, in order (drag their titles).
     pub panels: crate::panel_layout::PanelLayout,
+    /// The popovers open in the minimal layout, and where they were dragged to.
+    pub open_popovers: Vec<crate::panel_layout::SavedPopover>,
     /// What tools start with when Oxide opens (Settings → Tools), by tool
     /// name. Tools not listed start with their built-in values.
     pub tool_starts: std::collections::BTreeMap<String, ToolStart>,
@@ -244,6 +246,7 @@ impl Default for AppSettings {
             picker_sample: 1,
             theme: crate::theme::DEFAULT_THEME.into(),
             panels: crate::panel_layout::PanelLayout::default(),
+            open_popovers: Vec::new(),
             tool_starts: std::collections::BTreeMap::new(),
             quick_items: std::collections::BTreeMap::new(),
         }
