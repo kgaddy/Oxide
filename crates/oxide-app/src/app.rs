@@ -1,4 +1,4 @@
-//! App state and the overall window layout: menu bar, left/right panels, canvas.
+//! App state and the overall window layout: menu bar, left/right icon rails with popovers, canvas.
 
 mod brush_creator;
 mod canvas_view;
@@ -120,8 +120,8 @@ pub struct OxideApp {
     cursor_dir: Option<(f32, f32)>,
     show_left: bool,
     show_right: bool,
-    /// Where the side panels' sections were drawn this frame (for drag and drop).
-    dock_frame: panels::DockFrame,
+    /// Minimal layout: the open popovers, in the order opened, each with its rail button's rect.
+    popovers: Vec<panels::Popover>,
     /// The Quick section is showing its editor (choose its items).
     quick_editing: bool,
     /// The layer name being typed in the Layers panel (committed on Enter).
@@ -438,7 +438,7 @@ impl OxideApp {
             cursor_dir: None,
             show_left: true,
             show_right: true,
-            dock_frame: panels::DockFrame::default(),
+            popovers: app_settings.open_popovers.iter().map(panels::Popover::from_saved).collect(),
             quick_editing: false,
             renaming: None,
             renaming_row: None,
@@ -749,6 +749,7 @@ impl OxideApp {
             Command::ToggleRight => self.show_right = !self.show_right,
             Command::ResetPanels => {
                 self.app_settings.panels = Default::default();
+                self.popovers.clear();
                 self.save_app_settings();
             }
             Command::ToggleReference => {
@@ -1210,13 +1211,14 @@ impl eframe::App for OxideApp {
         }
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
 
+        // The side panels are icon rails; each section opens as a popover.
         if self.show_left {
-            egui::Panel::left("left_panel").default_size(250.0).min_size(200.0).show(ui, |ui| self.side_panel(ui, Side::Left));
+            egui::Panel::left("left_rail").exact_size(44.0).resizable(false).show(ui, |ui| self.rail(ui, Side::Left));
         }
         if self.show_right {
-            egui::Panel::right("right_panel").default_size(270.0).min_size(220.0).show(ui, |ui| self.side_panel(ui, Side::Right));
+            egui::Panel::right("right_rail").exact_size(44.0).resizable(false).show(ui, |ui| self.rail(ui, Side::Right));
         }
-        self.section_drop(&ctx);
+        self.popover_windows(&ctx);
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(self.themes.theme.colors.workspace)).show(ui, |ui| self.canvas_view(ui));
 
