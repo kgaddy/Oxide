@@ -4,7 +4,8 @@
 
 A natural-media painting app written in Rust. It's developed on macOS and also builds for Windows and Linux. It focuses on **oils, acrylics and pen & ink**: paint that stays wet, smears and mixes like real pigment (blue + yellow = green), and builds up thick impasto that catches the light. AI agents such as Claude can paint in it too, through a built-in MCP server.
 
-![Painting chili peppers in Oxide with oils on a gesso panel](assets/screenshots/paprika.jpg)
+<img width="1504" height="864" alt="Screenshot 2026-11-23 at 5 45 41 PM" src="https://github.com/user-attachments/assets/801f0b71-c594-4481-8421-58ee8adff3dc" />
+
 
 > **Status:** early and in active development. The `.oxide` file format may still change. macOS is the main, tested platform; Windows and Linux compile but haven't been tried on real machines yet (see [Platform support](#platform-support)).
 
