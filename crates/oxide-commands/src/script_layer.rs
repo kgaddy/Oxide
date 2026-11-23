@@ -116,7 +116,7 @@ mod tests {
                 r#"{"command": "stroke", "points": [[10, 10], [80, 60]]}"#,
                 r#"{"command": "add_layer", "name": "Two"}"#,
                 r#"{"command": "stroke", "points": [[10, 60], [80, 10]]}"#,
-                &format!(r#"{{"command": "export", "path": "{}"}}"#, out.display()),
+                &serde_json::json!({"command": "export", "path": out}).to_string(),
                 r#"{"command": "no_such_thing"}"#,
             ],
         );

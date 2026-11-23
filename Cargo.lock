@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "oxide-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "oxide-commands",
@@ -2367,7 +2367,7 @@ dependencies = [
 
 [[package]]
 name = "oxide-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "block2 0.6.2",
@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "oxide-commands"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "dirs",
@@ -2413,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "oxide-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rayon",
  "serde",

@@ -1155,7 +1155,7 @@ mod tests {
         image::RgbaImage::from_fn(32, 16, |x, _| if x < 16 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) }).save(&photo).unwrap();
 
         let mut s = Session::new(Document::new(64, 32, Color::WHITE));
-        let json = format!(r#"{{"command": "import_image", "path": "{}", "reference": true}}"#, photo.display());
+        let json = serde_json::json!({"command": "import_image", "path": photo, "reference": true}).to_string();
         let Output::Json(layers) = run(&mut s, &json) else { panic!() };
         assert_eq!(layers[1]["tracing"], true);
         assert_eq!(layers[2]["current"], true, "a layer to paint on is added above");
@@ -1182,7 +1182,7 @@ mod tests {
         // A small image, fitted to the canvas.
         let small = dir.join("small.png");
         image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 255, 0, 255])).save(&small).unwrap();
-        run(&mut s, &format!(r#"{{"command": "import_image", "path": "{}"}}"#, small.display()));
+        run(&mut s, &serde_json::json!({"command": "import_image", "path": small}).to_string());
         run(&mut s, r##"{"command": "transform_layer", "fit": "fit"}"##);
         let Output::Text(c) = run(&mut s, r##"{"command": "pick_color", "x": 20, "y": 4}"##) else { panic!() };
         assert!(c.contains("#00FF00"), "fitted image covers the middle: {c}");
